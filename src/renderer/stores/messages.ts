@@ -131,6 +131,22 @@ function mergeRunMessages(current: AgentMessage[], run: AgentMessage[]): AgentMe
 	if (current.length === 0) return run;
 	const maxOverlap = Math.min(current.length, run.length);
 	const runKeys = run.map(messageIdentityKey);
+	// A full agent_end run can contain a maintenance-rewritten message whose
+	// delivery identity changed after it streamed. When the run still maps
+	// exactly onto the current tail, keep the live representations and only
+	// attach persisted ids instead of appending the whole run again.
+	const runStart = current.findLastIndex(message => messageIdentityKey(message) === runKeys[0]);
+	if (runStart >= 0 && current.length - runStart === run.length) {
+		let changed = false;
+		const merged = current.map((message, index) => {
+			if (index < runStart) return message;
+			const entryId = run[index - runStart]?.entryId;
+			if (!entryId || message.entryId === entryId) return message;
+			changed = true;
+			return { ...message, entryId };
+		});
+		return changed ? merged : current;
+	}
 	const currentTailKeys = current.slice(current.length - maxOverlap).map(messageIdentityKey);
 	let overlap = 0;
 	for (let k = maxOverlap; k > 0; k--) {

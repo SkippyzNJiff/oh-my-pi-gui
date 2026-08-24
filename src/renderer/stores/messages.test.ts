@@ -102,6 +102,39 @@ describe("agent-end delivery dedupe", () => {
 		expect(useMessagesStore.getState().totalMessages).toBe(2);
 	});
 
+	it("does not append the full turn when one settled message changes delivery identity", () => {
+		const user: AgentMessage = { role: "user", content: "question", timestamp: 12 };
+		const live: AgentMessage = {
+			role: "assistant",
+			content: "answer",
+			responseId: "live-response",
+			timestamp: 13,
+		};
+		useMessagesStore
+			.getState()
+			.applyEvents([
+				{ type: "agent_start" },
+				{ type: "message_end", message: user },
+				{ type: "message_end", message: live },
+			]);
+
+		useMessagesStore.getState().applyEvents([
+			{
+				type: "agent_end",
+				messages: [
+					{ ...user, entryId: "user-entry" },
+					{ ...live, responseId: "settled-response", entryId: "assistant-entry" },
+				],
+			},
+		]);
+
+		expect(useMessagesStore.getState().messages).toEqual([
+			{ ...user, entryId: "user-entry" },
+			{ ...live, entryId: "assistant-entry" },
+		]);
+		expect(useMessagesStore.getState().totalMessages).toBe(2);
+	});
+
 	it("keeps response-id-less assistant tool calls distinct when their wire call ids differ", () => {
 		const first: AgentMessage = {
 			role: "assistant",
