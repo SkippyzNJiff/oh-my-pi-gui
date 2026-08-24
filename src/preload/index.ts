@@ -19,6 +19,7 @@ import type {
 	IpcOpenPathResult,
 	IpcSessionOpenNewWindowPayload,
 	IpcSessionOwner,
+	IpcSetTabViewPayload,
 	IpcSidecarRestartPayload,
 	IpcSidecarStatusPayload,
 	IpcSpawnTabPayload,
@@ -113,6 +114,10 @@ function subscribeActiveTab<T>(channel: string, callback: (data: T) => void): ()
 	});
 }
 
+function subscribeTab<T>(channel: string, callback: (data: T, tabId: string) => void): () => void {
+	return subscribe<IpcActiveTabEnvelope<T>>(channel, envelope => callback(envelope.payload, envelope.tabId));
+}
+
 const api: OmpApi = {
 	runtime: {
 		report: (error: RuntimeErrorReport) => ipcRenderer.send(IPC_COMMANDS.RUNTIME_ERROR_REPORT, error),
@@ -125,7 +130,7 @@ const api: OmpApi = {
 			ipcRenderer.invoke(IPC_COMMANDS.RPC_COMMAND_FOR_TAB, {
 				tabId,
 				command: cmd,
-				timeoutMs,
+				timeoutMs: timeoutMs ?? timeoutForCommand(cmd),
 			}) as Promise<RpcResponse>,
 		getState: () => ipcRenderer.invoke(IPC_COMMANDS.RPC_COMMAND, { command: { type: "get_state" } }),
 		prompt: (message: string, images?: ImageContent[], streamingBehavior?: "steer" | "followUp") =>
@@ -385,6 +390,26 @@ const api: OmpApi = {
 			subscribeActiveTab<SessionInfoUpdateFrame>(IPC_EVENTS.SESSION_INFO_UPDATE, callback),
 		onExtensionError: (callback: (frame: ExtensionErrorFrame) => void) =>
 			subscribeActiveTab<ExtensionErrorFrame>(IPC_EVENTS.EXTENSION_ERROR, callback),
+		onTabBatch: (callback: (events: AgentSessionEvent[], tabId: string) => void) =>
+			subscribeTab<AgentSessionEvent[]>(IPC_EVENTS.EVENTS_BATCH, callback),
+		onTabSidecarStatus: (callback: (status: IpcSidecarStatusPayload, tabId: string) => void) =>
+			subscribeTab<IpcSidecarStatusPayload>(IPC_EVENTS.SIDECAR_STATUS, callback),
+		onTabSubagentFrame: (callback: (frame: SubagentFrame, tabId: string) => void) =>
+			subscribeTab<SubagentFrame>(IPC_EVENTS.SUBAGENT_FRAME, callback),
+		onTabModelCatalogUpdate: (callback: (frame: ModelCatalogUpdateFrame, tabId: string) => void) =>
+			subscribeTab<ModelCatalogUpdateFrame>(IPC_EVENTS.MODEL_CATALOG_UPDATE, callback),
+		onTabCommandsUpdate: (callback: (commands: AvailableCommand[], tabId: string) => void) =>
+			subscribeTab<AvailableCommand[]>(IPC_EVENTS.COMMANDS_UPDATE, callback),
+		onTabConfigUpdate: (callback: (frame: ConfigUpdateFrame, tabId: string) => void) =>
+			subscribeTab<ConfigUpdateFrame>(IPC_EVENTS.CONFIG_UPDATE, callback),
+		onTabPromptResult: (callback: (frame: PromptResultFrame, tabId: string) => void) =>
+			subscribeTab<PromptResultFrame>(IPC_EVENTS.PROMPT_RESULT, callback),
+		onTabCommandOutput: (callback: (frame: CommandOutputFrame, tabId: string) => void) =>
+			subscribeTab<CommandOutputFrame>(IPC_EVENTS.COMMAND_OUTPUT, callback),
+		onTabSessionInfoUpdate: (callback: (frame: SessionInfoUpdateFrame, tabId: string) => void) =>
+			subscribeTab<SessionInfoUpdateFrame>(IPC_EVENTS.SESSION_INFO_UPDATE, callback),
+		onTabExtensionError: (callback: (frame: ExtensionErrorFrame, tabId: string) => void) =>
+			subscribeTab<ExtensionErrorFrame>(IPC_EVENTS.EXTENSION_ERROR, callback),
 		onMenuAction: (callback: (action: MenuAction, payload?: MenuActionPayload) => void) =>
 			subscribe<{ action: MenuAction } & MenuActionPayload>(IPC_EVENTS.MENU_ACTION, data =>
 				callback(data.action, data),
@@ -440,6 +465,15 @@ const api: OmpApi = {
 		setActive: async (tabId: string) => {
 			const switched = (await ipcRenderer.invoke(IPC_COMMANDS.SET_ACTIVE_TAB, { tabId })) as boolean;
 			if (switched) activeTabId = tabId;
+			return switched;
+		},
+		setView: async (focusedTabId: string, visibleTabIds: string[], split?: IpcSetTabViewPayload["split"]) => {
+			const switched = (await ipcRenderer.invoke(IPC_COMMANDS.SET_TAB_VIEW, {
+				focusedTabId,
+				visibleTabIds,
+				split,
+			})) as boolean;
+			if (switched) activeTabId = focusedTabId;
 			return switched;
 		},
 		getSessionOwner: (sessionPath: string) =>
@@ -501,14 +535,14 @@ const api: OmpApi = {
 	},
 
 	fs: {
-		list: (path?: string, maxDepth?: number, maxEntries?: number) =>
-			ipcRenderer.invoke(IPC_COMMANDS.FS_LIST, { path, maxDepth, maxEntries }) as Promise<IpcFsListResult>,
-		read: (path: string, maxBytes?: number) =>
-			ipcRenderer.invoke(IPC_COMMANDS.FS_READ, { path, maxBytes }) as Promise<IpcFsReadResult>,
+		list: (path?: string, maxDepth?: number, maxEntries?: number, tabId?: string) =>
+			ipcRenderer.invoke(IPC_COMMANDS.FS_LIST, { path, maxDepth, maxEntries, tabId }) as Promise<IpcFsListResult>,
+		read: (path: string, maxBytes?: number, tabId?: string) =>
+			ipcRenderer.invoke(IPC_COMMANDS.FS_READ, { path, maxBytes, tabId }) as Promise<IpcFsReadResult>,
 		readPlan: (payload: IpcFsReadPlanPayload) =>
 			ipcRenderer.invoke(IPC_COMMANDS.FS_READ_PLAN, payload) as Promise<IpcFsReadPlanResult>,
-		readImage: (path: string) =>
-			ipcRenderer.invoke(IPC_COMMANDS.FS_READ_IMAGE, { path }) as Promise<IpcFsReadImageResult>,
+		readImage: (path: string, tabId?: string) =>
+			ipcRenderer.invoke(IPC_COMMANDS.FS_READ_IMAGE, { path, tabId }) as Promise<IpcFsReadImageResult>,
 	},
 
 	editor: {

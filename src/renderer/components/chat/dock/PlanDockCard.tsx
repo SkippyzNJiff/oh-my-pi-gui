@@ -23,8 +23,9 @@ import type { PlanModeState } from "../../../../shared/rpc-types";
 import { useTabGuard } from "../../../hooks/use-tab-guard";
 import { cx } from "../../../lib/format";
 import { useT } from "../../../lib/i18n";
-import { onActiveTabRouteSettled } from "../../../lib/tab-routing";
-import { useSessionStore } from "../../../stores/session";
+import { type TabRpc, useTabRpc } from "../../../lib/tab-rpc";
+import { type SessionStore, useSessionStore } from "../../../stores/session";
+import { sessionRuntimeStore, useRuntimeTabId } from "../../../stores/session-runtime-context";
 import { toast } from "../../../stores/toast";
 import { Badge, Button, Spinner, Tabs, TextArea } from "../../common";
 import { DockCard } from "./DockCard";
@@ -107,9 +108,13 @@ function truncate(text: string, max: number): string {
 }
 
 /** Deliver review feedback to the agent: steer mid-turn, prompt when idle. */
-async function sendPlanMessage(message: string, t: (key: string) => string): Promise<boolean> {
-	const streaming = useSessionStore.getState().isStreaming;
-	const response = streaming ? await window.omp.rpc.steer(message) : await window.omp.rpc.prompt(message);
+async function sendPlanMessage(
+	message: string,
+	t: (key: string) => string,
+	rpc: TabRpc,
+	streaming: boolean,
+): Promise<boolean> {
+	const response = streaming ? await rpc.steer(message) : await rpc.prompt(message);
 	if (!response.success) {
 		toast({ variant: "error", title: t("planPanel.feedbackFailed"), message: response.error });
 		return false;
@@ -125,6 +130,9 @@ interface StepFeedbackState {
 
 export function PlanDockCard() {
 	const t = useT();
+	const rpc = useTabRpc();
+	const tabId = useRuntimeTabId();
+	const sessionStore = sessionRuntimeStore<SessionStore>(tabId, "session");
 	const { capture, isActive } = useTabGuard();
 	const planModeEnabled = useSessionStore(s => s.planModeEnabled);
 	const isStreaming = useSessionStore(s => s.isStreaming);
@@ -150,7 +158,7 @@ export function PlanDockCard() {
 			if (!quiet) setLoading(true);
 			if (!quiet) setError(null);
 			try {
-				const modeResponse = await window.omp.rpc.getPlanMode();
+				const modeResponse = await rpc.getPlanMode();
 				if (!isActive(origin)) return;
 				if (!modeResponse.success) {
 					if (!quiet) setError(modeResponse.error);
@@ -165,7 +173,7 @@ export function PlanDockCard() {
 					setContent(null);
 					return;
 				}
-				const { sessionFile, cwd } = useSessionStore.getState();
+				const { sessionFile, cwd } = sessionStore?.getState() ?? { sessionFile: null, cwd: "" };
 				const resolved = resolvePlanFsPath(path, sessionFile, cwd);
 				if (!resolved) {
 					setPlanFile(null);
@@ -174,7 +182,11 @@ export function PlanDockCard() {
 					if (!quiet) setError(t("planPanel.noFsPath"));
 					return;
 				}
-				const response = await window.omp.fs.readPlan({ fsPath: resolved.fsPath, localRoot: resolved.localRoot });
+				const response = await window.omp.fs.readPlan({
+					fsPath: resolved.fsPath,
+					localRoot: resolved.localRoot,
+					tabId: tabId ?? undefined,
+				});
 				if (!isActive(origin)) return;
 				setLocalRoot(resolved.localRoot);
 				if (!response.ok) {
@@ -197,17 +209,7 @@ export function PlanDockCard() {
 				}
 			}
 		},
-		[capture, isActive, t],
-	);
-
-	// A tab paints its parked state before main finishes re-routing IPC. If the
-	// target is already in plan mode, load only after that route is authoritative.
-	useEffect(
-		() =>
-			onActiveTabRouteSettled(() => {
-				if (useSessionStore.getState().planModeEnabled) void load();
-			}),
-		[load],
+		[capture, isActive, rpc, t, sessionStore, tabId],
 	);
 
 	// Initial load + reset when plan mode flips.
@@ -241,12 +243,12 @@ export function PlanDockCard() {
 	}, [isStreaming, planModeEnabled, load]);
 
 	const togglePlanMode = useCallback(async () => {
-		const next = !useSessionStore.getState().planModeEnabled;
+		const next = !(sessionStore?.getState().planModeEnabled ?? false);
 		const origin = capture();
 		if (!origin) return;
 		setToggling(true);
 		try {
-			const response = await window.omp.rpc.setPlanMode(next);
+			const response = await rpc.setPlanMode(next);
 			if (!isActive(origin)) return; // switched tabs/sessions mid-request: never write A's result into B
 			if (!response.success) {
 				toast({ variant: "error", title: t("planPanel.toggleFailed"), message: response.error });
@@ -254,12 +256,12 @@ export function PlanDockCard() {
 			}
 			const mode = response.data as PlanModeState | undefined;
 			const enabled = mode?.enabled ?? next;
-			useSessionStore.setState({ planModeEnabled: enabled });
+			sessionStore?.setState({ planModeEnabled: enabled });
 			if (enabled) void load();
 		} finally {
 			setToggling(false);
 		}
-	}, [isActive, capture, load, t]);
+	}, [isActive, capture, load, rpc, t, sessionStore]);
 
 	/** `local://<name>` when the file lives in the session-local root (how the agent refers to it). */
 	const displayPath = useMemo(() => {
@@ -273,12 +275,12 @@ export function PlanDockCard() {
 		setApproving(true);
 		try {
 			const target = displayPath ?? t("planPanel.fallbackTarget");
-			const ok = await sendPlanMessage(t("planPanel.approveMessage", { target }), t);
+			const ok = await sendPlanMessage(t("planPanel.approveMessage", { target }), t, rpc, isStreaming);
 			if (ok) toast({ variant: "success", message: t("planPanel.approvalSent") });
 		} finally {
 			setApproving(false);
 		}
-	}, [displayPath, t]);
+	}, [displayPath, rpc, t, isStreaming]);
 
 	const requestChanges = useCallback(async () => {
 		const text = planFeedback.trim();
@@ -286,12 +288,17 @@ export function PlanDockCard() {
 		setSendingPlan(true);
 		try {
 			const target = displayPath ?? t("planPanel.fallbackTarget");
-			const ok = await sendPlanMessage(t("planPanel.reviseMessage", { target, feedback: text }), t);
+			const ok = await sendPlanMessage(
+				t("planPanel.reviseMessage", { target, feedback: text }),
+				t,
+				rpc,
+				isStreaming,
+			);
 			if (ok) setPlanFeedback("");
 		} finally {
 			setSendingPlan(false);
 		}
-	}, [planFeedback, displayPath, t]);
+	}, [planFeedback, displayPath, rpc, t, isStreaming]);
 
 	const submitStepFeedback = useCallback(async () => {
 		if (!stepFeedback) return;
@@ -302,10 +309,12 @@ export function PlanDockCard() {
 		const ok = await sendPlanMessage(
 			`Feedback on plan step ${stepFeedback.step.index} — “${truncate(stepFeedback.step.text, 80)}” (${target}):\n${text}`,
 			t,
+			rpc,
+			isStreaming,
 		);
 		if (ok) setStepFeedback(null);
 		else setStepFeedback({ ...stepFeedback, sending: false });
-	}, [stepFeedback, displayPath, t]);
+	}, [stepFeedback, displayPath, rpc, t, isStreaming]);
 
 	const sections = useMemo(() => parsePlanSections(content ?? ""), [content]);
 	const stepCount = useMemo(() => sections.reduce((n, section) => n + section.steps.length, 0), [sections]);

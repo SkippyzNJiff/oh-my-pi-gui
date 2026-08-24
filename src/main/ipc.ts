@@ -35,6 +35,7 @@ import type {
 	IpcSessionsRenamePayload,
 	IpcSessionsSearchPayload,
 	IpcSetActiveTabPayload,
+	IpcSetTabViewPayload,
 	IpcSidecarRestartPayload,
 	IpcSpawnTabPayload,
 	IpcStatsFetchPayload,
@@ -85,9 +86,10 @@ function sidecarFor(deps: IpcDeps, event: Electron.IpcMainInvokeEvent): SidecarM
  * The calling window's working directory — the bound sidecar's cwd when one
  * exists, else the cwd the window was created with (before its sidecar binds).
  */
-function cwdFor(deps: IpcDeps, event: Electron.IpcMainInvokeEvent): string | null {
+function cwdFor(deps: IpcDeps, event: Electron.IpcMainInvokeEvent, tabId?: string): string | null {
 	const win = BrowserWindow.fromWebContents(event.sender);
 	if (!win) return null;
+	if (tabId) return deps.sidecarPool.sidecarForTab(win, tabId)?.cwd ?? null;
 	return deps.sidecarPool.sidecarForWindow(win)?.cwd ?? deps.windowManager.recordFor(win)?.cwd ?? null;
 }
 
@@ -416,9 +418,12 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 		windowManager.setRunProgress(aggregateProgress([...progressStates.values()]));
 	});
 
-	ipcMain.handle(IPC_COMMANDS.RPC_COMMAND, async (event, payload: IpcRpcCommandPayload) => {
-		const win = BrowserWindow.fromWebContents(event.sender);
-		const sidecar = win ? sidecarPool.sidecarForWindow(win) : null;
+	const dispatchRpcCommand = async (
+		win: BrowserWindow,
+		sidecar: SidecarManager | null,
+		issuerTabId: string | null,
+		payload: IpcRpcCommandPayload,
+	) => {
 		const client = sidecar?.rpcClient;
 		if (!client || !sidecar) {
 			return { id: payload.command.id, type: "response", success: false, error: "Sidecar not connected" };
@@ -432,10 +437,6 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 			};
 		}
 		const { id: _id, ...cmd } = payload.command;
-		// F-OWN: pin the issuing tab NOW — the ownership note below must register
-		// against the tab that sent the command even if the user switches tabs
-		// while it is in flight.
-		const issuerTabId = win ? sidecarPool.activeTabForWindow(win) : null;
 		// F-OWN refuse-or-focus backstop: a switch_session onto a file a
 		// DIFFERENT tab owns would double-attach it (the owner itself re-attaches
 		// freely). Refuse BEFORE dispatch — the sidecar would attach for real
@@ -473,7 +474,7 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 					// cwd. Adopt it so the tab chip tracks the session, and sync
 					// the window record (menu "New Window" reads cwd from it) —
 					// the same tail as a project switch, minus the respawn.
-					if (state?.cwd && win && sidecarPool.adoptSessionCwd(issuerTabId, state.cwd)) {
+					if (state?.cwd && sidecarPool.adoptSessionCwd(issuerTabId, state.cwd)) {
 						windowManager.setRecordCwd(win, state.cwd);
 					}
 				}
@@ -482,35 +483,23 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 		} catch (err) {
 			return { id: _id, type: "response", success: false, error: err instanceof Error ? err.message : String(err) };
 		}
+	};
+
+	ipcMain.handle(IPC_COMMANDS.RPC_COMMAND, async (event, payload: IpcRpcCommandPayload) => {
+		const win = BrowserWindow.fromWebContents(event.sender);
+		if (!win) return { id: payload.command.id, type: "response", success: false, error: "No window" };
+		const issuerTabId = sidecarPool.activeTabForWindow(win);
+		return dispatchRpcCommand(win, sidecarPool.sidecarForWindow(win), issuerTabId, payload);
 	});
 
-	// RPC addressed at a SPECIFIC tab's sidecar — background-tab flows (the
-	// worktree close prompt) must not route through the window's active tab.
-	// No F-OWN bookkeeping here: the callers query/remove worktrees, never
-	// switch sessions.
+	// RPC addressed at a specific tab. Split panes use this for every command;
+	// the shared dispatcher preserves the same ownership/cwd bookkeeping as the
+	// focused-tab path.
 	ipcMain.handle(IPC_COMMANDS.RPC_COMMAND_FOR_TAB, async (event, payload: IpcRpcCommandForTabPayload) => {
 		const win = BrowserWindow.fromWebContents(event.sender);
 		if (!win) return { id: payload?.command?.id, type: "response", success: false, error: "No window" };
 		const sidecar = sidecarPool.sidecarForTab(win, payload.tabId);
-		if (!sidecar) {
-			return { id: payload.command.id, type: "response", success: false, error: "Unknown tab" };
-		}
-		if (sidecar.status !== "ready") {
-			return {
-				id: payload.command.id,
-				type: "response",
-				success: false,
-				error: `Sidecar not ready (${sidecar.status})`,
-			};
-		}
-		const client = sidecar.rpcClient;
-		if (!client) return { id: payload.command.id, type: "response", success: false, error: "No RPC client" };
-		const { id: _id, ...cmd } = payload.command;
-		try {
-			return await client.command({ ...cmd, id: _id } as RpcCommand, payload.timeoutMs);
-		} catch (err) {
-			return { id: _id, type: "response", success: false, error: err instanceof Error ? err.message : String(err) };
-		}
+		return dispatchRpcCommand(win, sidecar, payload.tabId, payload);
 	});
 
 	// Extension UI respond — F-UI-ORIGIN: route to the sidecar that RAISED the
@@ -666,6 +655,12 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 		const win = BrowserWindow.fromWebContents(event.sender);
 		if (!win || typeof payload?.tabId !== "string") return false;
 		return deps.sidecarPool.setActiveTab(win, payload.tabId);
+	});
+
+	ipcMain.handle(IPC_COMMANDS.SET_TAB_VIEW, (event, payload: IpcSetTabViewPayload) => {
+		const win = BrowserWindow.fromWebContents(event.sender);
+		if (!win || typeof payload?.focusedTabId !== "string" || !Array.isArray(payload.visibleTabIds)) return false;
+		return deps.sidecarPool.setTabView(win, payload.focusedTabId, payload.visibleTabIds, payload.split);
 	});
 
 	// Boot reconciliation: the window's tabs in acquisition order (the initial
@@ -912,7 +907,7 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 	// Workspace filesystem — node:fs against the calling window's cwd; works
 	// without a live sidecar session and never throws (renderer reads ok/error).
 	ipcMain.handle(IPC_COMMANDS.FS_LIST, async (event, payload: IpcFsListPayload) => {
-		const rootAbs = cwdFor(deps, event);
+		const rootAbs = cwdFor(deps, event, payload.tabId);
 		if (!rootAbs) return { ok: false, entries: [], truncated: false, error: "No workspace" };
 		const prefix = (typeof payload.path === "string" ? payload.path : "")
 			.replace(/\\/g, "/")
@@ -955,7 +950,7 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 		let abs: string;
 		if (path.isAbsolute(raw)) abs = path.normalize(raw);
 		else {
-			const cwd = cwdFor(deps, event);
+			const cwd = cwdFor(deps, event, payload.tabId);
 			if (!cwd) return fail("No workspace");
 			const within = resolveWithin(cwd, raw);
 			if (!within) return fail("Path escapes the workspace");
@@ -1035,7 +1030,7 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 		if (path.isAbsolute(raw)) {
 			abs = path.normalize(raw);
 		} else {
-			const cwd = cwdFor(deps, event);
+			const cwd = cwdFor(deps, event, payload.tabId);
 			if (!cwd) return fail("No workspace");
 			const within = resolveWithin(cwd, raw);
 			if (!within) return fail("Path escapes the workspace");
@@ -1074,7 +1069,7 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 			if (typeof payload?.fsPath !== "string" || payload.fsPath.length === 0) {
 				return fail("Invalid path");
 			}
-			const cwd = cwdFor(deps, event);
+			const cwd = cwdFor(deps, event, payload.tabId);
 			if (!cwd) return fail("No workspace");
 			const withinAllowedRoots = (value: string): string | null =>
 				resolveWithin(cwd, value) ?? resolveWithin(sessionIndex.sessionsDir, value);

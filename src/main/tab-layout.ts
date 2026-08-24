@@ -17,6 +17,12 @@ export interface PersistedTabLayout {
 	version: typeof TAB_LAYOUT_VERSION;
 	tabs: PersistedTabDescriptor[];
 	activeIndex: number;
+	split?: {
+		axis: "columns" | "rows";
+		firstIndex: number;
+		secondIndex: number;
+		ratio: number;
+	};
 }
 
 export interface TabLayoutPathChecks {
@@ -132,10 +138,35 @@ export function sanitizePersistedTabLayout(
 	let activeIndex = effective.findIndex(entry => entry.sourceIndex === requestedActiveIndex);
 	if (activeIndex < 0) activeIndex = effective.findIndex(entry => entry.sourceIndex > requestedActiveIndex);
 	if (activeIndex < 0) activeIndex = effective.length - 1;
+	let split: PersistedTabLayout["split"];
+	if (isRecord(value.split)) {
+		const axis = value.split.axis;
+		const firstSourceIndex = value.split.firstIndex;
+		const secondSourceIndex = value.split.secondIndex;
+		const ratio = value.split.ratio;
+		const firstIndex = effective.findIndex(entry => entry.sourceIndex === firstSourceIndex);
+		const secondIndex = effective.findIndex(entry => entry.sourceIndex === secondSourceIndex);
+		if (
+			(axis === "columns" || axis === "rows") &&
+			firstIndex >= 0 &&
+			secondIndex >= 0 &&
+			firstIndex !== secondIndex &&
+			typeof ratio === "number" &&
+			Number.isFinite(ratio)
+		) {
+			// Both panes survived but the persisted focus was dropped (e.g. its
+			// cwd vanished): keep the split and refocus a pane — discarding the
+			// whole split here would also be re-persisted on restore, permanently
+			// forgetting the layout after one bad launch.
+			if (activeIndex !== firstIndex && activeIndex !== secondIndex) activeIndex = firstIndex;
+			split = { axis, firstIndex, secondIndex, ratio: Math.min(0.8, Math.max(0.2, ratio)) };
+		}
+	}
 
 	return {
 		version: TAB_LAYOUT_VERSION,
 		tabs: effective.map(entry => entry.descriptor),
 		activeIndex,
+		...(split ? { split } : {}),
 	};
 }

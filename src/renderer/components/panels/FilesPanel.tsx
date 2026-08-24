@@ -10,7 +10,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FsTreeEntry } from "../../../shared/ipc-types";
 import { useT } from "../../lib/i18n";
 import { MarkdownRenderer } from "../../lib/markdown";
-import { acceptsActiveTabEvents, onActiveTabRouteSettled } from "../../lib/tab-routing";
+import { useRuntimeTabId } from "../../stores/session-runtime-context";
 import { useUiStore } from "../../stores/ui";
 import { Button, Spinner } from "../common";
 import { type TreeNode, TreeView } from "../common/TreeView";
@@ -38,6 +38,7 @@ function countFiles(entries: FsTreeEntry[]): number {
 
 export function FilesPanel() {
 	const t = useT();
+	const tabId = useRuntimeTabId();
 	const filePreviewPath = useUiStore(s => s.filePreviewPath);
 	const openFilePreview = useUiStore(s => s.openFilePreview);
 	const closeFilePreview = useUiStore(s => s.closeFilePreview);
@@ -49,11 +50,13 @@ export function FilesPanel() {
 	const [preview, setPreview] = useState<PreviewState | null>(null);
 
 	const load = useCallback(async () => {
-		if (!acceptsActiveTabEvents()) return;
+		if (!tabId) return;
 		setLoading(true);
 		setError(null);
 		try {
-			const result = await window.omp.fs.list(undefined, MAX_DEPTH, MAX_FILES);
+			const result = tabId
+				? await window.omp.fs.list(undefined, MAX_DEPTH, MAX_FILES, tabId)
+				: await window.omp.fs.list(undefined, MAX_DEPTH, MAX_FILES);
 			if (!result.ok) {
 				setError(result.error ?? t("filesPanel.unavailable"));
 				setTree([]);
@@ -69,20 +72,19 @@ export function FilesPanel() {
 		} finally {
 			setLoading(false);
 		}
-	}, [t]);
+	}, [t, tabId]);
 
 	useEffect(() => {
-		const run = () => void load();
-		const unsubscribeRoute = onActiveTabRouteSettled(run);
-		run();
-		return unsubscribeRoute;
+		void load();
 	}, [load]);
 
 	const openPreview = useCallback(
 		async (path: string) => {
 			setPreview({ path, content: null, loading: true, truncated: false });
 			try {
-				const result = await window.omp.fs.read(path, PREVIEW_MAX_BYTES);
+				const result = tabId
+					? await window.omp.fs.read(path, PREVIEW_MAX_BYTES, tabId)
+					: await window.omp.fs.read(path, PREVIEW_MAX_BYTES);
 				if (!result.ok) {
 					setPreview({
 						path,
@@ -106,7 +108,7 @@ export function FilesPanel() {
 				});
 			}
 		},
-		[t],
+		[t, tabId],
 	);
 
 	useEffect(() => {
@@ -114,9 +116,12 @@ export function FilesPanel() {
 		else setPreview(null);
 	}, [filePreviewPath, openPreview]);
 
-	const insertMention = useCallback((path: string) => {
-		window.dispatchEvent(new CustomEvent("omp:insert-mention", { detail: { path } }));
-	}, []);
+	const insertMention = useCallback(
+		(path: string) => {
+			window.dispatchEvent(new CustomEvent("omp:insert-mention", { detail: { path, tabId } }));
+		},
+		[tabId],
+	);
 
 	// Wire file activation: clicking a file previews it, clicking a dir toggles.
 	const onNodeClick = useCallback(

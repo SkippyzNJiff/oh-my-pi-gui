@@ -36,13 +36,17 @@ import { useModelStore } from "./model";
 import { usePlanApprovalStore } from "./plan-approval";
 import { useQueueStore } from "./queue";
 import { useSessionStore } from "./session";
+import { sessionRuntime, setFocusedSessionRuntime } from "./session-runtime-context";
 import { useSubagentsStore } from "./subagents";
+import { ensureTabRuntime } from "./tab-runtime";
 import {
+	isTabClosed,
 	pushTabExtensionUiRequest,
 	restoreTabComposer,
 	type SessionTab,
 	settleTabPlanApproval,
 	tabChipLabel,
+	tabDisplayTitle,
 	useSessionTabs,
 	useTabsStore,
 } from "./tabs";
@@ -157,6 +161,8 @@ function seedTabs(active: "t0" | "t1" | "t2" = "t0"): void {
 		activeTabId: active,
 		bundles: new Map(),
 	});
+	for (const tabId of ["t0", "t1", "t2"]) ensureTabRuntime(tabId);
+	setFocusedSessionRuntime(active);
 }
 
 /** Fill the live stores with t0's recognizable session state. */
@@ -306,7 +312,8 @@ describe("tabs store boot reconciliation", () => {
 			sessionId: "s-old",
 		});
 		await useTabsStore.getState().switchTab("t1");
-		expect(useTabsStore.getState().bundles.has("t0")).toBe(true);
+		const oldRuntime = sessionRuntime("t0");
+		expect(oldRuntime).not.toBeNull();
 		omp.tabs.list.mockResolvedValue([
 			{ kind: "agent", tabId: "t0", cwd: "/alpha", status: "ready", title: null, sessionId: "s-new" },
 			tabInfo("t1", "/beta"),
@@ -315,7 +322,7 @@ describe("tabs store boot reconciliation", () => {
 
 		await useTabsStore.getState().reconcileTabs();
 
-		expect(useTabsStore.getState().bundles.has("t0")).toBe(false);
+		expect(sessionRuntime("t0")).not.toBe(oldRuntime);
 		expect(useTabsStore.getState().tabs[0]).toMatchObject({ sessionId: "s-new", title: undefined });
 	});
 });
@@ -779,7 +786,8 @@ describe("tabs store applyTabStatus", () => {
 			sessionId: "s-old",
 		});
 		await useTabsStore.getState().switchTab("t1");
-		expect(useTabsStore.getState().bundles.has("t0")).toBe(true);
+		const oldRuntime = sessionRuntime("t0");
+		expect(oldRuntime).not.toBeNull();
 
 		useTabsStore.getState().applyTabStatus({
 			kind: "agent",
@@ -793,7 +801,7 @@ describe("tabs store applyTabStatus", () => {
 		const tab = useTabsStore.getState().tabs.find(entry => entry.id === "t0");
 		expect(tab?.title).toBeUndefined();
 		expect(tab?.sessionId).toBe("s-new");
-		expect(useTabsStore.getState().bundles.has("t0")).toBe(false);
+		expect(sessionRuntime("t0")).not.toBe(oldRuntime);
 		omp.rpc.getState.mockResolvedValue(ok(serverState({ sessionId: "s-new", cwd: "/old" })));
 
 		await useTabsStore.getState().switchTab("t0");
@@ -1035,6 +1043,87 @@ describe("tabChipLabel (F-HYDRATE)", () => {
 		const tabs = [chip("t0", "/work/gui"), chip("t1", "/other/gui", "Release plan")];
 		// The titled tab left the collision set, so the untitled one stays bare.
 		expect(tabs.map(tab => tabChipLabel(tab, tabs))).toEqual(["gui", "Release plan"]);
+	});
+
+	it("uses indexed session content instead of a cwd fallback on every tab surface", () => {
+		const tab = chip("t0", "/work/Infron");
+		expect(tabDisplayTitle(tab, [tab], { title: null, firstMessage: "Review the MySQL migration" }, "Untitled")).toBe(
+			"Review the MySQL migration",
+		);
+	});
+});
+
+describe("tab runtime lifecycle guards", () => {
+	it("keeps static store access on a focused tab whose runtime was rebuilt by a session change", () => {
+		seedTabs("t0");
+		const before = sessionRuntime("t0");
+		expect(before).not.toBeNull();
+		// Stamp the tab's session identity first (sessionChanged only fires when
+		// BOTH the cached and the incoming frame carry a sessionId/sessionPath).
+		useTabsStore.getState().applyTabStatus({
+			kind: "agent",
+			tabId: "t0",
+			cwd: "/alpha",
+			status: "ready",
+			sessionId: "s-old",
+			sessionPath: "/old.jsonl",
+		});
+
+		// In-place session switch: TAB_STATUS carries a NEW sessionId for the
+		// focused tab (e.g. /new) — the runtime is rebuilt around it.
+		useTabsStore.getState().applyTabStatus({
+			kind: "agent",
+			tabId: "t0",
+			cwd: "/alpha",
+			status: "ready",
+			sessionId: "s-new",
+			sessionPath: "/new.jsonl",
+		});
+
+		const rebuilt = sessionRuntime("t0");
+		expect(rebuilt).not.toBeNull();
+		expect(rebuilt).not.toBe(before);
+		// Focus must survive the rebuild: static (focus-following) access still
+		// resolves to t0's fresh runtime store, never the module-level default.
+		const rebuiltSession = rebuilt?.stores.get("session") as { getState: () => unknown } | undefined;
+		expect(useSessionStore.getState()).toBe(rebuiltSession?.getState());
+	});
+
+	it("tombstones a closed tab: late extension requests never resurrect a ghost runtime", async () => {
+		seedTabs("t0");
+		await useTabsStore.getState().closeTab("t1");
+
+		expect(isTabClosed("t1")).toBe(true);
+		pushTabExtensionUiRequest("t1", {
+			type: "extension_ui_request",
+			id: "ui-late",
+			method: "confirm",
+			title: "Late",
+			message: "Late request",
+		});
+		expect(sessionRuntime("t1")).toBeNull();
+
+		// reset() clears tombstones (test isolation; live ids are never reused).
+		useTabsStore.getState().reset();
+		expect(isTabClosed("t1")).toBe(false);
+	});
+
+	it("refuses to re-split a tab that already occupies a pane", async () => {
+		seedTabs("t0");
+		useTabsStore.setState({
+			split: { axis: "columns", firstTabId: "t0", secondTabId: "t1", ratio: 0.7 },
+		});
+
+		await useTabsStore.getState().splitTab("t1", "top");
+
+		// No ratio reset, no axis flip, no focus move.
+		expect(useTabsStore.getState().split).toEqual({
+			axis: "columns",
+			firstTabId: "t0",
+			secondTabId: "t1",
+			ratio: 0.7,
+		});
+		expect(useTabsStore.getState().activeTabId).toBe("t0");
 	});
 });
 

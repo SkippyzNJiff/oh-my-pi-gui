@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import type { RpcContextReportResult } from "../../../shared/rpc-types";
 import { formatTokens } from "../../lib/format";
 import { useT } from "../../lib/i18n";
+import { useTabRpc } from "../../lib/tab-rpc";
 import { useSessionStore } from "../../stores/session";
 
 interface AnchorPosition {
@@ -34,6 +35,7 @@ function approximateTokens(tokens: number): string {
  */
 export function ContextUsagePopover() {
 	const t = useT();
+	const rpc = useTabRpc();
 	const contextUsage = useSessionStore(state => state.contextUsage);
 	const sessionId = useSessionStore(state => state.sessionId);
 	const sidecarReady = useSessionStore(state => state.status) === "ready";
@@ -119,7 +121,7 @@ export function ContextUsagePopover() {
 		let cancelled = false;
 		setLoading(true);
 		setError(false);
-		void window.omp.rpc
+		void rpc
 			.getContextReport()
 			.then(response => {
 				if (cancelled) return;
@@ -139,7 +141,7 @@ export function ContextUsagePopover() {
 		return () => {
 			cancelled = true;
 		};
-	}, [loadedKey, open, sidecarReady, usageKey]);
+	}, [loadedKey, open, sidecarReady, usageKey, rpc]);
 
 	const breakdown = loadedKey === usageKey ? report?.breakdown : undefined;
 	const contextWindow = breakdown?.contextWindow || contextUsage?.contextWindow || 0;

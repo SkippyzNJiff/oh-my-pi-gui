@@ -1,5 +1,6 @@
-import { create } from "zustand";
+import { createStore } from "zustand/vanilla";
 import type { AgentMessage, AgentSessionEvent, MessagesPage } from "../../shared/rpc-types";
+import { createScopedStoreHook } from "./session-runtime-context";
 
 /**
  * Session-tab snapshot of the message stream: the zustand fields PLUS the
@@ -19,7 +20,7 @@ export interface MessagesSnapshot {
 	deliveredKeys: string[];
 }
 
-interface MessagesStore {
+export interface MessagesStore {
 	messages: AgentMessage[];
 	/**
 	 * Messages appended by the most recent applyEvents/appendMessage call —
@@ -120,13 +121,6 @@ export function sameIdentityPrefix(current: AgentMessage[], fetched: AgentMessag
 }
 
 /**
- * Keys of messages appended during the current agent run. turn_end re-sends
- * the turn's assistant message (already appended via message_end), and batch
- * boundaries make a batch-local guard insufficient — dedupe run-wide.
- */
-let deliveredThisRun = new Set<string>();
-
-/**
  * Merge run-scoped agent_end messages onto the transcript. Messages streamed
  * live via message_end (or hydrated mid-run) already form a suffix of the
  * current list, so find the longest delivery-identity prefix of `run` matching
@@ -165,186 +159,200 @@ function mergeRunMessages(current: AgentMessage[], run: AgentMessage[]): AgentMe
 	return changed ? merged : current;
 }
 
-export const useMessagesStore = create<MessagesStore>()((set, get) => ({
-	...initialState,
-	applyEvents: events => {
-		let textAccum = "";
-		let thinkAccum = "";
-		const newMessages: AgentMessage[] = [];
-		let runMessages: AgentMessage[] | null = null;
-		let streamingStart: AgentMessage | null = null;
-		let streamingEnd = false;
+export const createMessagesStore = () => {
+	/**
+	 * Keys of messages appended during this runtime's current agent run.
+	 * Per-store ownership is required when two session panes stream at once.
+	 */
+	let deliveredThisRun = new Set<string>();
+	return createStore<MessagesStore>()((set, get) => ({
+		...initialState,
+		applyEvents: events => {
+			let textAccum = "";
+			let thinkAccum = "";
+			const newMessages: AgentMessage[] = [];
+			let runMessages: AgentMessage[] | null = null;
+			let streamingStart: AgentMessage | null = null;
+			let streamingEnd = false;
 
-		for (const event of events) {
-			switch (event.type) {
-				case "agent_start": {
-					deliveredThisRun = new Set();
-					break;
-				}
-				case "message_start": {
-					streamingStart = event.message;
-					textAccum = "";
-					thinkAccum = "";
-					break;
-				}
-				case "message_update": {
-					const { assistantMessageEvent } = event;
-					if (assistantMessageEvent.type === "text_delta") {
-						textAccum += assistantMessageEvent.delta;
-					} else if (assistantMessageEvent.type === "thinking_delta") {
-						thinkAccum += assistantMessageEvent.delta;
+			for (const event of events) {
+				switch (event.type) {
+					case "agent_start": {
+						deliveredThisRun = new Set();
+						break;
 					}
-					break;
-				}
-				case "message_end": {
-					newMessages.push(event.message);
-					deliveredThisRun.add(messageIdentityKey(event.message));
-					streamingEnd = true;
-					break;
-				}
-				case "agent_end": {
-					// Wire sends run-scoped newMessages, NOT the full transcript —
-					// append-merge onto history, never replace.
-					if (event.messages) {
-						runMessages = event.messages;
+					case "message_start": {
+						streamingStart = event.message;
+						textAccum = "";
+						thinkAccum = "";
+						break;
 					}
-					break;
-				}
-				case "turn_end": {
-					// turn_end re-delivers the turn's assistant message; append only
-					// when this run has not already delivered it via message_end.
-					if (event.message) {
-						const key = messageIdentityKey(event.message);
-						if (!deliveredThisRun.has(key)) {
-							newMessages.push(event.message);
-							deliveredThisRun.add(key);
+					case "message_update": {
+						const { assistantMessageEvent } = event;
+						if (assistantMessageEvent.type === "text_delta") {
+							textAccum += assistantMessageEvent.delta;
+						} else if (assistantMessageEvent.type === "thinking_delta") {
+							thinkAccum += assistantMessageEvent.delta;
 						}
+						break;
 					}
-					break;
+					case "message_end": {
+						newMessages.push(event.message);
+						deliveredThisRun.add(messageIdentityKey(event.message));
+						streamingEnd = true;
+						break;
+					}
+					case "agent_end": {
+						// Wire sends run-scoped newMessages, NOT the full transcript —
+						// append-merge onto history, never replace.
+						if (event.messages) {
+							runMessages = event.messages;
+						}
+						break;
+					}
+					case "turn_end": {
+						// turn_end re-delivers the turn's assistant message; append only
+						// when this run has not already delivered it via message_end.
+						if (event.message) {
+							const key = messageIdentityKey(event.message);
+							if (!deliveredThisRun.has(key)) {
+								newMessages.push(event.message);
+								deliveredThisRun.add(key);
+							}
+						}
+						break;
+					}
+					default:
+						break;
 				}
-				default:
-					break;
 			}
-		}
 
-		// Single set() call per batch — one React re-render
-		const state = get();
-		const patch: Partial<MessagesStore> = {};
+			// Single set() call per batch — one React re-render
+			const state = get();
+			const patch: Partial<MessagesStore> = {};
 
-		if (streamingStart) {
-			patch.streamingMessage = streamingStart;
-			patch.streamingText = "";
-			patch.streamingThinking = "";
-		}
-		if (textAccum) {
-			patch.streamingText = `${streamingStart ? "" : state.streamingText}${textAccum}`;
-		}
-		if (thinkAccum) {
-			patch.streamingThinking = `${streamingStart ? "" : state.streamingThinking}${thinkAccum}`;
-		}
+			if (streamingStart) {
+				patch.streamingMessage = streamingStart;
+				patch.streamingText = "";
+				patch.streamingThinking = "";
+			}
+			if (textAccum) {
+				patch.streamingText = `${streamingStart ? "" : state.streamingText}${textAccum}`;
+			}
+			if (thinkAccum) {
+				patch.streamingThinking = `${streamingStart ? "" : state.streamingThinking}${thinkAccum}`;
+			}
 
-		let messages = state.messages;
-		if (newMessages.length > 0) {
-			messages = [...messages, ...newMessages];
-		}
-		if (runMessages) {
-			messages = mergeRunMessages(messages, runMessages);
-		}
-		if (messages !== state.messages) {
-			patch.messages = messages;
-			patch.totalMessages = state.totalMessages + (messages.length - state.messages.length);
-			// Both paths above are append-only, so everything beyond the prior
-			// length is new (message_end/turn_end/agent_end deliveries).
-			const appended = messages.slice(state.messages.length);
-			if (appended.length > 0) patch.lastAppended = appended;
-		}
+			let messages = state.messages;
+			if (newMessages.length > 0) {
+				messages = [...messages, ...newMessages];
+			}
+			if (runMessages) {
+				messages = mergeRunMessages(messages, runMessages);
+			}
+			if (messages !== state.messages) {
+				patch.messages = messages;
+				patch.totalMessages = state.totalMessages + (messages.length - state.messages.length);
+				// Both paths above are append-only, so everything beyond the prior
+				// length is new (message_end/turn_end/agent_end deliveries).
+				const appended = messages.slice(state.messages.length);
+				if (appended.length > 0) patch.lastAppended = appended;
+			}
 
-		if (streamingEnd || runMessages) {
-			patch.streamingMessage = null;
-			patch.streamingText = "";
-			patch.streamingThinking = "";
-		}
+			if (streamingEnd || runMessages) {
+				patch.streamingMessage = null;
+				patch.streamingText = "";
+				patch.streamingThinking = "";
+			}
 
-		if (Object.keys(patch).length > 0) {
-			set(patch);
-		}
-	},
-	loadPage: page =>
-		set({
-			messages: page.messages,
-			lastAppended: [],
-			totalMessages: page.totalMessages,
-			nextCursor: page.nextCursor,
-			isLoadingPage: false,
-		}),
-	appendMessage: message =>
-		set(s => ({ messages: [...s.messages, message], lastAppended: [message], totalMessages: s.totalMessages + 1 })),
-	/** Drop a locally appended placeholder (e.g. the composer's running-eval bubble) by identity. */
-	removeMessage: message =>
-		set(s => {
-			const messages = s.messages.filter(entry => entry !== message);
-			const removed = s.messages.length - messages.length;
-			if (removed === 0) return s;
-			return { messages, totalMessages: Math.max(0, s.totalMessages - removed) };
-		}),
-	clearStreaming: () => {
-		set({ streamingMessage: null, streamingText: "", streamingThinking: "" });
-	},
-	reconcileFetched: fetched => {
-		const current = get().messages;
-		if (sameIdentityPrefix(current, fetched)) {
-			if (fetched.length === current.length) {
-				let changed = false;
-				const next = current.map((message, index) => {
-					const incoming = fetched[index];
-					if (!incoming || incoming === message) return message;
-					changed = true;
-					return incoming;
-				});
-				if (!changed) return;
-				set({ messages: next, totalMessages: next.length });
+			if (Object.keys(patch).length > 0) {
+				set(patch);
+			}
+		},
+		loadPage: page =>
+			set({
+				messages: page.messages,
+				lastAppended: [],
+				totalMessages: page.totalMessages,
+				nextCursor: page.nextCursor,
+				isLoadingPage: false,
+			}),
+		appendMessage: message =>
+			set(s => ({
+				messages: [...s.messages, message],
+				lastAppended: [message],
+				totalMessages: s.totalMessages + 1,
+			})),
+		/** Drop a locally appended placeholder (e.g. the composer's running-eval bubble) by identity. */
+		removeMessage: message =>
+			set(s => {
+				const messages = s.messages.filter(entry => entry !== message);
+				const removed = s.messages.length - messages.length;
+				if (removed === 0) return s;
+				return { messages, totalMessages: Math.max(0, s.totalMessages - removed) };
+			}),
+		clearStreaming: () => {
+			set({ streamingMessage: null, streamingText: "", streamingThinking: "" });
+		},
+		reconcileFetched: fetched => {
+			const current = get().messages;
+			if (sameIdentityPrefix(current, fetched)) {
+				if (fetched.length === current.length) {
+					let changed = false;
+					const next = current.map((message, index) => {
+						const incoming = fetched[index];
+						if (!incoming || incoming === message) return message;
+						changed = true;
+						return incoming;
+					});
+					if (!changed) return;
+					set({ messages: next, totalMessages: next.length });
+					return;
+				}
+				if (fetched.length > current.length) {
+					set({ messages: [...current, ...fetched.slice(current.length)], totalMessages: fetched.length });
+					return;
+				}
+			}
+			set({ messages: fetched, totalMessages: fetched.length });
+		},
+		snapshot: () => {
+			const state = get();
+			return {
+				messages: state.messages,
+				lastAppended: state.lastAppended,
+				streamingMessage: state.streamingMessage,
+				streamingText: state.streamingText,
+				streamingThinking: state.streamingThinking,
+				totalMessages: state.totalMessages,
+				nextCursor: state.nextCursor,
+				isLoadingPage: state.isLoadingPage,
+				deliveredKeys: [...deliveredThisRun],
+			};
+		},
+		restoreSnapshot: snapshot => {
+			if (!snapshot) {
+				get().reset();
 				return;
 			}
-			if (fetched.length > current.length) {
-				set({ messages: [...current, ...fetched.slice(current.length)], totalMessages: fetched.length });
-				return;
-			}
-		}
-		set({ messages: fetched, totalMessages: fetched.length });
-	},
-	snapshot: () => {
-		const state = get();
-		return {
-			messages: state.messages,
-			lastAppended: state.lastAppended,
-			streamingMessage: state.streamingMessage,
-			streamingText: state.streamingText,
-			streamingThinking: state.streamingThinking,
-			totalMessages: state.totalMessages,
-			nextCursor: state.nextCursor,
-			isLoadingPage: state.isLoadingPage,
-			deliveredKeys: [...deliveredThisRun],
-		};
-	},
-	restoreSnapshot: snapshot => {
-		if (!snapshot) {
-			get().reset();
-			return;
-		}
-		deliveredThisRun = new Set(snapshot.deliveredKeys);
-		set({
-			messages: snapshot.messages,
-			lastAppended: snapshot.lastAppended,
-			streamingMessage: snapshot.streamingMessage,
-			streamingText: snapshot.streamingText,
-			streamingThinking: snapshot.streamingThinking,
-			totalMessages: snapshot.totalMessages,
-			nextCursor: snapshot.nextCursor,
-			isLoadingPage: snapshot.isLoadingPage,
-		});
-	},
-	reset: () => {
-		deliveredThisRun = new Set();
-		set(initialState);
-	},
-}));
+			deliveredThisRun = new Set(snapshot.deliveredKeys);
+			set({
+				messages: snapshot.messages,
+				lastAppended: snapshot.lastAppended,
+				streamingMessage: snapshot.streamingMessage,
+				streamingText: snapshot.streamingText,
+				streamingThinking: snapshot.streamingThinking,
+				totalMessages: snapshot.totalMessages,
+				nextCursor: snapshot.nextCursor,
+				isLoadingPage: snapshot.isLoadingPage,
+			});
+		},
+		reset: () => {
+			deliveredThisRun = new Set();
+			set(initialState);
+		},
+	}));
+};
+
+const defaultMessagesStore = createMessagesStore();
+export const useMessagesStore = createScopedStoreHook("messages", defaultMessagesStore);

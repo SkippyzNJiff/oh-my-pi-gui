@@ -10,6 +10,7 @@ import { useEffect } from "react";
 import type { AvailableCommand } from "../../../shared/rpc-types";
 import { getEmojiSuggestions } from "../../lib/emoji";
 import { useT } from "../../lib/i18n";
+import { useTabRpc } from "../../lib/tab-rpc";
 import {
 	CHAT_DEAD_COMMANDS,
 	fuzzyScore,
@@ -52,6 +53,7 @@ export function useCompletionMenu({
 	setMenu: (menu: CompletionMenu | null) => void;
 }) {
 	const t = useT();
+	const rpc = useTabRpc();
 	// Derive the completion menu from the draft around the caret. Provider
 	// chain (TUI getSuggestions order): slash-arg → github-ref → slash names →
 	// @mention → emoji. First provider with items wins; async providers (emoji
@@ -110,7 +112,7 @@ export function useCompletionMenu({
 				}
 				if (command.hasDynamicArgCompletion) {
 					timer = setTimeout(() => {
-						void window.omp.rpc.getCommandArgCompletions(command.name, argPrefix).then(response => {
+						void rpc.getCommandArgCompletions(command.name, argPrefix).then(response => {
 							if (!response.success) {
 								apply(null);
 								return;
@@ -227,5 +229,5 @@ export function useCompletionMenu({
 		return () => {
 			cancelled = true;
 		};
-	}, [text, filePaths, commands, emojiAutocomplete, isChat, textareaRef.current, setMenu, t]);
+	}, [text, filePaths, commands, emojiAutocomplete, isChat, textareaRef.current, setMenu, t, rpc]);
 }

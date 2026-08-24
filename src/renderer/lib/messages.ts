@@ -12,6 +12,7 @@ import { useTabsStore } from "../stores/tabs";
 import { toast } from "../stores/toast";
 import { useUiStore } from "../stores/ui";
 import { translate } from "./i18n";
+import type { TabRpc } from "./tab-rpc";
 
 /**
  * Message-level actions shared between the command palette and the global
@@ -63,18 +64,21 @@ export async function retryLastTurn(onEmpty: () => void): Promise<void> {
 }
 
 /** Abort the active turn and synchronously retire any live retry UI. */
-export async function abortActiveTurn(): Promise<RpcResponse> {
+export async function abortActiveTurn(
+	rpc: Pick<TabRpc, "abort" | "abortRetry"> = window.omp.rpc,
+	tabId?: string | null,
+): Promise<RpcResponse> {
 	const retrying = useSessionStore.getState().retryInfo !== null;
 	if (retrying) {
-		resetRetryPending();
+		resetRetryPending(tabId ?? undefined);
 		useSessionStore.setState({ retryInfo: null, awaitingModelSince: null });
 		try {
-			await window.omp.rpc.abortRetry();
+			await rpc.abortRetry();
 		} catch {
 			// Generic abort below also cancels retry server-side.
 		}
 	}
-	return window.omp.rpc.abort();
+	return rpc.abort();
 }
 
 /** Branch from a user entry, restoring its draft and refreshing the session. */
@@ -94,6 +98,7 @@ export async function branchSessionFromEntry(entryId: string): Promise<"branched
 export async function forkSessionFromEntryInNewTab(
 	entryId: string,
 	sourceTabId = useTabsStore.getState().activeTabId,
+	rpc: Pick<TabRpc, "forkFrom"> = window.omp.rpc,
 ): Promise<"opened" | "saved"> {
 	const tabs = useTabsStore.getState();
 	if (!sourceTabId || tabs.activeTabId !== sourceTabId || useUiStore.getState().switchPending !== null) {
@@ -101,7 +106,7 @@ export async function forkSessionFromEntryInNewTab(
 	}
 	const sourceTab = tabs.tabs.find(tab => tab.id === sourceTabId);
 	if (!sourceTab) throw new Error("The source session is no longer open");
-	const response = await window.omp.rpc.forkFrom(entryId);
+	const response = await rpc.forkFrom(entryId);
 	if (!response.success) throw new Error(response.error);
 	const data = response.data as { sessionPath?: string } | undefined;
 	if (!data?.sessionPath) throw new Error("fork_from did not return a session path");
@@ -117,14 +122,17 @@ export async function forkSessionFromEntryInNewTab(
 }
 
 /** Resolve legacy transcript messages through the active OMP session tree, then fork them. */
-export async function forkSessionFromMessageInNewTab(message: AgentMessage): Promise<"opened" | "saved"> {
-	const sourceTabId = useTabsStore.getState().activeTabId;
+export async function forkSessionFromMessageInNewTab(
+	message: AgentMessage,
+	rpc: Pick<TabRpc, "forkFrom" | "getSessionTree"> = window.omp.rpc,
+	sourceTabId = useTabsStore.getState().activeTabId,
+): Promise<"opened" | "saved"> {
 	if (!sourceTabId || useUiStore.getState().switchPending !== null) {
 		throw new Error("The active session changed while preparing the branch");
 	}
 	let entryId = message.entryId;
 	if (!entryId) {
-		const response = await window.omp.rpc.getSessionTree();
+		const response = await rpc.getSessionTree();
 		if (!response.success) throw new Error(response.error);
 		const data = response.data as RpcSessionTreeResult | undefined;
 		const timestamp =
@@ -151,7 +159,7 @@ export async function forkSessionFromMessageInNewTab(message: AgentMessage): Pro
 		}
 	}
 	if (!entryId) throw new Error("Could not locate this message in the active session tree");
-	return forkSessionFromEntryInNewTab(entryId, sourceTabId);
+	return forkSessionFromEntryInNewTab(entryId, sourceTabId, rpc);
 }
 
 /** One queued steer/follow-up message pulled back by the dequeue RPC. */
@@ -204,14 +212,17 @@ export async function restoreQueuedMessages(onEmpty: () => void): Promise<void> 
  * (server code "busy"); on success rehydrates the transcript + context bar
  * and reports the dropped count. Returns whether the context was cleared.
  */
-export async function clearSessionContext(): Promise<boolean> {
-	const response = await window.omp.rpc.clearContext();
+export async function clearSessionContext(
+	rpc: Pick<TabRpc, "clearContext"> = window.omp.rpc,
+	hydrate: () => Promise<void> = hydrateSession,
+): Promise<boolean> {
+	const response = await rpc.clearContext();
 	if (!response.success) {
 		toast({ variant: "warning", message: response.error });
 		return false;
 	}
 	const data = response.data as { droppedCount?: number } | undefined;
 	toast({ variant: "success", message: translate("input.clear.done", { count: data?.droppedCount ?? 0 }) });
-	await hydrateSession();
+	await hydrate();
 	return true;
 }

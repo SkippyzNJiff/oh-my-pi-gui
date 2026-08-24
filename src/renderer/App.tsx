@@ -1,7 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo } from "react";
 import type { MenuAction, MenuActionPayload, RunProgressState } from "../shared/ipc-types";
-import { ChatStream } from "./components/chat/ChatStream";
-import { WorkspaceDock } from "./components/chat/dock/WorkspaceDock";
 import { ToastStack } from "./components/common";
 import { ActiveToolsDialog } from "./components/dialogs/ActiveToolsDialog";
 import { BranchPickerDialog } from "./components/dialogs/BranchPickerDialog";
@@ -33,10 +31,10 @@ import { ThemePickerDialog } from "./components/dialogs/ThemePickerDialog";
 import { WorkspaceDirsDialog } from "./components/dialogs/WorkspaceDirsDialog";
 import { WorktreeCloseDialog } from "./components/dialogs/WorktreeCloseDialog";
 import { WorktreeDialog } from "./components/dialogs/WorktreeDialog";
-import { InputArea } from "./components/layout/InputArea";
 import { PanelContainer } from "./components/layout/PanelContainer";
 import { Sidebar } from "./components/layout/Sidebar";
 import { SidecarBanner } from "./components/layout/SidecarBanner";
+import { SplitWorkspace } from "./components/layout/SplitWorkspace";
 import { TabBar } from "./components/layout/TabBar";
 import { TitleBar } from "./components/layout/TitleBar";
 import { UpdateBanner } from "./components/layout/UpdateBanner";
@@ -57,7 +55,9 @@ import { applyThemeByName, getPersistedThemeSelection, initAgentThemeSync, refre
 import { startVoiceAutoSpeak } from "./lib/voice";
 import { useModelStore } from "./stores/model";
 import { useSessionStore } from "./stores/session";
+import { SessionRuntimeProvider } from "./stores/session-runtime-context";
 import { useSettingsStore } from "./stores/settings";
+import { ensureTabRuntime } from "./stores/tab-runtime";
 import { useSessionTabs, useTabsStore } from "./stores/tabs";
 import { toast } from "./stores/toast";
 import { type PanelTab, useUiStore } from "./stores/ui";
@@ -99,6 +99,42 @@ const ProvidersWindow = lazy(() =>
 	import("./components/settings/ProvidersWindow").then(m => ({ default: m.ProvidersWindow })),
 );
 
+function FocusedSessionEffects() {
+	useTraySync();
+	useSidebarRecency();
+	const titleRunState = useSettingsStore(s => s.titleState);
+	const titleStreaming = useSessionStore(s => s.isStreaming);
+	const titleSessionName = useSessionStore(s => s.sessionName);
+	const titleAwaiting = useAwaitingConfirmation();
+	const progressEnabled = useSettingsStore(s => s.showProgress);
+	const progressStreaming = useSessionStore(s => s.isStreaming);
+	const progressAwaiting = useAwaitingConfirmation();
+	const tuiTight = useSettingsStore(s => s.tuiTight);
+	const colorBlindMode = useSettingsStore(s => s.colorBlindMode);
+
+	useEffect(() => {
+		const name = titleSessionName ?? "omp";
+		document.title = !titleRunState ? name : titleAwaiting ? `! ${name}` : titleStreaming ? `● ${name}` : `› ${name}`;
+	}, [titleRunState, titleAwaiting, titleStreaming, titleSessionName]);
+	useEffect(() => startVoiceAutoSpeak(), []);
+	useEffect(() => {
+		const state: RunProgressState = !progressEnabled
+			? "idle"
+			: progressAwaiting
+				? "waiting"
+				: progressStreaming
+					? "working"
+					: "idle";
+		const timer = setTimeout(() => window.omp.progress.set(state), 200);
+		return () => clearTimeout(timer);
+	}, [progressEnabled, progressAwaiting, progressStreaming]);
+	useEffect(() => {
+		document.documentElement.dataset.density = tuiTight ? "tight" : "comfortable";
+		document.documentElement.dataset.colorblind = colorBlindMode ? "true" : "false";
+	}, [tuiTight, colorBlindMode]);
+	return null;
+}
+
 /**
  * Shell: Sidebar | (TitleBar / ChatStream / InputArea) | PanelContainer,
  * with command palette, extension dialogs, and the model picker overlaid.
@@ -109,8 +145,6 @@ export function App() {
 	useExtensionUi();
 	// Session tabs: GET_TABS boot reconciliation + TAB_STATUS subscription.
 	useSessionTabs();
-	// Keep sidebar MRU ordering current even while the sidebar is hidden.
-	useSidebarRecency();
 	const sidebarVisible = useUiStore(s => s.sidebarVisible);
 	const panelVisible = useUiStore(s => s.panelVisible);
 	const theme = useUiStore(s => s.theme);
@@ -143,53 +177,6 @@ export function App() {
 	const activeTabStatus = useTabsStore(s => s.tabs.find(tab => tab.id === s.activeTabId)?.status);
 	const { lang, setLang } = useLang();
 	const t = useT();
-
-	// Keep the system-tray menu synced with live app state.
-	useTraySync();
-
-	// Shared `tui.titleState` setting: run-state marker in the window title —
-	// ● working, ! waiting on you, › your turn (TUI terminal-title parity).
-	const titleRunState = useSettingsStore(s => s.titleState);
-	const titleStreaming = useSessionStore(s => s.isStreaming);
-	const titleSessionName = useSessionStore(s => s.sessionName);
-	const titleAwaiting = useAwaitingConfirmation();
-	useEffect(() => {
-		const name = titleSessionName ?? "omp";
-		document.title = !titleRunState ? name : titleAwaiting ? `! ${name}` : titleStreaming ? `● ${name}` : `› ${name}`;
-	}, [titleRunState, titleAwaiting, titleStreaming, titleSessionName]);
-
-	// Shared `speech.enabled` setting: auto-speak finalized assistant output per
-	// `speech.mode` (TUI vocalizer parity). The watcher reads `speech.mode` at
-	// decision time, so mode changes apply to the next message.
-	useEffect(() => startVoiceAutoSpeak(), []);
-
-	// Shared `terminal.showProgress` setting: run-state indicator in the dock
-	// badge + window progress bar — ● working, ! waiting on you (TUI terminal
-	// progress parity). Setting off pins "idle" so nothing lingers.
-	const progressEnabled = useSettingsStore(s => s.showProgress);
-	const progressStreaming = useSessionStore(s => s.isStreaming);
-	const progressAwaiting = useAwaitingConfirmation();
-	useEffect(() => {
-		const state: RunProgressState = !progressEnabled
-			? "idle"
-			: progressAwaiting
-				? "waiting"
-				: progressStreaming
-					? "working"
-					: "idle";
-		// Coalesce flapping (stream end ↔ approval prompt ↔ retry) into one push.
-		const timer = setTimeout(() => window.omp.progress.set(state), 200);
-		return () => clearTimeout(timer);
-	}, [progressEnabled, progressAwaiting, progressStreaming]);
-
-	// Shared `tui.tight` (compact density) and `colorBlindMode` settings: both
-	// are data-attrs on <html>; the stylesheets do the rest (zoom + Okabe-Ito).
-	const tuiTight = useSettingsStore(s => s.tuiTight);
-	const colorBlindMode = useSettingsStore(s => s.colorBlindMode);
-	useEffect(() => {
-		document.documentElement.dataset.density = tuiTight ? "tight" : "comfortable";
-		document.documentElement.dataset.colorblind = colorBlindMode ? "true" : "false";
-	}, [tuiTight, colorBlindMode]);
 
 	// Seed theme/fontSize from persisted prefs once at boot.
 	useEffect(() => {
@@ -588,8 +575,10 @@ export function App() {
 		return window.omp.events.onMenuAction((action, payload) => void run(action, payload));
 	}, [lang, setLang, t]);
 
-	return (
+	const focusedRuntime = activeTabId ? ensureTabRuntime(activeTabId) : null;
+	const surface = (
 		<div className="flex h-screen w-screen overflow-hidden text-[var(--omp-text)]">
+			{focusedRuntime && <FocusedSessionEffects />}
 			{sidebarVisible && <Sidebar />}
 
 			<main className="omp-workspace-main relative flex min-w-0 flex-1 flex-col">
@@ -597,17 +586,7 @@ export function App() {
 				<TabBar />
 				<SidecarBanner />
 				<UpdateBanner />
-				<div className="flex min-h-0 flex-1 flex-col">
-					<div className="relative flex min-h-0 flex-1 flex-col">
-						<ChatStream />
-						<div className="omp-composer-region relative shrink-0 bg-transparent pt-2">
-							<div className="omp-composer-shell relative w-full">
-								<WorkspaceDock key={activeTabId ?? "no-tab"} />
-							</div>
-						</div>
-					</div>
-					<InputArea key={activeTabId ?? "no-tab"} />
-				</div>
+				<SplitWorkspace />
 			</main>
 
 			{panelVisible && <PanelContainer />}
@@ -665,5 +644,10 @@ export function App() {
 			</Suspense>
 			<ToastStack />
 		</div>
+	);
+	return focusedRuntime ? (
+		<SessionRuntimeProvider runtime={focusedRuntime}>{surface}</SessionRuntimeProvider>
+	) : (
+		surface
 	);
 }

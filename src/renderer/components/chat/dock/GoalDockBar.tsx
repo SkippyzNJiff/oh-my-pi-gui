@@ -2,6 +2,7 @@ import { LoaderCircle, Pause, Pencil, Play, Target, Trash2 } from "lucide-react"
 import { useState } from "react";
 import { useTabGuard } from "../../../hooks/use-tab-guard";
 import { useT } from "../../../lib/i18n";
+import { useTabRpc } from "../../../lib/tab-rpc";
 import { useSessionStore } from "../../../stores/session";
 import { toast } from "../../../stores/toast";
 import { useUiStore } from "../../../stores/ui";
@@ -11,6 +12,7 @@ type GoalAction = "pause" | "resume" | "drop";
 /** Compact, persistent control strip for the session's active goal. */
 export function GoalDockBar() {
 	const t = useT();
+	const rpc = useTabRpc();
 	const goal = useSessionStore(state => state.goal);
 	const goalState = useSessionStore(state => state.goalState);
 	const openModes = useUiStore(state => state.openModes);
@@ -29,7 +31,7 @@ export function GoalDockBar() {
 		setBusy(action);
 
 		try {
-			const response = await window.omp.rpc.setGoal({ action });
+			const response = await rpc.setGoal({ action });
 			if (!isActive(origin)) return;
 			if (!response.success) {
 				toast({ variant: "error", title: t("dock.goal.actionFailed"), message: response.error });

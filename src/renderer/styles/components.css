@@ -407,6 +407,24 @@
 	overflow-x: clip;
 }
 
+.omp-session-pane {
+	container: omp-workspace / inline-size;
+}
+
+.omp-session-pane--active {
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--omp-accent) 62%, transparent);
+}
+
+.omp-split-workspace > .omp-session-pane {
+	animation: omp-fade-in var(--omp-motion-fast) var(--omp-ease) both;
+}
+
+.omp-split-divider::before {
+	content: "";
+	position: absolute;
+	inset: -4px;
+}
+
 .omp-workspace-main,
 .settings-main-canvas {
 	--omp-column-pad: clamp(16px, 3vw, 40px);
@@ -1080,6 +1098,10 @@
 }
 
 @container omp-workspace (max-width: 680px) {
+	.omp-session-pane-cwd {
+		display: none;
+	}
+
 	.omp-starter-grid {
 		grid-template-columns: minmax(0, 1fr);
 	}

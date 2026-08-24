@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Two-session split view**: drag a tab onto the workspace or use its context menu to run two isolated sessions side by side or stacked, with a resizable, keyboard-accessible divider and restored layout.
+
 ## [0.9.1] - 2026-08-23
 
 ### Added

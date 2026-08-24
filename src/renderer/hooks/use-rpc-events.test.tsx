@@ -12,6 +12,7 @@ import { parseHTML } from "linkedom";
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, type Mock, vi } from "vitest";
+import type { IpcSidecarStatusPayload } from "../../shared/ipc-types";
 import type {
 	AgentMessage,
 	AgentSessionEvent,
@@ -19,16 +20,19 @@ import type {
 	ExtensionErrorFrame,
 	ModelCatalogUpdateFrame,
 	PromptResultFrame,
+	RpcCommand,
 	RpcResponse,
 	SessionInfoUpdateFrame,
 	TodoPhase,
 } from "../../shared/rpc-types";
 import { TurnStatusRow } from "../components/chat/ChatStream";
 import { I18nProvider } from "../lib/i18n";
-import { useMessagesStore } from "../stores/messages";
+import { type MessagesStore, useMessagesStore } from "../stores/messages";
 import { useModelStore } from "../stores/model";
-import { useSessionStore } from "../stores/session";
+import { type SessionStore, useSessionStore } from "../stores/session";
+import { sessionRuntime, sessionRuntimeStore, setFocusedSessionRuntime } from "../stores/session-runtime-context";
 import { useSettingsStore } from "../stores/settings";
+import { ensureTabRuntime } from "../stores/tab-runtime";
 import { useTabsStore } from "../stores/tabs";
 import { useToastStore } from "../stores/toast";
 import { useTodoStore } from "../stores/todo";
@@ -194,6 +198,99 @@ function installMockOmp(): {
 	};
 }
 
+type TabBatchHandler = (events: AgentSessionEvent[], tabId: string) => void;
+type TabSidecarStatusHandler = (payload: IpcSidecarStatusPayload, tabId: string) => void;
+
+/**
+ * Tab-routed variant of the legacy harness above: the modern preload exposes
+ * onTabBatch/onTabSidecarStatus envelopes and rpc.commandForTab, so events
+ * arrive stamped with their originating tab.
+ */
+function installTabRoutedMockOmp(): {
+	emitTabBatch: TabBatchHandler;
+	emitTabStatus: TabSidecarStatusHandler;
+	notify: Mock<(title: string, body: string) => void>;
+} {
+	let tabBatchHandler: TabBatchHandler = () => {};
+	let tabStatusHandler: TabSidecarStatusHandler = () => {};
+	const commandForTab = vi.fn(async (_tabId: string, command: RpcCommand): Promise<RpcResponse> => {
+		switch (command.type) {
+			case "get_state":
+				return success({
+					sessionId: "s1",
+					sessionName: null,
+					sessionFile: null,
+					cwd: "/tmp",
+					isStreaming: false,
+					isCompacting: false,
+					contextUsage: null,
+					messageCount: 0,
+					queuedMessageCount: 0,
+					planModeEnabled: false,
+					todoPhases: [],
+				});
+			case "get_transcript":
+				return success({ messages: [] });
+			case "get_subagents":
+				return success({ subagents: [] });
+			case "get_goal":
+				return success({ enabled: false });
+			case "get_loop_mode":
+				return success({ enabled: false, state: "off" });
+			case "get_vibe_mode":
+				return success({ enabled: false });
+			case "get_queue":
+				return success({ steering: [], followUp: [] });
+			case "get_settings":
+				return success({ values: {} });
+			default:
+				return success({});
+		}
+	});
+	const noopSub = vi.fn(() => () => {});
+	const notify = vi.fn();
+	const omp = {
+		tabs: {
+			list: vi.fn(async () => []),
+			close: vi.fn(async () => true),
+			setActive: vi.fn(async () => true),
+			setView: vi.fn(async () => true),
+		},
+		rpc: {
+			commandForTab,
+			getState: vi.fn(async () => success({})),
+		},
+		events: {
+			onTabBatch: vi.fn((callback: TabBatchHandler) => {
+				tabBatchHandler = callback;
+				return () => {};
+			}),
+			onTabSidecarStatus: vi.fn((callback: TabSidecarStatusHandler) => {
+				tabStatusHandler = callback;
+				return () => {};
+			}),
+			onTabSubagentFrame: noopSub,
+			onTabModelCatalogUpdate: noopSub,
+			onTabConfigUpdate: noopSub,
+			onExtensionUi: noopSub,
+			onTabPromptResult: noopSub,
+			onTabCommandOutput: noopSub,
+			onTabSessionInfoUpdate: noopSub,
+			onTabExtensionError: noopSub,
+		},
+		sidecar: { getStatus: vi.fn(async () => ({ status: "ready", cwd: "/tmp" })) },
+		sessions: { consumePendingOpen: vi.fn(async () => null) },
+		system: { notify },
+		prefs: { get: vi.fn(async () => null), set: vi.fn(async () => {}) },
+	};
+	(window as unknown as { omp: typeof omp }).omp = omp;
+	return {
+		emitTabBatch: (events, tabId) => tabBatchHandler(events, tabId),
+		emitTabStatus: (payload, tabId) => tabStatusHandler(payload, tabId),
+		notify,
+	};
+}
+
 let container: TestElement;
 let root: Root;
 
@@ -230,13 +327,13 @@ afterEach(async () => {
 		});
 	}
 	container?.remove();
+	useTabsStore.getState().reset();
 	useSessionStore.getState().reset();
 	useMessagesStore.getState().reset();
 	useModelStore.getState().reset();
 	useToolsStore.getState().reset();
 	useTodoStore.getState().reset();
 	useSettingsStore.getState().reset();
-	useTabsStore.getState().reset();
 });
 
 describe("useRpcEvents thinking selection sync", () => {
@@ -425,6 +522,7 @@ describe("useRpcEvents awaiting-model marker", () => {
 			}),
 		);
 		await mount(<RpcEventsProbe />);
+		await flush();
 		expect(useSessionStore.getState().isStreaming).toBe(true);
 		expect(useSessionStore.getState().awaitingModelSince).not.toBeNull();
 	});
@@ -434,6 +532,7 @@ describe("useRpcEvents todo lifecycle", () => {
 	it("archives a todo tool result immediately without waiting for agent_end", async () => {
 		const { emitBatch } = installMockOmp();
 		await mount(<RpcEventsProbe />);
+		await flush();
 		const pending: TodoPhase[] = [{ name: "Build", tasks: [{ content: "scaffold", status: "pending" }] }];
 
 		await act(async () => {
@@ -594,6 +693,7 @@ describe("useRpcEvents mode-state sync", () => {
 			}),
 		);
 		await mount(<RpcEventsProbe />);
+		await flush();
 
 		expect(useSessionStore.getState().loopMode).toEqual({
 			enabled: true,
@@ -609,6 +709,7 @@ describe("useRpcEvents mode-state sync", () => {
 	it("applies loop_mode_update frames to the session store, including disable", async () => {
 		const { emitBatch } = installMockOmp();
 		await mount(<RpcEventsProbe />);
+		await flush();
 		expect(useSessionStore.getState().loopMode).toEqual({ enabled: false, state: "off" });
 
 		await act(async () => {
@@ -898,5 +999,73 @@ describe("hydrateSession streaming reconcile (F-HYDRATE)", () => {
 		expect(messages.streamingText).toBe("partial reply");
 		expect(messages.streamingThinking).toBe("partial thinking");
 		expect(omp.rpc.setSubagentSubscription).toHaveBeenCalledWith("events");
+	});
+});
+
+describe("useRpcEvents tab-scoped routing guards", () => {
+	function seedTwoTabs(): void {
+		useTabsStore.setState({
+			tabs: [
+				{ kind: "agent", id: "t-live", cwd: "/alpha", status: "ready", unreadDone: false },
+				{ kind: "agent", id: "t-dead", cwd: "/beta", status: "ready", unreadDone: false },
+			],
+			activeTabId: "t-live",
+		});
+		ensureTabRuntime("t-live");
+		ensureTabRuntime("t-dead");
+		setFocusedSessionRuntime("t-live");
+	}
+
+	it("drops in-flight event batches for a closed tab instead of polluting the focused pane", async () => {
+		const { emitTabBatch, notify } = installTabRoutedMockOmp();
+		seedTwoTabs();
+		await mount(<RpcEventsProbe />);
+		await act(async () => {
+			await useTabsStore.getState().closeTab("t-dead");
+		});
+
+		await act(async () => {
+			emitTabBatch(
+				[
+					{ type: "agent_start" } as AgentSessionEvent,
+					{ type: "agent_end", messages: [], isTerminal: true } as AgentSessionEvent,
+				],
+				"t-dead",
+			);
+		});
+
+		// No ghost runtime resurrection for the closed tab…
+		expect(sessionRuntime("t-dead")).toBeNull();
+		// …no completion notification for a tab the user closed…
+		expect(notify).not.toHaveBeenCalled();
+		// …and the live pane's stores are untouched by the dead tab's frames.
+		expect(sessionRuntimeStore<MessagesStore>("t-live", "messages")?.getState().messages).toHaveLength(0);
+		expect(sessionRuntimeStore<SessionStore>("t-live", "session")?.getState().isStreaming).toBe(false);
+	});
+
+	it("ignores a closed tab's late 'starting' status instead of resetting the focused pane", async () => {
+		const { emitTabStatus } = installTabRoutedMockOmp();
+		seedTwoTabs();
+		await mount(<RpcEventsProbe />);
+		await flush();
+		// Append AFTER boot hydration — hydrate's transcript reconcile replaces
+		// the message list, so seeding earlier would not survive mount.
+		const kept = {
+			role: "user",
+			content: [{ type: "text", text: "keep me" }],
+			timestamp: 1,
+		} as AgentMessage;
+		sessionRuntimeStore<MessagesStore>("t-live", "messages")?.getState().appendMessage(kept);
+		await act(async () => {
+			await useTabsStore.getState().closeTab("t-dead");
+		});
+
+		await act(async () => {
+			emitTabStatus({ status: "starting", cwd: "/beta" } as IpcSidecarStatusPayload, "t-dead");
+		});
+
+		// Without the tombstone gate this frame falls through to the focused
+		// runtime and resets its stores wholesale.
+		expect(sessionRuntimeStore<MessagesStore>("t-live", "messages")?.getState().messages).toContain(kept);
 	});
 });

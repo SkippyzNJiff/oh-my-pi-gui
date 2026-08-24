@@ -43,6 +43,7 @@ export function PanelContainer() {
 	const setPanelTab = useUiStore(s => s.setPanelTab);
 	const togglePanel = useUiStore(s => s.togglePanel);
 	const activeTabId = useTabsStore(s => s.activeTabId);
+	const split = useTabsStore(s => s.split);
 	const routeReady = useActiveTabRouteReady();
 	// ≤1000px: the inspector would squeeze the conversation below usability as
 	// a flex sibling — render it as a right-anchored overlay instead (same
@@ -96,7 +97,7 @@ export function PanelContainer() {
 			aria-busy={!routeReady}
 			className={cx(
 				"omp-inspector relative flex h-full flex-col border-l border-[var(--omp-border-muted)]",
-				compact ? "absolute inset-y-0 right-0 z-30 shadow-[var(--omp-shadow-lg)]" : "shrink-0",
+				compact || split ? "absolute inset-y-0 right-0 z-30 shadow-[var(--omp-shadow-lg)]" : "shrink-0",
 				!routeReady && "pointer-events-none",
 			)}
 			style={{ width }}

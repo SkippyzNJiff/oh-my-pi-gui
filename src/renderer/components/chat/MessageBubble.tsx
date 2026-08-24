@@ -8,6 +8,8 @@ import { useT } from "../../lib/i18n";
 import { MarkdownRenderer } from "../../lib/markdown";
 import { forkSessionFromMessageInNewTab, isRenderableMessageText } from "../../lib/messages";
 import { PREVIEW_SCROLL_LG } from "../../lib/preview";
+import { useTabRpc } from "../../lib/tab-rpc";
+import { useRuntimeTabId } from "../../stores/session-runtime-context";
 import { toast } from "../../stores/toast";
 import { toolEntryKey } from "../../stores/tools";
 import { useUiStore } from "../../stores/ui";
@@ -99,6 +101,7 @@ const FILE_PREVIEW_CHARS = 12_000;
 
 function ExecutionBubble({ message }: { message: AgentMessage }) {
 	const t = useT();
+	const rpc = useTabRpc();
 	// Local placeholder appended by the composer while an `$` eval is in flight
 	// (InputArea): offers abortEval; the hydrated transcript record replaces it
 	// on completion, mirroring the bash flow.
@@ -143,7 +146,7 @@ function ExecutionBubble({ message }: { message: AgentMessage }) {
 							title={t("common.cancel")}
 							onClick={() => {
 								setAbortSent(true);
-								void window.omp.rpc.abortEval();
+								void rpc.abortEval();
 							}}
 							className="omp-pressable flex items-center rounded-full px-2 py-0.5 text-omp-xxs font-medium tracking-wide text-[var(--omp-error)] hover:bg-[var(--omp-error-dim)] disabled:opacity-50"
 						>
@@ -251,6 +254,8 @@ export const MessageBubble = memo(function MessageBubble({
 	runningIndicator = "spinner",
 }: MessageBubbleProps) {
 	const t = useT();
+	const rpc = useTabRpc();
+	const tabId = useRuntimeTabId();
 	const [copied, setCopied] = useState(false);
 	const [branching, setBranching] = useState(false);
 	const switchPending = useUiStore(state => state.switchPending !== null);
@@ -300,7 +305,7 @@ export const MessageBubble = memo(function MessageBubble({
 		if (branching || switchPending) return;
 		setBranching(true);
 		try {
-			const result = await forkSessionFromMessageInNewTab(message);
+			const result = await forkSessionFromMessageInNewTab(message, rpc, tabId);
 			if (result === "saved") toast({ variant: "warning", message: t("chat.branchSaved") });
 		} catch (cause) {
 			toast({ variant: "error", title: t("sessionTree.forkFailed"), message: String(cause) });

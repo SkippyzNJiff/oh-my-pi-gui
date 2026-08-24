@@ -37,6 +37,7 @@ import {
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import type { TodoPhase, TodoTask } from "../../../../shared/rpc-types";
 import { useT } from "../../../lib/i18n";
+import { type TabRpc, useTabRpc } from "../../../lib/tab-rpc";
 import { toast } from "../../../stores/toast";
 import { type UiTodoPhase, type UiTodoTask, useTodoStore } from "../../../stores/todo";
 import { DockCard } from "./DockCard";
@@ -66,12 +67,12 @@ function TodoStatusIcon({ status }: { status: TodoTask["status"] }) {
 	return <Circle aria-hidden="true" className="text-[var(--omp-dim)]" size={15} strokeDasharray="2.5 2.5" />;
 }
 
-async function pushTodos(phases: UiTodoPhase[], t: (key: string) => string): Promise<void> {
+async function pushTodos(phases: UiTodoPhase[], t: (key: string) => string, rpc: TabRpc): Promise<void> {
 	const payload: TodoPhase[] = phases.map(phase => ({
 		name: phase.name,
 		tasks: phase.tasks.map(task => ({ content: task.content, status: task.status })),
 	}));
-	const response = await window.omp.rpc.setTodos(payload);
+	const response = await rpc.setTodos(payload);
 	if (!response.success) {
 		toast({ variant: "error", title: t("todoPanel.updateFailed"), message: response.error });
 	}
@@ -257,6 +258,7 @@ function PhaseSection({
 }
 
 export function TodoDockCard() {
+	const rpc = useTabRpc();
 	const t = useT();
 	const { managed, focusedCard, focusCard, clearFocus } = useWorkspaceDockFocus();
 	const focused = focusedCard === "todo";
@@ -276,9 +278,9 @@ export function TodoDockCard() {
 	const applyPhases = useCallback(
 		(next: UiTodoPhase[]) => {
 			setPhases(next);
-			void pushTodos(next, t);
+			void pushTodos(next, t, rpc);
 		},
-		[setPhases, t],
+		[setPhases, t, rpc],
 	);
 
 	const patchTask = useCallback(

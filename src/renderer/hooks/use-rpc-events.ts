@@ -5,14 +5,18 @@ import {
 	type AgentSessionEvent,
 	BLOCKING_UI_METHODS,
 	type CommandOutputFrame,
+	type ConfigUpdateFrame,
 	type ExtensionErrorFrame,
 	isThinkingLevel,
+	type ModelCatalogUpdateFrame,
 	type PromptResultFrame,
 	type RpcGoalState,
 	type RpcLoopModeState,
+	type RpcResponse,
 	type RpcSessionState,
 	type RpcVibeModeState,
 	type SessionInfoUpdateFrame,
+	type SubagentFrame,
 	type SubagentSnapshot,
 	type TodoPhase,
 } from "../../shared/rpc-types";
@@ -20,17 +24,25 @@ import { translate } from "../lib/i18n";
 import { normalizeLoopUpdate } from "../lib/loop-mode";
 import { acceptsActiveTabEvents } from "../lib/tab-routing";
 import { useExtensionUiStore } from "../stores/extension-ui";
-import { messageIdentityKey, useMessagesStore } from "../stores/messages";
+import { type MessagesStore, messageIdentityKey, useMessagesStore } from "../stores/messages";
 import { useModelStore } from "../stores/model";
 import { usePlanApprovalStore } from "../stores/plan-approval";
-import { useQueueStore } from "../stores/queue";
-import { useSessionStore } from "../stores/session";
-import { useSettingsStore } from "../stores/settings";
-import { useSubagentsStore } from "../stores/subagents";
-import { useTabsStore } from "../stores/tabs";
+import { type QueueStore, useQueueStore } from "../stores/queue";
+import { type SessionStore, useSessionStore } from "../stores/session";
+import {
+	activeTabCommand,
+	sessionRuntime,
+	sessionRuntimeStore,
+	type TabCommand,
+	withSessionRuntime,
+} from "../stores/session-runtime-context";
+import { type SettingsStore, useSettingsStore } from "../stores/settings";
+import { type SubagentsStore, useSubagentsStore } from "../stores/subagents";
+import { ensureTabRuntime } from "../stores/tab-runtime";
+import { isTabClosed, useTabsStore } from "../stores/tabs";
 import { useToastStore } from "../stores/toast";
 import { useTodoStore } from "../stores/todo";
-import { useToolsStore } from "../stores/tools";
+import { type ToolsStore, useToolsStore } from "../stores/tools";
 import { useUiStore } from "../stores/ui";
 
 /**
@@ -93,16 +105,27 @@ type NotifyKind = keyof typeof NOTIFY_DEFAULTS;
  * intermediate attempts, not the final outcome (mirrors the TUI's gate in
  * event-controller.ts).
  */
-let retryPending = false;
+const retryPendingTabs = new Set<string>();
 
 /**
- * Clear the auto-retry gate. retryPending is module-level, so it survives the
- * per-tab bundle park/restore in tabs.ts — a tab switched away mid-retry would
- * otherwise keep suppressing agent_end notifications/toasts for the tab being
- * restored. restoreBundle calls this on every switch.
+ * Late frames for a tab the user already closed must be dropped: its runtime
+ * is gone, and withSessionRuntime would otherwise fall back to the FOCUSED
+ * runtime — polluting a live session's transcript, or (a closed tab's
+ * in-flight "starting" frame) resetting the focused tab's stores wholesale.
+ * An empty tabId (legacy bridge before boot reconciliation) always passes.
  */
-export function resetRetryPending(): void {
-	retryPending = false;
+function closedTabFrame(tabId: string): boolean {
+	return tabId !== "" && isTabClosed(tabId);
+}
+
+/**
+ * Clear the auto-retry gate. Gates are per-tab: with no explicit target, clear
+ * the FOCUSED tab's gate (the tab abortActiveTurn just acted on) — never every
+ * tab's, or an Escape in one pane would re-enable error toasts/notifications
+ * for a retry saga still running in the other pane.
+ */
+export function resetRetryPending(tabId?: string): void {
+	retryPendingTabs.delete(tabId ?? useTabsStore.getState().activeTabId ?? "");
 }
 
 /**
@@ -112,12 +135,17 @@ export function resetRetryPending(): void {
  * Interaction tab apply immediately), and finally window focus — never notify
  * while the user is watching.
  */
-async function maybeNotify(kind: NotifyKind, title: string, body: string): Promise<void> {
+async function maybeNotify(
+	kind: NotifyKind,
+	title: string,
+	body: string,
+	command: TabCommand = (rpcCommand, timeoutMs) => window.omp.rpc.command(rpcCommand, timeoutMs),
+): Promise<void> {
 	try {
 		if (document.hasFocus()) return;
 		if (!useUiStore.getState().notifications) return;
 		const key = `${kind}.notify`;
-		const res = await window.omp.rpc.getSettings([key]);
+		const res = await command({ type: "get_settings", paths: [key] });
 		const values = res.success ? (res.data as { values?: Record<string, unknown> } | undefined)?.values : undefined;
 		const setting = values?.[key];
 		const effective = typeof setting === "string" ? setting : NOTIFY_DEFAULTS[kind];
@@ -134,13 +162,20 @@ async function maybeNotify(kind: NotifyKind, title: string, body: string): Promi
  * `agent_end.messages` for the same reason). Completion and error are mutually
  * exclusive for one settled turn.
  */
-function notifyOnAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): void {
+function notifyOnAgentEnd(tabId: string, event: Extract<AgentSessionEvent, { type: "agent_end" }>): void {
 	// `isTerminal === false` marks a deferred mid-run settle, not the final one.
 	if (event.isTerminal === false) return;
-	if (retryPending) return;
+	if (retryPendingTabs.has(tabId)) return;
 	const last = event.messages?.findLast(message => message.role === "assistant");
 	if (last?.stopReason === "aborted") return;
-	const sessionName = useSessionStore.getState().sessionName || "Oh My Pi";
+	// A settle arriving after the tab closed has no runtime to query settings
+	// with — skip rather than resurrect a ghost runtime and notify a dead tab.
+	const runtime = sessionRuntime(tabId);
+	if (!runtime) return;
+	const sessionName =
+		sessionRuntimeStore<SessionStore>(tabId, "session")?.getState().sessionName ||
+		useSessionStore.getState().sessionName ||
+		"Oh My Pi";
 	if (last?.stopReason === "error") {
 		const message =
 			typeof last.errorMessage === "string" && last.errorMessage
@@ -148,10 +183,10 @@ function notifyOnAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" 
 						error: last.errorMessage.replace(/\s+/g, " ").slice(0, 120),
 					})
 				: translate("events.notificationError");
-		void maybeNotify("error", sessionName, message);
+		void maybeNotify("error", sessionName, message, runtime.command);
 		return;
 	}
-	void maybeNotify("completion", sessionName, translate("events.notificationComplete"));
+	void maybeNotify("completion", sessionName, translate("events.notificationComplete"), runtime.command);
 }
 
 /**
@@ -163,9 +198,9 @@ function notifyOnAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" 
  * auto-retries stay quiet (the retry row and its final-failure toast cover
  * those), and aborted turns are user-initiated.
  */
-function toastOnAgentError(event: Extract<AgentSessionEvent, { type: "agent_end" }>): void {
+function toastOnAgentError(tabId: string, event: Extract<AgentSessionEvent, { type: "agent_end" }>): void {
 	if (event.isTerminal === false) return;
-	if (retryPending) return;
+	if (retryPendingTabs.has(tabId)) return;
 	const last = event.messages?.findLast(message => message.role === "assistant");
 	if (last?.stopReason !== "error") return;
 	const detail =
@@ -193,20 +228,22 @@ function applySessionState(state: RpcSessionState, fallbackName?: string): void 
  * agent_start: server-side plan-mode exits (plan_approval accept) emit no
  * event, so turn start is the sync point that keeps planModeEnabled honest.
  */
-async function refreshSessionState(): Promise<void> {
-	if (!acceptsActiveTabEvents()) return;
-	const tabId = useTabsStore.getState().activeTabId;
-	const sessionId = useSessionStore.getState().sessionId;
+async function refreshSessionState(tabId = useTabsStore.getState().activeTabId): Promise<void> {
+	if (!tabId) return;
+	// Closed tabs keep their tombstone: never resurrect a runtime for them.
+	// Live tabs may legitimately lack one yet (boot race) — create on demand.
+	const runtime = isTabClosed(tabId) ? sessionRuntime(tabId) : ensureTabRuntime(tabId);
+	if (!runtime) return;
+	const sessionId = sessionRuntimeStore<SessionStore>(tabId, "session")?.getState().sessionId;
 	try {
-		const res = await window.omp.rpc.getState();
+		const res = await runtime.command({ type: "get_state" });
 		if (
-			acceptsActiveTabEvents() &&
-			useTabsStore.getState().activeTabId === tabId &&
-			useSessionStore.getState().sessionId === sessionId &&
+			sessionRuntime(tabId) === runtime &&
+			sessionRuntimeStore<SessionStore>(tabId, "session")?.getState().sessionId === sessionId &&
 			res.success &&
 			res.data != null
 		) {
-			applySessionState(res.data as RpcSessionState);
+			withSessionRuntime(tabId, () => applySessionState(res.data as RpcSessionState));
 		}
 	} catch {
 		// Transient — the next heartbeat or hydration retries.
@@ -249,19 +286,21 @@ function goalPatchFromEvent(
 type HydrationGuard = () => boolean;
 
 /** Fetch the live goal state (get_goal) into the session store; clears when no goal is active. */
-async function syncGoal(isCurrent: HydrationGuard): Promise<void> {
+async function syncGoal(tabId: string, command: TabCommand, isCurrent: HydrationGuard): Promise<void> {
 	try {
-		const res = await window.omp.rpc.getGoal();
+		const res = await command({ type: "get_goal" });
 		if (!isCurrent() || !res.success) return;
 		// get_goal wire payload is RpcGoalState; `data` crosses the bridge as unknown.
 		const data = res.data as RpcGoalState | undefined;
-		if (data?.enabled !== true) {
-			useSessionStore.setState({ goal: null, goalState: null });
-			return;
-		}
-		useSessionStore.setState({
-			goal: typeof data.objective === "string" ? { objective: data.objective } : null,
-			goalState: { status: data.status },
+		withSessionRuntime(tabId, () => {
+			if (data?.enabled !== true) {
+				useSessionStore.setState({ goal: null, goalState: null });
+				return;
+			}
+			useSessionStore.setState({
+				goal: typeof data.objective === "string" ? { objective: data.objective } : null,
+				goalState: { status: data.status },
+			});
 		});
 	} catch {
 		// Transient — the next goal_updated event or hydration retries.
@@ -269,78 +308,145 @@ async function syncGoal(isCurrent: HydrationGuard): Promise<void> {
 }
 
 /** Fetch the live loop-mode state (get_loop_mode) into the session store; null on failure. */
-async function syncLoopMode(isCurrent: HydrationGuard): Promise<void> {
+async function syncLoopMode(tabId: string, command: TabCommand, isCurrent: HydrationGuard): Promise<void> {
 	try {
-		const res = await window.omp.rpc.getLoopMode();
+		const res = await command({ type: "get_loop_mode" });
 		if (!isCurrent() || !res.success) return;
 		// get_loop_mode wire payload is RpcLoopModeState; `data` crosses the bridge as unknown.
-		useSessionStore.setState({ loopMode: (res.data as RpcLoopModeState | undefined) ?? null });
+		withSessionRuntime(tabId, () => {
+			useSessionStore.setState({ loopMode: (res.data as RpcLoopModeState | undefined) ?? null });
+		});
 	} catch {
 		// Transient — the next loop_mode_update event or hydration retries.
 	}
 }
 
 /** Fetch the live vibe-mode state (get_vibe_mode) into the session store; no event exists. */
-async function syncVibeMode(isCurrent: HydrationGuard): Promise<void> {
+async function syncVibeMode(tabId: string, command: TabCommand, isCurrent: HydrationGuard): Promise<void> {
 	try {
-		const res = await window.omp.rpc.getVibeMode();
+		const res = await command({ type: "get_vibe_mode" });
 		if (!isCurrent() || !res.success) return;
 		const data = res.data as RpcVibeModeState | undefined;
-		useSessionStore.setState({ vibeModeEnabled: data?.enabled === true });
+		withSessionRuntime(tabId, () => {
+			useSessionStore.setState({ vibeModeEnabled: data?.enabled === true });
+		});
 	} catch {
 		// Transient — the next hydration retries.
 	}
 }
 
-let hydrationVersion = 0;
+const hydrationVersions = new Map<string, number>();
+let legacyHydrationVersion = 0;
+
+async function hydrateLegacySession(fallbackName?: string, initialState?: RpcResponse): Promise<void> {
+	const version = ++legacyHydrationVersion;
+	const isCurrent = () => version === legacyHydrationVersion;
+	const beforeMessages = useMessagesStore.getState().messages;
+	const core = Promise.allSettled([
+		initialState ? Promise.resolve(initialState) : activeTabCommand({ type: "get_state" }),
+		activeTabCommand({ type: "get_transcript" }),
+	]);
+	const subagents = activeTabCommand({ type: "get_subagents" });
+	const secondary = Promise.allSettled([
+		syncGoal("", activeTabCommand, isCurrent),
+		syncLoopMode("", activeTabCommand, isCurrent),
+		syncVibeMode("", activeTabCommand, isCurrent),
+		useQueueStore.getState().refresh(),
+		useSettingsStore.getState().syncDisplaySettings(),
+		useSettingsStore.getState().syncApproval(),
+	]);
+	const [stateResult, messagesResult] = await core;
+	if (!isCurrent()) return;
+	if (stateResult.status === "fulfilled" && stateResult.value.success && stateResult.value.data != null) {
+		const wire = stateResult.value.data as RpcSessionState;
+		applySessionState(wire, fallbackName);
+		if (wire.isStreaming && useSessionStore.getState().awaitingModelSince === null) {
+			useSessionStore.setState({ awaitingModelSince: Date.now() });
+		}
+		if (!wire.isStreaming) useMessagesStore.getState().clearStreaming();
+		void activeTabCommand({ type: "set_subagent_subscription", level: "events" });
+	}
+	if (messagesResult.status === "fulfilled" && messagesResult.value.success) {
+		const fetched = (messagesResult.value.data as { messages?: AgentMessage[] } | undefined)?.messages ?? [];
+		const current = useMessagesStore.getState().messages;
+		const prefixIntact =
+			current.length >= beforeMessages.length && beforeMessages.every((message, i) => current[i] === message);
+		const tail = prefixIntact ? current.slice(beforeMessages.length) : [];
+		const fetchedKeys = new Set(fetched.map(messageIdentityKey));
+		useMessagesStore
+			.getState()
+			.reconcileFetched([...fetched, ...tail.filter(message => !fetchedKeys.has(messageIdentityKey(message)))]);
+		useToolsStore.getState().hydrateMessages(useMessagesStore.getState().messages);
+	}
+	const settledSubagents = await subagents;
+	if (isCurrent() && settledSubagents.success) {
+		useSubagentsStore
+			.getState()
+			.setSnapshots((settledSubagents.data as { subagents?: SubagentSnapshot[] } | undefined)?.subagents ?? []);
+	}
+	await secondary;
+}
 
 /** Reload every renderer store that belongs to the active sidecar session. */
 export async function hydrateSession(fallbackName?: string): Promise<void> {
-	const version = ++hydrationVersion;
-	if (!acceptsActiveTabEvents()) return;
 	const tabId = useTabsStore.getState().activeTabId;
-	const isCurrent = (): boolean =>
-		version === hydrationVersion &&
-		acceptsActiveTabEvents() &&
-		(tabId === null || useTabsStore.getState().activeTabId === tabId);
+	if (!tabId || !sessionRuntime(tabId)) return hydrateLegacySession(fallbackName);
+	return hydrateTabSession(tabId, fallbackName);
+}
+
+/** Reload every renderer store belonging to one visible tab. */
+export async function hydrateTabSession(tabId: string, fallbackName?: string): Promise<void> {
+	if (isTabClosed(tabId)) return;
+	const runtime = ensureTabRuntime(tabId);
+	const version = (hydrationVersions.get(tabId) ?? 0) + 1;
+	hydrationVersions.set(tabId, version);
+	const isCurrent = (): boolean => hydrationVersions.get(tabId) === version && sessionRuntime(tabId) === runtime;
 	// Capture before the fetch: messages the live stream appends while the
 	// transcript RPC is in flight must survive the merge below.
-	const beforeMessages = useMessagesStore.getState().messages;
+	const beforeMessages = sessionRuntimeStore<MessagesStore>(tabId, "messages")?.getState().messages ?? [];
 
-	const coreResult = Promise.allSettled([window.omp.rpc.getState(), window.omp.rpc.getTranscript()]);
-	const subagentsResult = Promise.allSettled([window.omp.rpc.getSubagents()]);
+	const coreResult = Promise.allSettled([
+		runtime.command({ type: "get_state" }),
+		runtime.command({ type: "get_transcript" }),
+	]);
+	const subagentsResult = Promise.allSettled([runtime.command({ type: "get_subagents" })]);
+	const queue = sessionRuntimeStore<QueueStore>(tabId, "queue")?.getState();
+	const settings = sessionRuntimeStore<SettingsStore>(tabId, "settings")?.getState();
 	const secondaryResult = Promise.allSettled([
 		// Goal state isn't on the get_state wire — fetch alongside so the
 		// composer chip reflects an active goal after boot/session switches,
 		// not only on goal_updated events.
-		syncGoal(isCurrent),
+		syncGoal(tabId, runtime.command, isCurrent),
 		// Loop and vibe mode likewise: loop_mode_update frames keep loop fresh
 		// afterwards; vibe emits nothing, so the Modes window mirrors toggles.
-		syncLoopMode(isCurrent),
-		syncVibeMode(isCurrent),
+		syncLoopMode(tabId, runtime.command, isCurrent),
+		syncVibeMode(tabId, runtime.command, isCurrent),
 		// Queue snapshot: queue_update frames keep it fresh afterwards;
 		// get_queue is only the hydrate fallback (boot/reconnect/session
 		// switch all land here). refresh() swallows its own failures.
-		useQueueStore.getState().refresh(),
+		queue?.refresh(),
 		// Project-scoped agent settings can differ between tab workspaces. The
-		// settings store is renderer-global, so re-read the active sidecar on
-		// every hydrate; both methods already reject stale out-of-order replies.
-		useSettingsStore.getState().syncDisplaySettings(),
-		useSettingsStore.getState().syncApproval(),
+		// settings store is per-tab (each runtime owns one bound to its own
+		// command channel), so re-read this tab's sidecar on every hydrate; both
+		// methods already reject stale out-of-order replies.
+		settings?.syncDisplaySettings(),
+		settings?.syncApproval(),
 	]);
 	const [stateResult, messagesResult] = await coreResult;
 	if (!isCurrent()) return;
 
 	if (stateResult.status === "fulfilled" && stateResult.value.success && stateResult.value.data != null) {
 		const wire = stateResult.value.data as RpcSessionState;
-		applySessionState(wire, fallbackName);
+		withSessionRuntime(tabId, () => applySessionState(wire, fallbackName));
 		// Mid-run attach (launch/reconnect/session switch while the agent is
 		// streaming) missed the agent_start that arms the status row — re-arm
 		// it like the TUI's ensureLoadingAnimation on guest attach, unless a
 		// live marker already carries a more accurate start time. When content
 		// is actively streaming the row stays hidden behind StreamingRows.
-		if (wire.isStreaming && useSessionStore.getState().awaitingModelSince === null) {
-			useSessionStore.setState({ awaitingModelSince: Date.now() });
+		const session = sessionRuntimeStore<SessionStore>(tabId, "session");
+		const messages = sessionRuntimeStore<MessagesStore>(tabId, "messages");
+		if (wire.isStreaming && session?.getState().awaitingModelSince === null) {
+			session.setState({ awaitingModelSince: Date.now() });
 		}
 		if (!wire.isStreaming) {
 			// Zombie settle: the run finished while this tab sat in the
@@ -349,21 +455,23 @@ export async function hydrateSession(fallbackName?: string): Promise<void> {
 			// below already carries the finalized content — drop the stale
 			// stream slice wholesale. While streaming, keep it: live deltas
 			// resume onto the restored buffers.
-			useMessagesStore.getState().clearStreaming();
+			messages?.getState().clearStreaming();
 		}
 		// Per-tab subagent subscription (F-HYDRATE), re-asserted on every
-		// successful hydrate: RPC commands route through the ACTIVE tab's
-		// sidecar, so this lands on the tab just switched to. Tabs that report
-		// ready while active also subscribe via the status handlers — this
-		// covers tabs that booted or settled in the background, whose frames
-		// would otherwise stay silent on return. Idempotent server-side.
-		void window.omp.rpc.setSubagentSubscription("events");
+		// successful hydrate: the runtime's command channel routes to THIS tab's
+		// sidecar. Tabs that report ready while active also subscribe via the
+		// status handlers — this covers tabs that booted or settled in the
+		// background, whose frames would otherwise stay silent on return.
+		// Idempotent server-side.
+		void runtime.command({ type: "set_subagent_subscription", level: "events" });
 	}
 
 	if (messagesResult.status === "fulfilled" && messagesResult.value.success) {
 		const data = messagesResult.value.data as { messages?: AgentMessage[] } | undefined;
 		const fetched = data?.messages ?? [];
-		const current = useMessagesStore.getState().messages;
+		const messages = sessionRuntimeStore<MessagesStore>(tabId, "messages");
+		const tools = sessionRuntimeStore<ToolsStore>(tabId, "tools");
+		const current = messages?.getState().messages ?? [];
 		// Streamed tail: whatever the live stream appended beyond the captured
 		// prefix. If the prefix was replaced meanwhile (pagination, another
 		// hydration), the transcript fetch alone wins.
@@ -383,8 +491,8 @@ export async function hydrateSession(fallbackName?: string): Promise<void> {
 			tail.length > 0
 				? [...fetched, ...tail.filter(message => !fetchedKeys.has(messageIdentityKey(message)))]
 				: fetched;
-		useMessagesStore.getState().reconcileFetched(merged);
-		useToolsStore.getState().hydrateMessages(useMessagesStore.getState().messages);
+		messages?.getState().reconcileFetched(merged);
+		tools?.getState().hydrateMessages(messages?.getState().messages ?? []);
 	}
 
 	// Subagents and secondary chips do not hold the transcript hostage. Their
@@ -392,7 +500,9 @@ export async function hydrateSession(fallbackName?: string): Promise<void> {
 	const [settledSubagents] = await subagentsResult;
 	if (isCurrent() && settledSubagents.status === "fulfilled" && settledSubagents.value.success) {
 		const data = settledSubagents.value.data as { subagents?: SubagentSnapshot[] } | undefined;
-		useSubagentsStore.getState().setSnapshots(data?.subagents ?? []);
+		sessionRuntimeStore<SubagentsStore>(tabId, "subagents")
+			?.getState()
+			.setSnapshots(data?.subagents ?? []);
 	}
 	await secondaryResult;
 }
@@ -404,235 +514,246 @@ export async function hydrateSession(fallbackName?: string): Promise<void> {
  */
 export function useRpcEvents(): void {
 	useEffect(() => {
-		const unsubscribe = window.omp.events.onBatch((events: AgentSessionEvent[]) => {
-			if (!acceptsActiveTabEvents()) return;
+		const focusedTabId = () => useTabsStore.getState().activeTabId ?? "";
+		const unsubscribe =
+			typeof window.omp.events.onTabBatch === "function"
+				? window.omp.events.onTabBatch(reduceEvents)
+				: window.omp.events.onBatch(events => {
+						if (acceptsActiveTabEvents()) reduceEvents(events, focusedTabId());
+					});
+		function reduceEvents(events: AgentSessionEvent[], tabId: string): void {
 			// Incoming session events belong to the target sidecar. Drop them
-			// until hydrate commits so they cannot append onto the outgoing transcript.
-			if (useUiStore.getState().switchPending) return;
-			useMessagesStore.getState().applyEvents(events);
-			useToolsStore.getState().applyEvents(events);
+			// during an in-place session switch, but never suppress the other pane.
+			if (useUiStore.getState().switchPending && useTabsStore.getState().activeTabId === tabId) return;
+			if (closedTabFrame(tabId)) return;
+			withSessionRuntime(tabId, () => {
+				useMessagesStore.getState().applyEvents(events);
+				useToolsStore.getState().applyEvents(events);
 
-			for (const event of events) {
-				switch (event.type) {
-					case "agent_start": {
-						useSessionStore.setState({ isStreaming: true, awaitingModelSince: Date.now() });
-						// Server-side mode changes (plan_approval accept exits plan
-						// mode, then dispatches the execution turn) carry no event —
-						// re-sync state-derived stores at turn start so the composer
-						// chip / titlebar reflect the server.
-						void refreshSessionState();
-						break;
-					}
-					case "turn_start": {
-						// Model request dispatched; the chat renders a pending-model
-						// indicator from this timestamp until message_start (or a
-						// running tool card) takes over. Without it a stalled provider
-						// (slow first event, transport retry) looks like dead air.
-						useSessionStore.setState({ awaitingModelSince: Date.now() });
-						break;
-					}
-					case "message_end": {
-						// The finalized assistant message replaces the pending
-						// indicator — tools run next and their cards carry the
-						// activity signal. message_start is NOT the clear point: it
-						// fires with an empty shell before the first token streams,
-						// and clearing there would reopen the dead-air window.
-						if (event.message.role === "assistant") {
+				for (const event of events) {
+					switch (event.type) {
+						case "agent_start": {
+							useSessionStore.setState({ isStreaming: true, awaitingModelSince: Date.now() });
+							// Server-side mode changes (plan_approval accept exits plan
+							// mode, then dispatches the execution turn) carry no event —
+							// re-sync state-derived stores at turn start so the composer
+							// chip / titlebar reflect the server.
+							void refreshSessionState(tabId);
+							break;
+						}
+						case "turn_start": {
+							// Model request dispatched; the chat renders a pending-model
+							// indicator from this timestamp until message_start (or a
+							// running tool card) takes over. Without it a stalled provider
+							// (slow first event, transport retry) looks like dead air.
+							useSessionStore.setState({ awaitingModelSince: Date.now() });
+							break;
+						}
+						case "message_end": {
+							// The finalized assistant message replaces the pending
+							// indicator — tools run next and their cards carry the
+							// activity signal. message_start is NOT the clear point: it
+							// fires with an empty shell before the first token streams,
+							// and clearing there would reopen the dead-air window.
+							if (event.message.role === "assistant") {
+								useSessionStore.setState({ awaitingModelSince: null });
+							}
+							break;
+						}
+						case "turn_end": {
+							// Tool execution follows; running tool cards carry the
+							// activity signal until the next turn_start.
 							useSessionStore.setState({ awaitingModelSince: null });
+							break;
 						}
-						break;
-					}
-					case "turn_end": {
-						// Tool execution follows; running tool cards carry the
-						// activity signal until the next turn_start.
-						useSessionStore.setState({ awaitingModelSince: null });
-						break;
-					}
-					case "tool_execution_end": {
-						if (event.toolName !== "todo" || event.isError) break;
-						const phases = todoPhasesFromToolResult(event.result);
-						if (phases) useTodoStore.getState().setPhases(phases);
-						break;
-					}
-					case "agent_end": {
-						useSessionStore.setState({ isStreaming: false, awaitingModelSince: null });
-						notifyOnAgentEnd(event);
-						toastOnAgentError(event);
-						// Re-fetch state so agent-side todo updates mid-turn reach the panel.
-						void refreshSessionState();
-						break;
-					}
-					case "auto_compaction_start": {
-						// TUI parity: swap the status row to the maintenance loader
-						// ("Context overflow detected, Auto context-full maintenance…")
-						// for the whole compaction window, not just a flag.
-						useSessionStore.setState({
-							isCompacting: true,
-							compactionInfo: { reason: event.reason, action: event.action },
-						});
-						break;
-					}
-					case "auto_compaction_end": {
-						useSessionStore.setState({ isCompacting: false, compactionInfo: null });
-						if (event.aborted) {
-							useToastStore
-								.getState()
-								.push({ variant: "warning", message: translate("events.compactionAborted") });
+						case "tool_execution_end": {
+							if (event.toolName !== "todo" || event.isError) break;
+							const phases = todoPhasesFromToolResult(event.result);
+							if (phases) useTodoStore.getState().setPhases(phases);
+							break;
 						}
-						break;
-					}
-					case "auto_retry_start": {
-						retryPending = true;
-						// TUI parity: inline retry loader for the delay+attempt window.
-						// Not a model wait, so the pending-model marker stays clear until
-						// auto_retry_end re-arms it.
-						useSessionStore.setState({
-							retryInfo: {
-								attempt: event.attempt,
-								maxAttempts: event.maxAttempts,
-								delayMs: event.delayMs,
-								errorMessage: event.errorMessage,
-								startedAt: Date.now(),
-							},
-							awaitingModelSince: null,
-						});
-						useToastStore.getState().push({
-							variant: "warning",
-							message: translate("events.retryScheduled", {
-								attempt: event.attempt,
-								max: event.maxAttempts,
-								seconds: Math.round(event.delayMs / 1000),
-								error: event.errorMessage,
-							}),
-							durationMs: event.delayMs + 2000,
-						});
-						break;
-					}
-					case "auto_retry_end": {
-						retryPending = false;
-						// Mirror the TUI's #ensureWorkingLoaderWhileStreaming: a succeeded
-						// retry re-dispatches the turn, so the wait for first content is
-						// visible again even if no fresh turn_start arrives.
-						useSessionStore.setState({
-							retryInfo: null,
-							...(event.success && useSessionStore.getState().isStreaming
-								? { awaitingModelSince: Date.now() }
-								: {}),
-						});
-						if (event.success) {
-							useToastStore.getState().push({ variant: "success", message: translate("events.retrySucceeded") });
-						} else {
-							useToastStore.getState().push({
-								variant: "error",
-								message: translate("events.retryFailed", {
-									error: event.finalError ?? translate("common.unknownError"),
-								}),
+						case "agent_end": {
+							useSessionStore.setState({ isStreaming: false, awaitingModelSince: null });
+							notifyOnAgentEnd(tabId, event);
+							toastOnAgentError(tabId, event);
+							// Re-fetch state so agent-side todo updates mid-turn reach the panel.
+							void refreshSessionState(tabId);
+							break;
+						}
+						case "auto_compaction_start": {
+							// TUI parity: swap the status row to the maintenance loader
+							// ("Context overflow detected, Auto context-full maintenance…")
+							// for the whole compaction window, not just a flag.
+							useSessionStore.setState({
+								isCompacting: true,
+								compactionInfo: { reason: event.reason, action: event.action },
 							});
+							break;
 						}
-						break;
+						case "auto_compaction_end": {
+							useSessionStore.setState({ isCompacting: false, compactionInfo: null });
+							if (event.aborted) {
+								useToastStore
+									.getState()
+									.push({ variant: "warning", message: translate("events.compactionAborted") });
+							}
+							break;
+						}
+						case "auto_retry_start": {
+							retryPendingTabs.add(tabId);
+							// TUI parity: inline retry loader for the delay+attempt window.
+							// Not a model wait, so the pending-model marker stays clear until
+							// auto_retry_end re-arms it.
+							useSessionStore.setState({
+								retryInfo: {
+									attempt: event.attempt,
+									maxAttempts: event.maxAttempts,
+									delayMs: event.delayMs,
+									errorMessage: event.errorMessage,
+									startedAt: Date.now(),
+								},
+								awaitingModelSince: null,
+							});
+							useToastStore.getState().push({
+								variant: "warning",
+								message: translate("events.retryScheduled", {
+									attempt: event.attempt,
+									max: event.maxAttempts,
+									seconds: Math.round(event.delayMs / 1000),
+									error: event.errorMessage,
+								}),
+								durationMs: event.delayMs + 2000,
+							});
+							break;
+						}
+						case "auto_retry_end": {
+							retryPendingTabs.delete(tabId);
+							// Mirror the TUI's #ensureWorkingLoaderWhileStreaming: a succeeded
+							// retry re-dispatches the turn, so the wait for first content is
+							// visible again even if no fresh turn_start arrives.
+							useSessionStore.setState({
+								retryInfo: null,
+								...(event.success && useSessionStore.getState().isStreaming
+									? { awaitingModelSince: Date.now() }
+									: {}),
+							});
+							if (event.success) {
+								useToastStore
+									.getState()
+									.push({ variant: "success", message: translate("events.retrySucceeded") });
+							} else {
+								useToastStore.getState().push({
+									variant: "error",
+									message: translate("events.retryFailed", {
+										error: event.finalError ?? translate("common.unknownError"),
+									}),
+								});
+							}
+							break;
+						}
+						case "retry_fallback_applied": {
+							useToastStore.getState().push({
+								variant: "info",
+								message: translate("events.fallbackApplied", { from: event.from, to: event.to }),
+							});
+							break;
+						}
+						case "retry_fallback_succeeded": {
+							useToastStore.getState().push({
+								variant: "success",
+								message: translate("events.fallbackSucceeded", { model: event.model }),
+							});
+							break;
+						}
+						case "todo_reminder": {
+							useTodoStore.getState().showReminder(event.todos);
+							break;
+						}
+						case "todo_auto_clear": {
+							// Automatic cleanup is not a second user-visible todo change:
+							// keep the completed snapshot and only clear the live state.
+							useTodoStore.getState().autoClearCompleted();
+							break;
+						}
+						case "thinking_level_changed": {
+							const configured =
+								typeof event.configured === "string" &&
+								(event.configured === "auto" || isThinkingLevel(event.configured))
+									? event.configured
+									: event.thinkingLevel;
+							// Explicit changes omit `configured` because it equals the effective
+							// level. Treat that omission as data, not as "keep the old selector";
+							// otherwise cycle/hotkey changes leave a stale checked menu item.
+							useModelStore.setState({
+								thinkingLevel: event.thinkingLevel,
+								thinkingConfigured: configured,
+							});
+							break;
+						}
+						case "model_changed": {
+							void refreshSessionState(tabId);
+							break;
+						}
+						case "notice": {
+							// Suppress routine informational churn from chatty sources — vision/xdev
+							// mount/unmount notices fire on every model switch and need no action,
+							// flooding the toast stack. Warnings/errors and other sources still toast.
+							if (event.level === "info" && event.source && QUIET_NOTICE_SOURCES.has(event.source)) break;
+							useToastStore.getState().push({
+								variant: event.level === "error" ? "error" : event.level === "warning" ? "warning" : "info",
+								message: event.message,
+								title: event.source,
+							});
+							break;
+						}
+						case "ttsr_triggered": {
+							useToastStore.getState().push({
+								variant: "info",
+								message: translate("events.ttsrInjected"),
+								durationMs: 3000,
+							});
+							break;
+						}
+						case "goal_updated": {
+							// Goal state is passive display — store in session store for the
+							// sidebar card / composer chip. Normalized: drop/complete frames
+							// carry the terminal goal object, which must CLEAR the store.
+							useSessionStore.setState(goalPatchFromEvent(event.goal, event.state));
+							break;
+						}
+						case "loop_mode_update": {
+							// Loop state is passive display too — the composer chip and
+							// footer badge read it from the session store. Reuse the Modes
+							// window's normalizer: frames may arrive flat or nested.
+							const next = normalizeLoopUpdate(event);
+							if (next) useSessionStore.setState({ loopMode: next });
+							break;
+						}
+						case "queue_update": {
+							// Authoritative queue snapshot — fires on every queue mutation
+							// (enqueue, drain/consume, remove, move, clear), so the strip,
+							// panel, and pending bubbles never poll mid-run.
+							useQueueStore.getState().setFromFrame({ steering: event.steering, followUp: event.followUp });
+							break;
+						}
+						case "irc_message": {
+							// IRC messages are rendered in the subagent/notification feed
+							useToastStore.getState().push({
+								variant: "info",
+								message:
+									typeof event.message === "object" && event.message !== null && "content" in event.message
+										? String((event.message as { content: unknown }).content)
+										: "IRC message received",
+								durationMs: 4000,
+							});
+							break;
+						}
+						default:
+							break;
 					}
-					case "retry_fallback_applied": {
-						useToastStore.getState().push({
-							variant: "info",
-							message: translate("events.fallbackApplied", { from: event.from, to: event.to }),
-						});
-						break;
-					}
-					case "retry_fallback_succeeded": {
-						useToastStore.getState().push({
-							variant: "success",
-							message: translate("events.fallbackSucceeded", { model: event.model }),
-						});
-						break;
-					}
-					case "todo_reminder": {
-						useTodoStore.getState().showReminder(event.todos);
-						break;
-					}
-					case "todo_auto_clear": {
-						// Automatic cleanup is not a second user-visible todo change:
-						// keep the completed snapshot and only clear the live state.
-						useTodoStore.getState().autoClearCompleted();
-						break;
-					}
-					case "thinking_level_changed": {
-						const configured =
-							typeof event.configured === "string" &&
-							(event.configured === "auto" || isThinkingLevel(event.configured))
-								? event.configured
-								: event.thinkingLevel;
-						// Explicit changes omit `configured` because it equals the effective
-						// level. Treat that omission as data, not as "keep the old selector";
-						// otherwise cycle/hotkey changes leave a stale checked menu item.
-						useModelStore.setState({
-							thinkingLevel: event.thinkingLevel,
-							thinkingConfigured: configured,
-						});
-						break;
-					}
-					case "model_changed": {
-						void refreshSessionState();
-						break;
-					}
-					case "notice": {
-						// Suppress routine informational churn from chatty sources — vision/xdev
-						// mount/unmount notices fire on every model switch and need no action,
-						// flooding the toast stack. Warnings/errors and other sources still toast.
-						if (event.level === "info" && event.source && QUIET_NOTICE_SOURCES.has(event.source)) break;
-						useToastStore.getState().push({
-							variant: event.level === "error" ? "error" : event.level === "warning" ? "warning" : "info",
-							message: event.message,
-							title: event.source,
-						});
-						break;
-					}
-					case "ttsr_triggered": {
-						useToastStore.getState().push({
-							variant: "info",
-							message: translate("events.ttsrInjected"),
-							durationMs: 3000,
-						});
-						break;
-					}
-					case "goal_updated": {
-						// Goal state is passive display — store in session store for the
-						// sidebar card / composer chip. Normalized: drop/complete frames
-						// carry the terminal goal object, which must CLEAR the store.
-						useSessionStore.setState(goalPatchFromEvent(event.goal, event.state));
-						break;
-					}
-					case "loop_mode_update": {
-						// Loop state is passive display too — the composer chip and
-						// footer badge read it from the session store. Reuse the Modes
-						// window's normalizer: frames may arrive flat or nested.
-						const next = normalizeLoopUpdate(event);
-						if (next) useSessionStore.setState({ loopMode: next });
-						break;
-					}
-					case "queue_update": {
-						// Authoritative queue snapshot — fires on every queue mutation
-						// (enqueue, drain/consume, remove, move, clear), so the strip,
-						// panel, and pending bubbles never poll mid-run.
-						useQueueStore.getState().setFromFrame({ steering: event.steering, followUp: event.followUp });
-						break;
-					}
-					case "irc_message": {
-						// IRC messages are rendered in the subagent/notification feed
-						useToastStore.getState().push({
-							variant: "info",
-							message:
-								typeof event.message === "object" && event.message !== null && "content" in event.message
-									? String((event.message as { content: unknown }).content)
-									: "IRC message received",
-							durationMs: 4000,
-						});
-						break;
-					}
-					default:
-						break;
 				}
-			}
-		});
+			});
+		}
 
 		// Heartbeat: a wedged command queue (e.g. a stalled discovery await on
 		// the serial server queue) leaves status "ready" but blocks every
@@ -672,36 +793,40 @@ export function useRpcEvents(): void {
 			}
 		};
 
-		const handleStatus = (payload: IpcSidecarStatusPayload) => {
-			if (!acceptsActiveTabEvents()) return;
-			const statusTabId = useTabsStore.getState().activeTabId;
+		const handleStatus = (payload: IpcSidecarStatusPayload, statusTabId: string) => {
+			if (closedTabFrame(statusTabId)) return;
+			const isFocused = () => useTabsStore.getState().activeTabId === statusTabId;
 			if (payload.status === "starting") {
-				stopHeartbeat();
-				retryPending = false;
-				useMessagesStore.getState().reset();
-				useModelStore.getState().reset();
-				useSessionStore.getState().reset();
-				useSettingsStore.getState().reset();
-				useSubagentsStore.getState().reset();
-				useTodoStore.getState().reset();
-				useToolsStore.getState().reset();
-				useExtensionUiStore.getState().clearAll();
-				usePlanApprovalStore.getState().clearProposal();
-				useUiStore.getState().clearSidecarError();
+				if (isFocused()) stopHeartbeat();
+				retryPendingTabs.delete(statusTabId);
+				withSessionRuntime(statusTabId, () => {
+					useMessagesStore.getState().reset();
+					useModelStore.getState().reset();
+					useSessionStore.getState().reset();
+					useSettingsStore.getState().reset();
+					useSubagentsStore.getState().reset();
+					useTodoStore.getState().reset();
+					useToolsStore.getState().reset();
+					useExtensionUiStore.getState().clearAll();
+					usePlanApprovalStore.getState().clearProposal();
+				});
+				if (isFocused()) useUiStore.getState().clearSidecarError();
 			}
-			useSessionStore.getState().setStatus(payload.status, payload.cwd);
+			withSessionRuntime(statusTabId, () => useSessionStore.getState().setStatus(payload.status, payload.cwd));
 
 			if (payload.status === "ready") {
-				startHeartbeat();
+				if (isFocused()) startHeartbeat();
 				// One-shot boot health check: verify the command loop is live.
 				void (async () => {
 					try {
+						const runtime = sessionRuntime(statusTabId);
+						const command = runtime?.command ?? activeTabCommand;
 						// A window opened "in new window" for a specific session
 						// switches to it BEFORE hydrating, so the first transcript
 						// it pulls is the target session, not the fresh empty one.
-						const pending = await window.omp.sessions.consumePendingOpen();
+						const pending = isFocused() ? await window.omp.sessions.consumePendingOpen() : null;
 						if (pending) {
-							const sw = await window.omp.rpc.switchSession(pending);
+							const sw = await command({ type: "switch_session", sessionPath: pending });
 							if (!sw.success) {
 								useToastStore.getState().push({
 									variant: "error",
@@ -709,94 +834,152 @@ export function useRpcEvents(): void {
 								});
 							}
 						}
-						const res = await window.omp.rpc.getState();
-						if (!acceptsActiveTabEvents() || useTabsStore.getState().activeTabId !== statusTabId) return;
+						const res = await command({ type: "get_state" });
+						if (runtime && sessionRuntime(statusTabId) !== runtime) return;
 						if (!res.success) {
-							useUiStore.getState().setSidecarError(translate("events.sidecarNoResponse"));
+							if (isFocused()) useUiStore.getState().setSidecarError(translate("events.sidecarNoResponse"));
 						} else {
-							useUiStore.getState().clearSidecarError();
-							void hydrateSession();
-							void window.omp.rpc.setSubagentSubscription("events");
+							if (isFocused()) useUiStore.getState().clearSidecarError();
+							if (runtime) {
+								void hydrateTabSession(statusTabId);
+							} else {
+								const wire = res.data as RpcSessionState;
+								applySessionState(wire);
+								if (wire.isStreaming && useSessionStore.getState().awaitingModelSince === null) {
+									useSessionStore.setState({ awaitingModelSince: Date.now() });
+								}
+								if (!wire.isStreaming) useMessagesStore.getState().clearStreaming();
+								await Promise.allSettled([
+									syncGoal("", activeTabCommand, () => true),
+									syncLoopMode("", activeTabCommand, () => true),
+									syncVibeMode("", activeTabCommand, () => true),
+									useQueueStore.getState().refresh(),
+									useSettingsStore.getState().syncDisplaySettings(),
+									useSettingsStore.getState().syncApproval(),
+								]);
+							}
+							void command({ type: "set_subagent_subscription", level: "events" });
 						}
 					} catch {
-						if (!acceptsActiveTabEvents() || useTabsStore.getState().activeTabId !== statusTabId) return;
-						useUiStore.getState().setSidecarError(translate("events.sidecarHealthFailed"));
+						if (isFocused()) useUiStore.getState().setSidecarError(translate("events.sidecarHealthFailed"));
 					}
 				})();
 			} else if (payload.status === "error" || payload.status === "exited") {
-				stopHeartbeat();
-				useUiStore.getState().setSidecarError(payload.message ?? translate("events.sidecarProcessFailed"));
+				if (isFocused()) {
+					stopHeartbeat();
+					useUiStore.getState().setSidecarError(payload.message ?? translate("events.sidecarProcessFailed"));
+				}
 			}
 		};
 
-		const unsubStatus = window.omp.events.onSidecarStatus(handleStatus);
-		void window.omp.sidecar.getStatus().then(handleStatus);
-
-		const unsubSubagent = window.omp.events.onSubagentFrame(frame => {
-			if (!acceptsActiveTabEvents()) return;
-			useSubagentsStore.getState().applyFrame(frame);
+		const unsubStatus =
+			typeof window.omp.events.onTabSidecarStatus === "function"
+				? window.omp.events.onTabSidecarStatus(handleStatus)
+				: window.omp.events.onSidecarStatus(payload => handleStatus(payload, focusedTabId()));
+		void window.omp.sidecar.getStatus().then(status => {
+			handleStatus(status, focusedTabId());
 		});
 
-		const unsubModelCatalog = window.omp.events.onModelCatalogUpdate(frame => {
-			if (!acceptsActiveTabEvents()) return;
-			useModelStore.getState().applyCatalogUpdate(frame);
-		});
+		const handleSubagent = (frame: SubagentFrame, tabId: string) => {
+			if (closedTabFrame(tabId)) return;
+			withSessionRuntime(tabId, () => useSubagentsStore.getState().applyFrame(frame));
+		};
+		const unsubSubagent =
+			typeof window.omp.events.onTabSubagentFrame === "function"
+				? window.omp.events.onTabSubagentFrame(handleSubagent)
+				: window.omp.events.onSubagentFrame(frame => handleSubagent(frame, focusedTabId()));
+
+		const handleModelCatalog = (frame: ModelCatalogUpdateFrame, tabId: string) => {
+			if (closedTabFrame(tabId)) return;
+			withSessionRuntime(tabId, () => useModelStore.getState().applyCatalogUpdate(frame));
+		};
+		const unsubModelCatalog =
+			typeof window.omp.events.onTabModelCatalogUpdate === "function"
+				? window.omp.events.onTabModelCatalogUpdate(handleModelCatalog)
+				: window.omp.events.onModelCatalogUpdate(frame => handleModelCatalog(frame, focusedTabId()));
 
 		// Agent config edits (set_setting from any client, slash-command config
 		// changes) push config_update — re-read the thinking-display settings so
 		// ThinkingBlock re-renders with the live hide/prose-only policy.
-		const unsubConfig = window.omp.events.onConfigUpdate(() => {
-			if (!acceptsActiveTabEvents()) return;
-			void useSettingsStore.getState().syncDisplaySettings();
-			void useSettingsStore.getState().syncApproval();
-		});
+		const handleConfig = (_frame: ConfigUpdateFrame, tabId: string) => {
+			if (closedTabFrame(tabId)) return;
+			withSessionRuntime(tabId, () => {
+				void useSettingsStore.getState().syncDisplaySettings();
+				void useSettingsStore.getState().syncApproval();
+			});
+		};
+		const unsubConfig =
+			typeof window.omp.events.onTabConfigUpdate === "function"
+				? window.omp.events.onTabConfigUpdate(handleConfig)
+				: window.omp.events.onConfigUpdate(frame => handleConfig(frame, focusedTabId()));
 		// Extension slash commands can settle locally after the prompt response
 		// has already resolved; prompt_result carries the deferred rehydrate signal.
-		const unsubPromptResult = window.omp.events.onPromptResult((frame: PromptResultFrame) => {
-			if (!acceptsActiveTabEvents()) return;
-			if (!frame.agentInvoked) void hydrateSession();
-		});
+		const handlePromptResult = (frame: PromptResultFrame, tabId: string) => {
+			if (closedTabFrame(tabId)) return;
+			if (!frame.agentInvoked) void (sessionRuntime(tabId) ? hydrateTabSession(tabId) : hydrateLegacySession());
+		};
+		const unsubPromptResult =
+			typeof window.omp.events.onTabPromptResult === "function"
+				? window.omp.events.onTabPromptResult(handlePromptResult)
+				: window.omp.events.onPromptResult(frame => handlePromptResult(frame, focusedTabId()));
 		// Text-mode slash commands write outside the transcript. Surface their
 		// output as local custom messages instead of silently dropping the frame.
-		const unsubCommandOutput = window.omp.events.onCommandOutput((frame: CommandOutputFrame) => {
-			if (!acceptsActiveTabEvents()) return;
-			if (!frame.text) return;
-			useMessagesStore.getState().appendMessage({
-				role: "custom",
-				customType: "command",
-				content: [{ type: "text", text: frame.text }],
-				timestamp: Date.now(),
+		const handleCommandOutput = (frame: CommandOutputFrame, tabId: string) => {
+			if (!frame.text || closedTabFrame(tabId)) return;
+			withSessionRuntime(tabId, () => {
+				useMessagesStore.getState().appendMessage({
+					role: "custom",
+					customType: "command",
+					content: [{ type: "text", text: frame.text }],
+					timestamp: Date.now(),
+				});
 			});
-		});
+		};
+		const unsubCommandOutput =
+			typeof window.omp.events.onTabCommandOutput === "function"
+				? window.omp.events.onTabCommandOutput(handleCommandOutput)
+				: window.omp.events.onCommandOutput(frame => {
+						if (acceptsActiveTabEvents()) handleCommandOutput(frame, focusedTabId());
+					});
 
-		const unsubSessionInfo = window.omp.events.onSessionInfoUpdate((frame: SessionInfoUpdateFrame) => {
-			if (!acceptsActiveTabEvents()) return;
-			useSessionStore.setState(state => ({
-				sessionName: frame.title === undefined ? state.sessionName : frame.title,
-				sessionId: frame.sessionId ?? state.sessionId,
-			}));
-		});
+		const handleSessionInfo = (frame: SessionInfoUpdateFrame, tabId: string) => {
+			if (closedTabFrame(tabId)) return;
+			withSessionRuntime(tabId, () => {
+				useSessionStore.setState(state => ({
+					sessionName: frame.title === undefined ? state.sessionName : frame.title,
+					sessionId: frame.sessionId ?? state.sessionId,
+				}));
+			});
+		};
+		const unsubSessionInfo =
+			typeof window.omp.events.onTabSessionInfoUpdate === "function"
+				? window.omp.events.onTabSessionInfoUpdate(handleSessionInfo)
+				: window.omp.events.onSessionInfoUpdate(frame => handleSessionInfo(frame, focusedTabId()));
 
-		const unsubExtensionError = window.omp.events.onExtensionError((frame: ExtensionErrorFrame) => {
-			if (!acceptsActiveTabEvents()) return;
+		const handleExtensionError = (frame: ExtensionErrorFrame) => {
 			useToastStore.getState().push({
 				variant: "error",
 				title: translate("events.extensionError"),
 				message: `${frame.extensionPath} (${frame.event}): ${frame.error}`,
 			});
-		});
+		};
+		const unsubExtensionError =
+			typeof window.omp.events.onTabExtensionError === "function"
+				? window.omp.events.onTabExtensionError(handleExtensionError)
+				: window.omp.events.onExtensionError(handleExtensionError);
 
 		// Ask/extension-UI requests that block for input (ask tool, approvals,
 		// confirms, …) — notify when the window is unfocused.
-		const unsubExtensionUi = window.omp.events.onExtensionUi((request, tabId) => {
+		const unsubExtensionUi = window.omp.events.onExtensionUi((request, sourceTabId) => {
 			if (!BLOCKING_UI_METHODS[request.method]) return;
+			const tabId = sourceTabId ?? focusedTabId();
 			const tab = useTabsStore.getState().tabs.find(item => item.id === tabId);
 			const sessionName = tab?.title || "Oh My Pi";
 			const body =
 				"title" in request && typeof request.title === "string" && request.title
 					? request.title
 					: "Waiting for input";
-			void maybeNotify("ask", sessionName, body);
+			void maybeNotify("ask", sessionName, body, sessionRuntime(tabId)?.command ?? activeTabCommand);
 		});
 
 		return () => {

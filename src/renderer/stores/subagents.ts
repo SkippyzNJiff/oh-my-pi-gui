@@ -1,9 +1,10 @@
-import { create } from "zustand";
+import { createStore } from "zustand/vanilla";
 import type { SubagentFrame, SubagentSnapshot } from "../../shared/rpc-types";
+import { activeTabCommand, createScopedStoreHook, type TabCommand } from "./session-runtime-context";
 
 export type SubagentNode = SubagentSnapshot;
 
-interface SubagentsStore {
+export interface SubagentsStore {
 	subagents: Map<string, SubagentNode>;
 	applyFrame: (frame: SubagentFrame) => void;
 	setSnapshots: (snapshots: SubagentNode[]) => void;
@@ -58,111 +59,115 @@ function mergeFetchedSnapshot(fresh: SubagentNode, prev: SubagentNode): Subagent
 	};
 }
 
-export const useSubagentsStore = create<SubagentsStore>()((set, get) => ({
-	subagents: new Map(),
-	applyFrame: frame => {
-		// Copy-on-first-write: frames that match no known subagent leave the
-		// map untouched and must not trigger a re-render.
-		let subagents: Map<string, SubagentNode> | null = null;
+export const createSubagentsStore = (command: TabCommand = activeTabCommand) =>
+	createStore<SubagentsStore>()((set, get) => ({
+		subagents: new Map(),
+		applyFrame: frame => {
+			// Copy-on-first-write: frames that match no known subagent leave the
+			// map untouched and must not trigger a re-render.
+			let subagents: Map<string, SubagentNode> | null = null;
 
-		switch (frame.type) {
-			case "subagent_lifecycle": {
-				const p = frame.payload;
-				subagents = new Map(get().subagents);
-				const existing = subagents.get(p.id);
-				subagents.set(p.id, {
-					id: p.id,
-					index: p.index,
-					agent: p.agent,
-					agentSource: p.agentSource,
-					description: p.description ?? existing?.description,
-					status: p.status === "started" ? "running" : p.status,
-					task: existing?.task,
-					assignment: existing?.assignment,
-					sessionFile: p.sessionFile ?? existing?.sessionFile,
-					lastUpdate: Date.now(),
-					parentToolCallId: p.parentToolCallId ?? existing?.parentToolCallId,
-					parentSubagentId: p.parentSubagentId ?? existing?.parentSubagentId,
-					progress: existing?.progress,
-					kind: existing?.kind ?? "sub",
-				});
-				break;
-			}
-			case "subagent_progress": {
-				// Attribute by stable id, not the per-batch index. A progress
-				// frame can be the first frame observed after a late subscription,
-				// so materialize the row instead of silently dropping it.
-				const progress = frame.payload.progress;
-				if (!progress?.id) break;
-				const existing = get().subagents.get(progress.id);
-				subagents = new Map(get().subagents);
-				subagents.set(progress.id, {
-					id: progress.id,
-					index: frame.payload.index,
-					agent: frame.payload.agent,
-					agentSource: frame.payload.agentSource,
-					description: progress.description ?? existing?.description,
-					status: progress.status,
-					task: frame.payload.task,
-					assignment: frame.payload.assignment ?? existing?.assignment,
-					sessionFile: frame.payload.sessionFile ?? existing?.sessionFile,
-					lastUpdate: Date.now(),
-					parentToolCallId: frame.payload.parentToolCallId ?? existing?.parentToolCallId,
-					parentSubagentId: frame.payload.parentSubagentId ?? existing?.parentSubagentId,
-					kind: existing?.kind ?? "sub",
-					progress,
-				});
-				break;
-			}
-			case "subagent_event": {
-				const id = frame.payload.id;
-				const existing = get().subagents.get(id);
-				if (existing) {
+			switch (frame.type) {
+				case "subagent_lifecycle": {
+					const p = frame.payload;
 					subagents = new Map(get().subagents);
-					subagents.set(id, { ...existing });
+					const existing = subagents.get(p.id);
+					subagents.set(p.id, {
+						id: p.id,
+						index: p.index,
+						agent: p.agent,
+						agentSource: p.agentSource,
+						description: p.description ?? existing?.description,
+						status: p.status === "started" ? "running" : p.status,
+						task: existing?.task,
+						assignment: existing?.assignment,
+						sessionFile: p.sessionFile ?? existing?.sessionFile,
+						lastUpdate: Date.now(),
+						parentToolCallId: p.parentToolCallId ?? existing?.parentToolCallId,
+						parentSubagentId: p.parentSubagentId ?? existing?.parentSubagentId,
+						progress: existing?.progress,
+						kind: existing?.kind ?? "sub",
+					});
+					break;
 				}
-				break;
+				case "subagent_progress": {
+					// Attribute by stable id, not the per-batch index. A progress
+					// frame can be the first frame observed after a late subscription,
+					// so materialize the row instead of silently dropping it.
+					const progress = frame.payload.progress;
+					if (!progress?.id) break;
+					const existing = get().subagents.get(progress.id);
+					subagents = new Map(get().subagents);
+					subagents.set(progress.id, {
+						id: progress.id,
+						index: frame.payload.index,
+						agent: frame.payload.agent,
+						agentSource: frame.payload.agentSource,
+						description: progress.description ?? existing?.description,
+						status: progress.status,
+						task: frame.payload.task,
+						assignment: frame.payload.assignment ?? existing?.assignment,
+						sessionFile: frame.payload.sessionFile ?? existing?.sessionFile,
+						lastUpdate: Date.now(),
+						parentToolCallId: frame.payload.parentToolCallId ?? existing?.parentToolCallId,
+						parentSubagentId: frame.payload.parentSubagentId ?? existing?.parentSubagentId,
+						kind: existing?.kind ?? "sub",
+						progress,
+					});
+					break;
+				}
+				case "subagent_event": {
+					const id = frame.payload.id;
+					const existing = get().subagents.get(id);
+					if (existing) {
+						subagents = new Map(get().subagents);
+						subagents.set(id, { ...existing });
+					}
+					break;
+				}
 			}
-		}
 
-		if (subagents) set({ subagents });
-	},
-	setSnapshots: snapshots => {
-		const subagents = new Map<string, SubagentNode>();
-		for (const snap of snapshots) {
-			const normalized = normalizeSnapshot(snap);
-			subagents.set(normalized.id, normalized);
-		}
-		set({ subagents });
-	},
-	refresh: async options => {
-		try {
-			const res = await window.omp.rpc.getSubagents();
-			// Post-await guard: the poll may have been sent for a tab/session
-			// that is no longer foreground — its snapshots must not merge into
-			// the new session's store.
-			if (options?.expect && !options.expect()) return;
-			if (!res.success) return;
-			const data = res.data as { subagents?: SubagentNode[] } | undefined;
-			if (!data?.subagents) return;
-			const current = get().subagents;
-			const fetched = new Set<string>();
+			if (subagents) set({ subagents });
+		},
+		setSnapshots: snapshots => {
 			const subagents = new Map<string, SubagentNode>();
-			for (const snap of data.subagents) {
+			for (const snap of snapshots) {
 				const normalized = normalizeSnapshot(snap);
-				fetched.add(normalized.id);
-				const prev = current.get(normalized.id);
-				subagents.set(normalized.id, prev ? mergeFetchedSnapshot(normalized, prev) : normalized);
-			}
-			// Terminal rows the server has forgotten survive the merge — see the
-			// refresh docstring (RPC registry deletes completed/failed agents).
-			for (const [id, node] of current) {
-				if (!fetched.has(id) && !LIVE_STATUSES[node.status]) subagents.set(id, node);
+				subagents.set(normalized.id, normalized);
 			}
 			set({ subagents });
-		} catch {
-			// Best-effort poll: frames + hydration remain authoritative.
-		}
-	},
-	reset: () => set({ subagents: new Map() }),
-}));
+		},
+		refresh: async options => {
+			try {
+				const res = await command({ type: "get_subagents" });
+				// Post-await guard: the poll may have been sent for a tab/session
+				// that is no longer foreground — its snapshots must not merge into
+				// the new session's store.
+				if (options?.expect && !options.expect()) return;
+				if (!res.success) return;
+				const data = res.data as { subagents?: SubagentNode[] } | undefined;
+				if (!data?.subagents) return;
+				const current = get().subagents;
+				const fetched = new Set<string>();
+				const subagents = new Map<string, SubagentNode>();
+				for (const snap of data.subagents) {
+					const normalized = normalizeSnapshot(snap);
+					fetched.add(normalized.id);
+					const prev = current.get(normalized.id);
+					subagents.set(normalized.id, prev ? mergeFetchedSnapshot(normalized, prev) : normalized);
+				}
+				// Terminal rows the server has forgotten survive the merge — see the
+				// refresh docstring (RPC registry deletes completed/failed agents).
+				for (const [id, node] of current) {
+					if (!fetched.has(id) && !LIVE_STATUSES[node.status]) subagents.set(id, node);
+				}
+				set({ subagents });
+			} catch {
+				// Best-effort poll: frames + hydration remain authoritative.
+			}
+		},
+		reset: () => set({ subagents: new Map() }),
+	}));
+
+const defaultSubagentsStore = createSubagentsStore();
+export const useSubagentsStore = createScopedStoreHook("subagents", defaultSubagentsStore);

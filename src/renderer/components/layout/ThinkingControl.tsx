@@ -18,8 +18,10 @@ import { createPortal } from "react-dom";
 import { type RpcThinkingLevelState, THINKING_LEVEL_VALUES, type ThinkingLevel } from "../../../shared/rpc-types";
 import { cx } from "../../lib/format";
 import { useT } from "../../lib/i18n";
-import { useModelStore } from "../../stores/model";
+import { useTabRpc } from "../../lib/tab-rpc";
+import { type ModelStore, useModelStore } from "../../stores/model";
 import { useSessionStore } from "../../stores/session";
+import { sessionRuntimeStore, useRuntimeTabId } from "../../stores/session-runtime-context";
 import { useTabsStore } from "../../stores/tabs";
 import { toast } from "../../stores/toast";
 
@@ -34,6 +36,9 @@ function menuOptions(available: ThinkingLevel[]): ThinkingSelector[] {
 
 export function ThinkingControl() {
 	const t = useT();
+	const rpc = useTabRpc();
+	const tabId = useRuntimeTabId();
+	const modelStore = sessionRuntimeStore<ModelStore>(tabId, "model");
 	const thinkingLevel = useModelStore(s => s.thinkingLevel);
 	const configured = useModelStore(s => s.thinkingConfigured);
 	const available = useModelStore(s => s.availableThinkingLevels);
@@ -80,9 +85,9 @@ export function ThinkingControl() {
 
 	const select = (level: ThinkingSelector) => {
 		setOpen(false);
-		const requestTabId = useTabsStore.getState().activeTabId;
-		const requestSessionId = useSessionStore.getState().sessionId;
-		void window.omp.rpc
+		const fallbackTabId = useTabsStore.getState().activeTabId;
+		const fallbackSessionId = useSessionStore.getState().sessionId;
+		void rpc
 			.setThinkingLevel(level)
 			.then(res => {
 				if (!res.success) {
@@ -95,11 +100,12 @@ export function ThinkingControl() {
 				const state = res.data as RpcThinkingLevelState | undefined;
 				if (!state) return;
 				if (
-					useTabsStore.getState().activeTabId !== requestTabId ||
-					useSessionStore.getState().sessionId !== requestSessionId
+					!modelStore &&
+					(useTabsStore.getState().activeTabId !== fallbackTabId ||
+						useSessionStore.getState().sessionId !== fallbackSessionId)
 				)
 					return;
-				useModelStore.setState({
+				(modelStore ?? useModelStore).setState({
 					thinkingLevel: state.thinkingLevel,
 					thinkingConfigured: state.thinkingConfigured,
 				});

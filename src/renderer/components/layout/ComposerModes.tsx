@@ -11,8 +11,11 @@ import { createPortal } from "react-dom";
 import { cx } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { loopLimitText, parseLoopLimit } from "../../lib/loop-mode";
-import { useSessionStore } from "../../stores/session";
+import { useTabRpc } from "../../lib/tab-rpc";
+import { type SessionStore, useSessionStore } from "../../stores/session";
+import { sessionRuntimeStore, useRuntimeTabId } from "../../stores/session-runtime-context";
 import { useSettingsStore } from "../../stores/settings";
+import { useTabsStore } from "../../stores/tabs";
 import { useUiStore } from "../../stores/ui";
 
 const triggerClass = (active: boolean) =>
@@ -25,6 +28,8 @@ const triggerClass = (active: boolean) =>
 
 export function ComposerModes() {
 	const t = useT();
+	const rpc = useTabRpc();
+	const tabId = useRuntimeTabId();
 	const planModeEnabled = useSessionStore(s => s.planModeEnabled);
 	const goalActive = useSessionStore(s => s.goalState?.status === "active" || !!s.goal);
 	const goalObjective = useSessionStore(s => s.goal?.objective ?? null);
@@ -88,11 +93,27 @@ export function ComposerModes() {
 
 	const togglePlan = () => {
 		const enabled = !planModeEnabled;
-		void window.omp.rpc.setPlanMode(enabled).then(response => {
-			if (response.success) {
-				const data = response.data as { enabled?: boolean } | undefined;
-				useSessionStore.setState({ planModeEnabled: data?.enabled ?? enabled });
+		// Resolve the target store at CLICK time: the response can land after
+		// the user focused the other pane, and the static setter follows focus.
+		const originTabId = useTabsStore.getState().activeTabId;
+		const originSessionId = useSessionStore.getState().sessionId;
+		void rpc.setPlanMode(enabled).then(response => {
+			if (!response.success) return;
+			const data = response.data as { enabled?: boolean } | undefined;
+			const store = sessionRuntimeStore<SessionStore>(tabId, "session");
+			if (store) {
+				// The runtime may have been rebuilt by an in-place session switch
+				// while the RPC was in flight — never stamp the old session's flag.
+				if (originSessionId && store.getState().sessionId !== originSessionId) return;
+				store.setState({ planModeEnabled: data?.enabled ?? enabled });
+				return;
 			}
+			if (
+				useTabsStore.getState().activeTabId !== originTabId ||
+				useSessionStore.getState().sessionId !== originSessionId
+			)
+				return;
+			useSessionStore.setState({ planModeEnabled: data?.enabled ?? enabled });
 		});
 	};
 
@@ -182,7 +203,7 @@ export function ComposerModes() {
 								onToggle={() =>
 									toggle(
 										autoCompaction,
-										enabled => window.omp.rpc.setAutoCompaction(enabled),
+										enabled => rpc.setAutoCompaction(enabled),
 										enabled => useSettingsStore.setState({ autoCompaction: enabled }),
 									)
 								}
@@ -193,7 +214,7 @@ export function ComposerModes() {
 								onToggle={() =>
 									toggle(
 										autoRetry,
-										enabled => window.omp.rpc.setAutoRetry(enabled),
+										enabled => rpc.setAutoRetry(enabled),
 										enabled => useSettingsStore.setState({ autoRetry: enabled }),
 									)
 								}
@@ -204,7 +225,7 @@ export function ComposerModes() {
 								onToggle={() => {
 									const next = steeringMode === "all" ? "one-at-a-time" : "all";
 									useSettingsStore.setState({ steeringMode: next });
-									void window.omp.rpc.setSteeringMode(next);
+									void rpc.setSteeringMode(next);
 								}}
 							/>
 							<MoreRow
@@ -213,7 +234,7 @@ export function ComposerModes() {
 								onToggle={() => {
 									const next = interruptMode === "immediate" ? "wait" : "immediate";
 									useSettingsStore.setState({ interruptMode: next });
-									void window.omp.rpc.setInterruptMode(next);
+									void rpc.setInterruptMode(next);
 								}}
 							/>
 						</div>,

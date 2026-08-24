@@ -27,6 +27,29 @@ describe("persisted tab layout", () => {
 		expect(sanitizePersistedTabLayout(value, pathChecks(["/a", "/b"], ["/sessions/a.jsonl"]))).toEqual(value);
 	});
 
+	it("remaps and clamps a restored two-pane layout after invalid tabs are dropped", () => {
+		const value = {
+			version: 1,
+			activeIndex: 2,
+			tabs: [
+				{ cwd: "/missing", kind: "agent" },
+				{ cwd: "/a", kind: "agent" },
+				{ cwd: "/b", kind: "chat" },
+			],
+			split: { axis: "rows", firstIndex: 1, secondIndex: 2, ratio: 0.95 },
+		};
+
+		expect(sanitizePersistedTabLayout(value, pathChecks(["/a", "/b"], []))).toEqual({
+			version: 1,
+			activeIndex: 1,
+			tabs: [
+				{ cwd: "/a", kind: "agent" },
+				{ cwd: "/b", kind: "chat" },
+			],
+			split: { axis: "rows", firstIndex: 0, secondIndex: 1, ratio: 0.8 },
+		});
+	});
+
 	it("drops missing workspaces and selects the nearest surviving tab", () => {
 		const value = {
 			version: 1,

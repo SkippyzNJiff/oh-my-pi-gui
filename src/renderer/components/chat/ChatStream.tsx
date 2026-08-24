@@ -22,9 +22,11 @@ import { cx, formatShortClock } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { isRenderableMessageText } from "../../lib/messages";
 import { collapsibleReadTarget, groupReadRows, type ReadGroupEntry } from "../../lib/read-group";
+import { useTabRpc } from "../../lib/tab-rpc";
 import { useMessagesStore } from "../../stores/messages";
 import { type QueueLane, useQueuedMessages, useQueueStore } from "../../stores/queue";
 import { useSessionStore } from "../../stores/session";
+import { useRuntimeTabId } from "../../stores/session-runtime-context";
 import { useSettingsStore } from "../../stores/settings";
 import { useActiveTabKind } from "../../stores/tabs";
 import { toast } from "../../stores/toast";
@@ -66,6 +68,7 @@ const LIVE_EDGE_THRESHOLD_PX = 1;
  */
 export function ChatStream() {
 	const t = useT();
+	const tabId = useRuntimeTabId();
 	const messages = useMessagesStore(s => s.messages);
 	const streamingMessage = useMessagesStore(s => s.streamingMessage);
 	const hasStreamingText = useMessagesStore(s => isRenderableMessageText(s.streamingText));
@@ -401,7 +404,7 @@ export function ChatStream() {
 										type="button"
 										onClick={() =>
 											window.dispatchEvent(
-												new CustomEvent("omp:fill-composer", { detail: { text: prompt } }),
+												new CustomEvent("omp:fill-composer", { detail: { text: prompt, tabId } }),
 											)
 										}
 										className="omp-starter-card omp-lift group flex min-h-20 items-start gap-3 rounded-2xl border border-[var(--omp-border)] p-4 text-left shadow-[var(--omp-shadow-sm)] hover:border-[var(--omp-border-accent)] hover:bg-[var(--omp-bg-secondary)]"
@@ -864,13 +867,15 @@ export function TurnStatusRow() {
  */
 function QueuedMessageBubble({ item, lane }: { item: RpcQueuedMessage; lane: QueueLane }) {
 	const t = useT();
+	const rpc = useTabRpc();
+	const refreshQueue = useQueueStore(state => state.refresh);
 	const [removing, setRemoving] = useState(false);
 
 	const remove = async () => {
 		setRemoving(true);
 		let failure: string | undefined;
 		try {
-			const response = await window.omp.rpc.queueRemove(item.id);
+			const response = await rpc.queueRemove(item.id);
 			if (response.success) return;
 			failure = response.error;
 		} catch (cause) {
@@ -878,7 +883,7 @@ function QueuedMessageBubble({ item, lane }: { item: RpcQueuedMessage; lane: Que
 		}
 		setRemoving(false);
 		toast({ variant: "error", title: t("pendingBubble.removeFailed"), message: failure });
-		await useQueueStore.getState().refresh();
+		await refreshQueue();
 	};
 
 	return (

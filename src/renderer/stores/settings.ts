@@ -1,12 +1,10 @@
-import { create } from "zustand";
+import { createStore } from "zustand/vanilla";
 import type { RpcSessionState } from "../../shared/rpc-types";
+import { activeTabCommand, createScopedStoreHook, type TabCommand } from "./session-runtime-context";
 
 export type ApprovalMode = "always-ask" | "write" | "yolo";
 const APPROVAL_MODES = new Set<string>(["always-ask", "write", "yolo"]);
-let approvalSyncVersion = 0;
-let displaySyncVersion = 0;
-
-interface SettingsStore {
+export interface SettingsStore {
 	approvalMode: ApprovalMode;
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
@@ -91,17 +89,20 @@ const initialState = {
 };
 
 /** Read the live tools.approvalMode config setting into the store. */
-async function syncApprovalMode(set: (partial: Partial<SettingsStore>) => void): Promise<void> {
-	const version = ++approvalSyncVersion;
+async function syncApprovalMode(
+	set: (partial: Partial<SettingsStore>) => void,
+	command: TabCommand,
+	isCurrent: () => boolean,
+): Promise<void> {
 	try {
 		// Migrate the legacy launch pref once, then config.yml is the source of truth.
 		const pref = await window.omp.prefs.get("approvalMode");
 		if (typeof pref === "string" && APPROVAL_MODES.has(pref)) {
-			await window.omp.rpc.setSetting("tools.approvalMode", pref);
+			await command({ type: "set_setting", path: "tools.approvalMode", value: pref });
 			await window.omp.prefs.set("approvalMode", null);
 		}
-		const res = await window.omp.rpc.getSettings(["tools.approvalMode"]);
-		if (version !== approvalSyncVersion) return;
+		const res = await command({ type: "get_settings", paths: ["tools.approvalMode"] });
+		if (!isCurrent()) return;
 		if (res.success) {
 			const value = (res.data as { values?: Record<string, unknown> } | undefined)?.values?.["tools.approvalMode"];
 			if (typeof value === "string" && APPROVAL_MODES.has(value)) set({ approvalMode: value as ApprovalMode });
@@ -155,11 +156,14 @@ const DISPLAY_NUM_KEYS = Object.keys(DISPLAY_NUM_MAP);
  * hydration and on every config_update push so edits from either the
  * TUI or the GUI settings window apply to rendering immediately.
  */
-async function syncDisplaySettings(set: (partial: Partial<SettingsStore>) => void): Promise<void> {
-	const version = ++displaySyncVersion;
+async function syncDisplaySettings(
+	set: (partial: Partial<SettingsStore>) => void,
+	command: TabCommand,
+	isCurrent: () => boolean,
+): Promise<void> {
 	try {
-		const res = await window.omp.rpc.getSettings([...DISPLAY_SYNC_KEYS, ...DISPLAY_NUM_KEYS]);
-		if (version !== displaySyncVersion) return;
+		const res = await command({ type: "get_settings", paths: [...DISPLAY_SYNC_KEYS, ...DISPLAY_NUM_KEYS] });
+		if (!isCurrent()) return;
 		if (res.success) {
 			const values = (res.data as { values?: Record<string, unknown> } | undefined)?.values;
 			const partial: Partial<SettingsStore> = {};
@@ -178,29 +182,42 @@ async function syncDisplaySettings(set: (partial: Partial<SettingsStore>) => voi
 	}
 }
 
-export const useSettingsStore = create<SettingsStore>()(set => ({
-	...initialState,
-	setFromState: state => {
-		set({
-			steeringMode: state.steeringMode,
-			followUpMode: state.followUpMode,
-			interruptMode: state.interruptMode,
-			autoCompaction: state.autoCompactionEnabled,
-			autoRetry: state.autoRetryEnabled,
-		});
-		// approvalMode lives in the tools.approvalMode config setting (set_setting
-		// applies at runtime), not on the wire - re-sync from the live setting so
-		// neither field goes stale across session switches.
-		void syncApprovalMode(set);
-		void syncDisplaySettings(set);
-	},
-	setApprovalMode: mode => {
-		set({ approvalMode: mode });
-		void window.omp.rpc.setSetting("tools.approvalMode", mode);
-	},
-	syncDisplaySettings: () => syncDisplaySettings(set),
-	/** Re-read the live tools.approvalMode into the store (config_update / TUI edits). */
-	syncApproval: () => syncApprovalMode(set),
-	update: partial => set(partial),
-	reset: () => set(initialState),
-}));
+export const createSettingsStore = (command: TabCommand = activeTabCommand) => {
+	let approvalSyncVersion = 0;
+	let displaySyncVersion = 0;
+	return createStore<SettingsStore>()(set => {
+		const syncApproval = (): Promise<void> => {
+			const version = ++approvalSyncVersion;
+			return syncApprovalMode(set, command, () => version === approvalSyncVersion);
+		};
+		const syncDisplay = (): Promise<void> => {
+			const version = ++displaySyncVersion;
+			return syncDisplaySettings(set, command, () => version === displaySyncVersion);
+		};
+		return {
+			...initialState,
+			setFromState: state => {
+				set({
+					steeringMode: state.steeringMode,
+					followUpMode: state.followUpMode,
+					interruptMode: state.interruptMode,
+					autoCompaction: state.autoCompactionEnabled,
+					autoRetry: state.autoRetryEnabled,
+				});
+				void syncApproval();
+				void syncDisplay();
+			},
+			setApprovalMode: mode => {
+				set({ approvalMode: mode });
+				void command({ type: "set_setting", path: "tools.approvalMode", value: mode });
+			},
+			syncDisplaySettings: syncDisplay,
+			syncApproval,
+			update: partial => set(partial),
+			reset: () => set(initialState),
+		};
+	});
+};
+
+const defaultSettingsStore = createSettingsStore();
+export const useSettingsStore = createScopedStoreHook("settings", defaultSettingsStore);

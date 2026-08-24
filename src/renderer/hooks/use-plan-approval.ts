@@ -8,24 +8,31 @@
  */
 
 import { useEffect } from "react";
-import { acceptsActiveTabEvents } from "../lib/tab-routing";
+import type { AgentSessionEvent } from "../../shared/rpc-types";
 import { usePlanApprovalStore } from "../stores/plan-approval";
+import { withSessionRuntime } from "../stores/session-runtime-context";
+import { useTabsStore } from "../stores/tabs";
 
 export function usePlanApproval(): void {
 	useEffect(() => {
-		const unsubscribe = window.omp.events.onBatch(events => {
-			if (!acceptsActiveTabEvents()) return;
-			for (const event of events) {
-				if (event.type !== "plan_proposal") continue;
-				usePlanApprovalStore.getState().showProposal({
-					planFilePath: event.planFilePath,
-					title: event.title,
-					suggestedFileName: event.suggestedFileName,
-					planContent: event.planContent,
-					options: event.options,
-				});
-			}
-		});
+		const reduce = (events: AgentSessionEvent[], tabId: string) => {
+			withSessionRuntime(tabId, () => {
+				for (const event of events) {
+					if (event.type !== "plan_proposal") continue;
+					usePlanApprovalStore.getState().showProposal({
+						planFilePath: event.planFilePath,
+						title: event.title,
+						suggestedFileName: event.suggestedFileName,
+						planContent: event.planContent,
+						options: event.options,
+					});
+				}
+			});
+		};
+		const unsubscribe =
+			typeof window.omp.events.onTabBatch === "function"
+				? window.omp.events.onTabBatch(reduce)
+				: window.omp.events.onBatch(events => reduce(events, useTabsStore.getState().activeTabId ?? ""));
 		return unsubscribe;
 	}, []);
 }

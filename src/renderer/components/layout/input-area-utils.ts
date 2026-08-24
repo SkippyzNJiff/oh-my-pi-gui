@@ -62,13 +62,13 @@ function flattenFilePaths(entries: FsTreeEntry[], out: string[]): void {
 /** @mention file lists, cached per session cwd; inflight dedupes concurrent walks. */
 const mentionFileInflight = new Map<string, Promise<string[]>>();
 export const mentionFileCache = new Map<string, string[]>();
-export function listMentionFiles(cwd: string): Promise<string[]> {
+export function listMentionFiles(cwd: string, tabId?: string | null): Promise<string[]> {
 	const cached = mentionFileCache.get(cwd);
 	if (cached) return Promise.resolve(cached);
 	const inflight = mentionFileInflight.get(cwd);
 	if (inflight) return inflight;
 	const task = window.omp.fs
-		.list(undefined, MENTION_FS_DEPTH, MENTION_FS_MAX_ENTRIES)
+		.list(undefined, MENTION_FS_DEPTH, MENTION_FS_MAX_ENTRIES, tabId ?? undefined)
 		.then(result => {
 			const paths: string[] = [];
 			if (result.ok) flattenFilePaths(result.entries, paths);

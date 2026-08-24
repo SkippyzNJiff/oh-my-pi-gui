@@ -18,6 +18,7 @@ import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
 import { CodeBlock as SharedCodeBlock } from "../components/chat/CodeBlock";
 import { MermaidBlock } from "../components/chat/MermaidBlock";
+import { useRuntimeTabId } from "../stores/session-runtime-context";
 import { useUiStore } from "../stores/ui";
 import { useT } from "./i18n";
 import { PREVIEW_SCROLL_CODE } from "./preview";
@@ -427,11 +428,12 @@ function MarkdownImageFallback({ alt, path }: { alt: string; path?: string }) {
 
 function LocalMarkdownImage({ path, alt, title }: { path: string; alt: string; title?: string }) {
 	const t = useT();
+	const tabId = useRuntimeTabId();
 	const [resolved, setResolved] = useState<{ url: string } | { error: true } | null>(null);
 	useEffect(() => {
 		let cancelled = false;
 		window.omp.fs
-			.readImage(path)
+			.readImage(path, tabId ?? undefined)
 			.then(result => {
 				if (!cancelled) setResolved(result.ok && result.dataUrl ? { url: result.dataUrl } : { error: true });
 			})
@@ -441,7 +443,7 @@ function LocalMarkdownImage({ path, alt, title }: { path: string; alt: string; t
 		return () => {
 			cancelled = true;
 		};
-	}, [path]);
+	}, [path, tabId]);
 	if (!resolved) return <MarkdownImageFallback alt={alt} path={path} />;
 	if ("error" in resolved) {
 		return (

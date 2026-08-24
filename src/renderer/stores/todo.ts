@@ -1,5 +1,6 @@
-import { create } from "zustand";
+import { createStore } from "zustand/vanilla";
 import type { TodoPhase, TodoTask } from "../../shared/rpc-types";
+import { createScopedStoreHook } from "./session-runtime-context";
 
 export interface UiTodoTask extends TodoTask {
 	id: string;
@@ -26,7 +27,7 @@ export interface TodoSnapshot {
 /** Archive cap — the transcript keeps the newest snapshots, drops the oldest. */
 const HISTORY_LIMIT = 30;
 
-interface TodoStore {
+export interface TodoStore {
 	phases: UiTodoPhase[];
 	reminderVisible: boolean;
 	reminderTodos: TodoTask[];
@@ -71,35 +72,39 @@ function fingerprintPhases(
 	return JSON.stringify(phases.map(phase => [phase.name, phase.tasks.map(task => [task.content, task.status])]));
 }
 
-export const useTodoStore = create<TodoStore>()((set, get) => ({
-	...initialState,
-	setPhases: phases => {
-		const state = get();
-		const next = normalizePhases(phases);
-		if (!state.historyHydrated || fingerprintPhases(next) === fingerprintPhases(state.phases)) {
-			set({ phases: next, historyHydrated: true });
-			return;
-		}
-		const snapshot: TodoSnapshot = {
-			id: `todo-snapshot-${Date.now()}-${state.history.length}`,
-			ts: Date.now(),
-			phases: next.map(phase => ({
-				name: phase.name,
-				tasks: phase.tasks.map(task => ({ content: task.content, status: task.status })),
-			})),
-		};
-		const history = [...state.history, snapshot];
-		if (history.length > HISTORY_LIMIT) history.shift();
-		set({ phases: next, history, historyHydrated: true });
-	},
-	autoClearCompleted: () =>
-		set({
-			phases: [],
-			reminderVisible: false,
-			reminderTodos: [],
-			historyHydrated: true,
-		}),
-	showReminder: todos => set({ reminderVisible: true, reminderTodos: todos }),
-	clearReminder: () => set({ reminderVisible: false, reminderTodos: [] }),
-	reset: () => set(initialState),
-}));
+export const createTodoStore = () =>
+	createStore<TodoStore>()((set, get) => ({
+		...initialState,
+		setPhases: phases => {
+			const state = get();
+			const next = normalizePhases(phases);
+			if (!state.historyHydrated || fingerprintPhases(next) === fingerprintPhases(state.phases)) {
+				set({ phases: next, historyHydrated: true });
+				return;
+			}
+			const snapshot: TodoSnapshot = {
+				id: `todo-snapshot-${Date.now()}-${state.history.length}`,
+				ts: Date.now(),
+				phases: next.map(phase => ({
+					name: phase.name,
+					tasks: phase.tasks.map(task => ({ content: task.content, status: task.status })),
+				})),
+			};
+			const history = [...state.history, snapshot];
+			if (history.length > HISTORY_LIMIT) history.shift();
+			set({ phases: next, history, historyHydrated: true });
+		},
+		autoClearCompleted: () =>
+			set({
+				phases: [],
+				reminderVisible: false,
+				reminderTodos: [],
+				historyHydrated: true,
+			}),
+		showReminder: todos => set({ reminderVisible: true, reminderTodos: todos }),
+		clearReminder: () => set({ reminderVisible: false, reminderTodos: [] }),
+		reset: () => set(initialState),
+	}));
+
+const defaultTodoStore = createTodoStore();
+export const useTodoStore = createScopedStoreHook("todo", defaultTodoStore);

@@ -179,6 +179,7 @@ describe("SidecarPool tabs", () => {
 				cwd: "/a",
 				status: "starting",
 				active: true,
+				visible: true,
 				placeholder: false,
 				sessionPath: null,
 			},
@@ -265,6 +266,7 @@ describe("SidecarPool tabs", () => {
 				cwd: "/a",
 				status: "ready",
 				active: true,
+				visible: true,
 				placeholder: false,
 				sessionPath: null,
 			},
@@ -325,6 +327,55 @@ describe("SidecarPool tabs", () => {
 		// Foreign/unknown tabs are refused.
 		expect(pool.setActiveTab(fakeWindow(2).win, "tab-a")).toBe(false);
 		expect(pool.setActiveTab(fw.win, "nope")).toBe(false);
+	});
+
+	it("forwards exactly two visible sessions and persists their split geometry", () => {
+		const { pool, sidecars } = fakePool();
+		const fw = fakeWindow(1);
+		pool.acquire("/a", fw.win, "tab-a");
+		pool.acquire("/b", fw.win, "tab-b");
+		pool.acquire("/c", fw.win, "tab-c");
+		const [a, b, c] = sidecars;
+
+		expect(
+			pool.setTabView(fw.win, "tab-b", ["tab-a", "tab-b"], {
+				axis: "columns",
+				firstTabId: "tab-a",
+				secondTabId: "tab-b",
+				ratio: 0.65,
+			}),
+		).toBe(true);
+		expect([a?.listenerCount("events"), b?.listenerCount("events"), c?.listenerCount("events")]).toEqual([2, 2, 1]);
+		fw.sent.length = 0;
+		a?.emitAgentEvents(["agent_start"]);
+		b?.emitAgentEvents(["agent_start"]);
+		c?.emitAgentEvents(["agent_start"]);
+		expect(fw.sentTo(IPC_EVENTS.EVENTS_BATCH).map(entry => entry.data)).toEqual([
+			{ tabId: "tab-a", payload: [{ type: "agent_start" }] },
+			{ tabId: "tab-b", payload: [{ type: "agent_start" }] },
+		]);
+		expect(
+			pool
+				.tabsForWindow(fw.win)
+				.filter(tab => tab.visible)
+				.map(tab => tab.split),
+		).toEqual([
+			{ axis: "columns", index: 0, ratio: 0.65 },
+			{ axis: "columns", index: 1, ratio: 0.65 },
+		]);
+		expect(pool.tabLayoutForWindow(fw.win)?.split).toEqual({
+			axis: "columns",
+			firstIndex: 0,
+			secondIndex: 1,
+			ratio: 0.65,
+		});
+		expect(pool.setTabView(fw.win, "tab-b", ["tab-a", "tab-b", "tab-c"])).toBe(false);
+
+		expect(pool.releaseTab("tab-b")).toBe(true);
+		expect(pool.activeTabForWindow(fw.win)).toBe("tab-a");
+		expect(pool.tabLayoutForWindow(fw.win)?.split).toBeUndefined();
+		expect(a?.listenerCount("events")).toBe(2);
+		expect(c?.listenerCount("events")).toBe(1);
 	});
 
 	it("caches session meta per tab and includes it in TAB_STATUS and GET_TABS", () => {
@@ -396,6 +447,7 @@ describe("SidecarPool tabs", () => {
 				{ cwd: "/agent", kind: "agent", sessionPath: "/sessions/a.jsonl" },
 				{ cwd: "/chat", kind: "chat" },
 			],
+			split: { axis: "rows", firstIndex: 0, secondIndex: 1, ratio: 0.6 },
 		});
 
 		expect(restored).toBe(2);
@@ -406,6 +458,10 @@ describe("SidecarPool tabs", () => {
 		expect(sidecars[0]?.restartArgs).toEqual([{ cwd: undefined, sessionPath: "/sessions/a.jsonl" }]);
 		expect(sidecars[1]?.started).toBe(true);
 		expect(pool.tabsForWindow(fw.win).map(tab => tab.active ?? false)).toEqual([false, true]);
+		expect(pool.tabsForWindow(fw.win).map(tab => tab.split)).toEqual([
+			{ axis: "rows", index: 0, ratio: 0.6 },
+			{ axis: "rows", index: 1, ratio: 0.6 },
+		]);
 		expect(pool.tabLayoutForWindow(fw.win)).toEqual({
 			version: 1,
 			activeIndex: 1,
@@ -413,6 +469,7 @@ describe("SidecarPool tabs", () => {
 				{ cwd: "/agent", kind: "agent", sessionPath: "/sessions/a.jsonl" },
 				{ cwd: "/chat", kind: "chat" },
 			],
+			split: { axis: "rows", firstIndex: 0, secondIndex: 1, ratio: 0.6 },
 		});
 	});
 

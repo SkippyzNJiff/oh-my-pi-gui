@@ -6,7 +6,8 @@
  * so it resets with the proposal lifecycle and survives dialog remounts.
  */
 
-import { create } from "zustand";
+import { createStore } from "zustand/vanilla";
+import { createScopedStoreHook } from "./session-runtime-context";
 
 export interface PendingPlanProposal {
 	planFilePath: string;
@@ -31,7 +32,7 @@ export interface PlanApprovalSnapshot {
 	submitting: PlanApprovalSubmitState | null;
 }
 
-interface PlanApprovalStore extends PlanApprovalSnapshot {
+export interface PlanApprovalStore extends PlanApprovalSnapshot {
 	/** Show a proposal, replacing any previous one (latest wins). */
 	showProposal: (proposal: PendingPlanProposal) => void;
 	setFeedback: (feedback: string) => void;
@@ -41,17 +42,21 @@ interface PlanApprovalStore extends PlanApprovalSnapshot {
 	clearProposal: () => void;
 }
 
-export const usePlanApprovalStore = create<PlanApprovalStore>()(set => ({
-	pending: null,
-	feedback: "",
-	notice: null,
-	submitting: null,
-	showProposal: proposal => set({ pending: proposal, feedback: "", notice: null, submitting: null }),
-	setFeedback: feedback => set({ feedback }),
-	setNotice: notice => set({ notice }),
-	setSubmitting: submitting => set({ submitting }),
-	clearProposal: () => set({ pending: null, feedback: "", notice: null, submitting: null }),
-}));
+export const createPlanApprovalStore = () =>
+	createStore<PlanApprovalStore>()(set => ({
+		pending: null,
+		feedback: "",
+		notice: null,
+		submitting: null,
+		showProposal: proposal => set({ pending: proposal, feedback: "", notice: null, submitting: null }),
+		setFeedback: feedback => set({ feedback }),
+		setNotice: notice => set({ notice }),
+		setSubmitting: submitting => set({ submitting }),
+		clearProposal: () => set({ pending: null, feedback: "", notice: null, submitting: null }),
+	}));
+
+const defaultPlanApprovalStore = createPlanApprovalStore();
+export const usePlanApprovalStore = createScopedStoreHook("planApproval", defaultPlanApprovalStore);
 
 /** Fire-and-forget helper for non-component call sites. */
 export function clearPendingPlanProposal(): void {

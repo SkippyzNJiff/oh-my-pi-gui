@@ -1,6 +1,6 @@
 import { useCallback } from "react";
-import { acceptsActiveTabEvents } from "../lib/tab-routing";
-import { useSessionStore } from "../stores/session";
+import { type SessionStore, useSessionStore } from "../stores/session";
+import { sessionRuntimeStore, useRuntimeTabId } from "../stores/session-runtime-context";
 import { useTabsStore } from "../stores/tabs";
 
 /**
@@ -19,18 +19,22 @@ export function useTabGuard(): {
 	capture: () => TabOrigin | null;
 	isActive: (origin: TabOrigin | null) => boolean;
 } {
+	const runtimeTabId = useRuntimeTabId();
+	const activeTabId = useTabsStore(state => state.activeTabId);
 	const capture = useCallback((): TabOrigin | null => {
-		if (!acceptsActiveTabEvents()) return null;
-		const tabId = useTabsStore.getState().activeTabId;
+		const tabId = runtimeTabId ?? activeTabId;
 		if (!tabId) return null;
-		return { tabId, sessionId: useSessionStore.getState().sessionId ?? null };
-	}, []);
+		return {
+			tabId,
+			sessionId:
+				sessionRuntimeStore<SessionStore>(tabId, "session")?.getState().sessionId ??
+				useSessionStore.getState().sessionId,
+		};
+	}, [runtimeTabId, activeTabId]);
 	const isActive = useCallback((origin: TabOrigin | null): boolean => {
-		if (!origin || !acceptsActiveTabEvents()) return false;
-		return (
-			useTabsStore.getState().activeTabId === origin.tabId &&
-			(useSessionStore.getState().sessionId ?? null) === origin.sessionId
-		);
+		if (!origin) return false;
+		const runtime = sessionRuntimeStore<SessionStore>(origin.tabId, "session");
+		return (runtime?.getState().sessionId ?? useSessionStore.getState().sessionId) === origin.sessionId;
 	}, []);
 	return { capture, isActive };
 }

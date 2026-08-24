@@ -8,18 +8,40 @@
  * overflow instead of shrinking chips past readability.
  */
 
-import { Check, GitBranch, GitBranchPlus, MessageCircle, MessageCirclePlus, Plus, X } from "lucide-react";
-import { type MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+	Check,
+	Columns2,
+	GitBranch,
+	GitBranchPlus,
+	MessageCircle,
+	MessageCirclePlus,
+	Plus,
+	Rows2,
+	X,
+} from "lucide-react";
+import {
+	type DragEvent as ReactDragEvent,
+	type MouseEvent as ReactMouseEvent,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { useSessionList } from "../../hooks/use-session-list";
 import { basename, cx } from "../../lib/format";
 import { useT } from "../../lib/i18n";
-import { sessionDisplayTitle, sessionHasContent } from "../../lib/session-title";
+import { sessionHasContent } from "../../lib/session-title";
+import type { ComposerStore } from "../../stores/composer";
 import { useComposerStore } from "../../stores/composer";
+import type { MessagesStore } from "../../stores/messages";
 import { useMessagesStore } from "../../stores/messages";
+import type { QueueStore } from "../../stores/queue";
 import { useQueueStore } from "../../stores/queue";
+import type { SessionStore } from "../../stores/session";
 import { useSessionStore } from "../../stores/session";
+import { sessionRuntimeStore } from "../../stores/session-runtime-context";
 import { useSidebarPrefs } from "../../stores/sidebar-prefs";
-import { type SessionTab, tabChipLabel, useTabsStore } from "../../stores/tabs";
+import { type SessionTab, tabDisplayTitle, useTabsStore, visibleTabIds } from "../../stores/tabs";
 import { useUiStore } from "../../stores/ui";
 import { anchorFromEvent, ContextMenu, type ContextMenuAnchor } from "../common/ContextMenu";
 
@@ -29,6 +51,7 @@ const CONFIRM_CLOSE_MS = 3000;
 function TabChip({
 	tab,
 	active,
+	visible,
 	label,
 	workspaceLabel,
 	confirmingClose,
@@ -39,6 +62,7 @@ function TabChip({
 }: {
 	tab: SessionTab;
 	active: boolean;
+	visible: boolean;
 	label: string;
 	workspaceLabel: string;
 	confirmingClose: boolean;
@@ -81,10 +105,17 @@ function TabChip({
 	return (
 		<div
 			role="tab"
+			draggable
 			aria-selected={active}
 			tabIndex={0}
 			onClick={() => void switchTab(tab.id)}
 			onContextMenu={onContextMenu}
+			onDragStart={(event: ReactDragEvent<HTMLDivElement>) => {
+				event.dataTransfer.effectAllowed = "move";
+				event.dataTransfer.setData("application/x-omp-tab", tab.id);
+				window.dispatchEvent(new CustomEvent("omp:tab-drag", { detail: { tabId: tab.id } }));
+			}}
+			onDragEnd={() => window.dispatchEvent(new CustomEvent("omp:tab-drag", { detail: { tabId: null } }))}
 			onKeyDown={event => {
 				// Only the tab itself: Enter on a nested close/confirm button must
 				// activate that button, not switch tabs.
@@ -95,10 +126,12 @@ function TabChip({
 			}}
 			title={`${label} — ${workspaceLabel}${tab.worktree ? ` — ${tab.worktree.branch}` : ""}`}
 			className={cx(
-				"no-drag group relative flex h-9 min-w-0 max-w-44 shrink-0 cursor-pointer items-center gap-2 overflow-hidden px-2.5 text-omp-md select-none",
+				"no-drag group relative flex h-9 w-44 shrink-0 cursor-pointer items-center gap-2 overflow-hidden px-2.5 text-omp-md select-none",
 				active
 					? "bg-[var(--omp-selected-bg)] font-medium text-[var(--omp-text)]"
-					: "text-[var(--omp-muted)] hover:bg-[var(--omp-selected-bg)] hover:text-[var(--omp-text)]",
+					: visible
+						? "bg-[var(--omp-selected-bg)]/55 text-[var(--omp-text)] ring-1 ring-inset ring-[var(--omp-border-accent)]"
+						: "text-[var(--omp-muted)] hover:bg-[var(--omp-selected-bg)] hover:text-[var(--omp-text)]",
 			)}
 		>
 			<span
@@ -120,8 +153,26 @@ function TabChip({
 				</span>
 			) : (
 				<span className="min-w-0 flex-1 leading-tight">
-					<span className="block truncate" data-tab-title>
-						{label}
+					<span
+						className="relative block min-w-0 overflow-hidden whitespace-nowrap"
+						data-tab-title-wrap
+						onMouseEnter={event => {
+							const scroller = event.currentTarget.querySelector<HTMLElement>("[data-tab-title-scroll]");
+							const overflow = Math.max(0, (scroller?.scrollWidth ?? 0) - event.currentTarget.clientWidth);
+							event.currentTarget.dataset.overflowing = overflow > 0 ? "true" : "false";
+							event.currentTarget.style.setProperty("--omp-tab-title-overflow", `${overflow}px`);
+						}}
+					>
+						<span className="block truncate" data-tab-title>
+							{label}
+						</span>
+						<span
+							aria-hidden
+							className="omp-tab-title-scroll invisible absolute inset-0 w-max whitespace-nowrap"
+							data-tab-title-scroll
+						>
+							{label}
+						</span>
 					</span>
 					<span className="block truncate text-omp-xxs font-normal text-[var(--omp-dim)]" data-tab-workspace>
 						{workspaceLabel}
@@ -187,10 +238,12 @@ export function TabBar({ confirmCloseMs = CONFIRM_CLOSE_MS }: { confirmCloseMs?:
 	const { sessions } = useSessionList("global");
 	const tabs = useTabsStore(s => s.tabs);
 	const activeTabId = useTabsStore(s => s.activeTabId);
-	const bundles = useTabsStore(s => s.bundles);
+	const split = useTabsStore(s => s.split);
 	const groupAliases = useSidebarPrefs(s => s.groupAliases);
 	const closeTab = useTabsStore(s => s.closeTab);
 	const openTab = useTabsStore(s => s.openTab);
+	const splitTab = useTabsStore(s => s.splitTab);
+	const unsplit = useTabsStore(s => s.unsplit);
 	const liveDraft = useComposerStore(s => s.draft);
 	const liveImageCount = useComposerStore(s => s.images.length);
 	const liveMessageCount = useSessionStore(s => s.messageCount);
@@ -247,17 +300,20 @@ export function TabBar({ confirmCloseMs = CONFIRM_CLOSE_MS }: { confirmCloseMs?:
 				);
 			}
 
-			const bundle = bundles.get(tab.id);
-			if (!bundle) return true;
+			const session = sessionRuntimeStore<SessionStore>(tab.id, "session")?.getState();
+			const messages = sessionRuntimeStore<MessagesStore>(tab.id, "messages")?.getState();
+			const queue = sessionRuntimeStore<QueueStore>(tab.id, "queue")?.getState();
+			const composer = sessionRuntimeStore<ComposerStore>(tab.id, "composer")?.getState();
+			if (!session || !messages || !queue || !composer) return true;
 			return (
-				!bundle.session.isStreaming &&
-				!bundle.session.isCompacting &&
-				bundle.session.messageCount === 0 &&
-				bundle.messages.messages.length === 0 &&
-				bundle.queue.steering.length === 0 &&
-				bundle.queue.followUp.length === 0 &&
-				bundle.composer.draft.trim().length === 0 &&
-				bundle.composer.images.length === 0
+				!session.isStreaming &&
+				!session.isCompacting &&
+				session.messageCount === 0 &&
+				messages.messages.length === 0 &&
+				queue.steering.length === 0 &&
+				queue.followUp.length === 0 &&
+				composer.draft.trim().length === 0 &&
+				composer.images.length === 0
 			);
 		});
 		if (!candidate) return;
@@ -267,7 +323,6 @@ export function TabBar({ confirmCloseMs = CONFIRM_CLOSE_MS }: { confirmCloseMs?:
 		});
 	}, [
 		activeTabId,
-		bundles,
 		closeTab,
 		liveCompacting,
 		liveDraft,
@@ -337,12 +392,11 @@ export function TabBar({ confirmCloseMs = CONFIRM_CLOSE_MS }: { confirmCloseMs?:
 				className="drag-region flex h-12 shrink-0 items-center gap-1 overflow-x-auto border-b border-[var(--omp-border-muted)] bg-[var(--omp-titlebar-bg)] px-2"
 			>
 				{tabs.map(tab => {
+					const visible = visibleTabIds({ activeTabId, split }).includes(tab.id);
 					const indexedSession =
 						(tab.sessionPath ? sessionsByPath.get(tab.sessionPath) : undefined) ??
 						(tab.sessionId ? sessionsById.get(tab.sessionId) : undefined);
-					const label = indexedSession
-						? sessionDisplayTitle(indexedSession, t("sidebar.untitled"))
-						: tabChipLabel(tab, tabs);
+					const label = tabDisplayTitle(tab, tabs, indexedSession, t("sidebar.untitled"));
 					const workspaceLabel =
 						tab.kind === "chat" ? t("sidebar.chats") : (groupAliases[tab.cwd] ?? basename(tab.cwd) ?? tab.cwd);
 					return (
@@ -350,6 +404,7 @@ export function TabBar({ confirmCloseMs = CONFIRM_CLOSE_MS }: { confirmCloseMs?:
 							key={tab.id}
 							tab={tab}
 							active={tab.id === activeTabId}
+							visible={visible}
 							label={label}
 							workspaceLabel={workspaceLabel}
 							confirmingClose={confirmCloseId === tab.id}
@@ -374,12 +429,73 @@ export function TabBar({ confirmCloseMs = CONFIRM_CLOSE_MS }: { confirmCloseMs?:
 						void closeTabs(ids);
 					};
 					const blockedReason = t("tabs.menu.closeProtected");
+					const splitDisabled = target.id === activeTabId && !split;
+					const splitItems = [
+						{
+							id: "split-left",
+							label: t("tabs.menu.splitLeft"),
+							icon: Columns2,
+							disabled: splitDisabled,
+							disabledReason: splitDisabled ? t("tabs.menu.splitCurrent") : undefined,
+							onSelect: () => {
+								setTabMenu(null);
+								void splitTab(target.id, "left");
+							},
+						},
+						{
+							id: "split-right",
+							label: t("tabs.menu.splitRight"),
+							icon: Columns2,
+							disabled: splitDisabled,
+							disabledReason: splitDisabled ? t("tabs.menu.splitCurrent") : undefined,
+							onSelect: () => {
+								setTabMenu(null);
+								void splitTab(target.id, "right");
+							},
+						},
+						{
+							id: "split-top",
+							label: t("tabs.menu.splitTop"),
+							icon: Rows2,
+							disabled: splitDisabled,
+							disabledReason: splitDisabled ? t("tabs.menu.splitCurrent") : undefined,
+							onSelect: () => {
+								setTabMenu(null);
+								void splitTab(target.id, "top");
+							},
+						},
+						{
+							id: "split-bottom",
+							label: t("tabs.menu.splitBottom"),
+							icon: Rows2,
+							disabled: splitDisabled,
+							disabledReason: splitDisabled ? t("tabs.menu.splitCurrent") : undefined,
+							onSelect: () => {
+								setTabMenu(null);
+								void splitTab(target.id, "bottom");
+							},
+						},
+					];
+					if (split) {
+						splitItems.push({
+							id: "remove-split",
+							label: t("tabs.menu.removeSplit"),
+							icon: X,
+							disabled: false,
+							disabledReason: undefined,
+							onSelect: () => {
+								setTabMenu(null);
+								void unsplit(target.id);
+							},
+						});
+					}
 					return (
 						<ContextMenu
 							x={tabMenu.anchor.x}
 							y={tabMenu.anchor.y}
 							onClose={() => setTabMenu(null)}
 							items={[
+								...splitItems,
 								{
 									id: "close-left",
 									label: t("tabs.menu.closeLeft"),

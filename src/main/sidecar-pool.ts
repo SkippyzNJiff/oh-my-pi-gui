@@ -10,8 +10,8 @@
  *
  * Event routing: the full event channels (events batch, status, subagent,
  * live, commands, config, prompt result, command output, session info,
- * extension ui/error, host tool/uri) forward ONLY from the window's ACTIVE
- * tab — listeners move on setActiveTab, never duplicate. Every tab (active or
+ * extension ui/error, host tool/uri) forward from at most two VISIBLE tabs.
+ * One of them is focused for untargeted commands. Every tab (visible or
  * background) additionally pushes the light TAB_STATUS channel, so background
  * tabs report status flips and session title/id changes.
  *
@@ -32,6 +32,7 @@ import type { BrowserWindow } from "electron";
 import {
 	IPC_EVENTS,
 	type IpcSessionOwner,
+	type IpcSetTabViewPayload,
 	type IpcTabInfo,
 	type IpcTabStatusPayload,
 	type IpcTabWorktree,
@@ -111,11 +112,17 @@ interface PoolEntry {
 	detachFull: (() => void) | null;
 }
 
+type WindowSplitView = NonNullable<IpcSetTabViewPayload["split"]>;
+
 export class SidecarPool {
 	#entries = new Set<PoolEntry>();
 	#byTabId = new Map<string, PoolEntry>();
 	/** Window (webContents.id) → active tab. The first acquired tab defaults active. */
 	#activeByWindow = new Map<number, string>();
+	/** Window → the one or two tabs whose full event streams are rendered. */
+	#visibleByWindow = new Map<number, Set<string>>();
+	/** Window → persisted order, axis, and ratio for its optional two-pane view. */
+	#splitByWindow = new Map<number, WindowSplitView>();
 	/** Session file → owning tab/window (F-OWN double-attach guard). */
 	#sessionOwners = new Map<string, IpcSessionOwner>();
 	/**
@@ -204,7 +211,11 @@ export class SidecarPool {
 			// F-OWN: a spawn-with-sessionPath attaches immediately — register the
 			// owner before any duplicate attach can slip past the IPC guard.
 			if (sessionPath) this.#registerSessionFile(entry, sessionPath);
-			if (!this.#activeByWindow.has(entry.winId)) this.#setActive(entry);
+			if (!this.#activeByWindow.has(entry.winId)) {
+				this.#activeByWindow.set(entry.winId, entry.tabId);
+				this.#visibleByWindow.set(entry.winId, new Set([entry.tabId]));
+				this.#syncFullWiring(entry.winId);
+			}
 
 			win.once("closed", () => {
 				this.#releaseEntry(entry);
@@ -276,7 +287,7 @@ export class SidecarPool {
 	}
 
 	/**
-	 * Full-channel wiring, attached ONLY while the tab is its window's active
+	 * Full-channel wiring, attached only while the tab is visible in its window
 	 * tab. Idempotent: an already-wired entry is left untouched, so a repeated
 	 * setActiveTab cannot stack duplicate listeners.
 	 */
@@ -348,13 +359,13 @@ export class SidecarPool {
 		};
 	}
 
-	/** Move the window's active tab to `entry`, detaching the previous tab's forwarders. */
-	#setActive(entry: PoolEntry): void {
-		const previous = this.#byTabId.get(this.#activeByWindow.get(entry.winId) ?? "");
-		if (previous === entry) return;
-		if (previous?.detachFull) previous.detachFull();
-		this.#activeByWindow.set(entry.winId, entry.tabId);
-		this.#wireFull(entry);
+	#syncFullWiring(winId: number): void {
+		const visible = this.#visibleByWindow.get(winId) ?? new Set<string>();
+		for (const entry of this.#entries) {
+			if (entry.winId !== winId) continue;
+			if (visible.has(entry.tabId)) this.#wireFull(entry);
+			else entry.detachFull?.();
+		}
 	}
 
 	/**
@@ -375,17 +386,34 @@ export class SidecarPool {
 		}
 		entry.sidecar.removeAllListeners();
 		entry.sidecar.dispose();
-		if (this.#activeByWindow.get(entry.winId) !== entry.tabId) return;
+		const visible = this.#visibleByWindow.get(entry.winId);
+		visible?.delete(entry.tabId);
+		const split = this.#splitByWindow.get(entry.winId);
+		if (split?.firstTabId === entry.tabId || split?.secondTabId === entry.tabId)
+			this.#splitByWindow.delete(entry.winId);
+		if (![...this.#entries].some(candidate => candidate.winId === entry.winId)) {
+			this.#activeByWindow.delete(entry.winId);
+			this.#visibleByWindow.delete(entry.winId);
+			this.#splitByWindow.delete(entry.winId);
+			return;
+		}
+		if (this.#activeByWindow.get(entry.winId) !== entry.tabId) {
+			this.#syncFullWiring(entry.winId);
+			return;
+		}
 		this.#activeByWindow.delete(entry.winId);
 		// During window teardown every entry self-releases; activating a sibling
 		// whose window is already gone would wire forwarders for nothing.
 		if (entry.win.isDestroyed()) return;
-		for (const candidate of this.#entries) {
-			if (candidate.winId === entry.winId) {
-				this.#setActive(candidate);
-				return;
-			}
+		const candidates = [...this.#entries].filter(candidate => candidate.winId === entry.winId);
+		const candidate = candidates.find(item => visible?.has(item.tabId)) ?? candidates[0];
+		if (!candidate) {
+			this.#visibleByWindow.delete(entry.winId);
+			return;
 		}
+		if (!visible || visible.size === 0) this.#visibleByWindow.set(entry.winId, new Set([candidate.tabId]));
+		this.#activeByWindow.set(entry.winId, candidate.tabId);
+		this.#syncFullWiring(entry.winId);
 	}
 
 	/** The window's active entry (first entry as a fallback, e.g. mid-teardown). */
@@ -420,11 +448,39 @@ export class SidecarPool {
 
 	/** Make `tabId` the window's active tab (moves full event forwarding). False when unknown/foreign. */
 	setActiveTab(win: BrowserWindow, tabId: string): boolean {
-		const entry = this.#byTabId.get(tabId);
-		if (!entry || entry.win !== win) return false;
-		const changed = this.#activeByWindow.get(entry.winId) !== entry.tabId;
-		this.#setActive(entry);
-		if (changed) this.#notifyWindowTabsChanged(win);
+		return this.setTabView(win, tabId, [tabId]);
+	}
+
+	/** Atomically focus one tab and wire full streams for one or two visible tabs. */
+	setTabView(
+		win: BrowserWindow,
+		focusedTabId: string,
+		visibleTabIds: readonly string[],
+		split?: IpcSetTabViewPayload["split"],
+	): boolean {
+		const ids = [...new Set(visibleTabIds)];
+		if (ids.length < 1 || ids.length > 2 || !ids.includes(focusedTabId)) return false;
+		if (
+			split &&
+			(ids.length !== 2 ||
+				!ids.includes(split.firstTabId) ||
+				!ids.includes(split.secondTabId) ||
+				split.firstTabId === split.secondTabId ||
+				(split.axis !== "columns" && split.axis !== "rows") ||
+				!Number.isFinite(split.ratio))
+		)
+			return false;
+		for (const tabId of ids) {
+			const entry = this.#byTabId.get(tabId);
+			if (!entry || entry.win !== win) return false;
+		}
+		const winId = win.webContents.id;
+		this.#activeByWindow.set(winId, focusedTabId);
+		this.#visibleByWindow.set(winId, new Set(ids));
+		if (split) this.#splitByWindow.set(winId, { ...split, ratio: Math.min(0.8, Math.max(0.2, split.ratio)) });
+		else this.#splitByWindow.delete(winId);
+		this.#syncFullWiring(winId);
+		this.#notifyWindowTabsChanged(win);
 		return true;
 	}
 
@@ -537,10 +593,15 @@ export class SidecarPool {
 	tabsForWindow(win: BrowserWindow): IpcTabInfo[] {
 		const tabs: IpcTabInfo[] = [];
 		const activeTabId = this.#activeByWindow.get(win.webContents.id);
+		const visibleTabIds = this.#visibleByWindow.get(win.webContents.id);
+		const split = this.#splitByWindow.get(win.webContents.id);
 		for (const entry of this.#entries) {
 			if (entry.win !== win) continue;
 			const tab = tabStatusPayload(entry);
 			if (entry.tabId === activeTabId) tab.active = true;
+			if (visibleTabIds?.has(entry.tabId)) tab.visible = true;
+			if (split?.firstTabId === entry.tabId) tab.split = { axis: split.axis, index: 0, ratio: split.ratio };
+			else if (split?.secondTabId === entry.tabId) tab.split = { axis: split.axis, index: 1, ratio: split.ratio };
 			tabs.push(tab);
 		}
 		return tabs;
@@ -555,6 +616,9 @@ export class SidecarPool {
 			0,
 			entries.findIndex(entry => entry.tabId === activeTabId),
 		);
+		const split = this.#splitByWindow.get(win.webContents.id);
+		const firstIndex = split ? entries.findIndex(entry => entry.tabId === split.firstTabId) : -1;
+		const secondIndex = split ? entries.findIndex(entry => entry.tabId === split.secondTabId) : -1;
 		return {
 			version: TAB_LAYOUT_VERSION,
 			activeIndex,
@@ -565,6 +629,9 @@ export class SidecarPool {
 				if (entry.placeholder) descriptor.placeholder = true;
 				return descriptor;
 			}),
+			...(split && firstIndex >= 0 && secondIndex >= 0
+				? { split: { axis: split.axis, firstIndex, secondIndex, ratio: split.ratio } }
+				: {}),
 		};
 	}
 
@@ -575,6 +642,7 @@ export class SidecarPool {
 		let restoredCount = 0;
 		let firstRestoredTabId: string | undefined;
 		let activeRestoredTabId: string | undefined;
+		const restoredTabIds: string[] = [];
 		try {
 			for (const [index, tab] of layout.tabs.entries()) {
 				const tabId = nextSnowflake();
@@ -590,13 +658,22 @@ export class SidecarPool {
 				);
 				if (!sidecar) continue;
 				restoredCount++;
+				restoredTabIds[index] = tabId;
 				firstRestoredTabId ??= tabId;
 				if (index === layout.activeIndex) activeRestoredTabId = tabId;
 			}
 			const activeTabId = activeRestoredTabId ?? firstRestoredTabId;
 			if (activeTabId) {
-				const active = this.#byTabId.get(activeTabId);
-				if (active) this.#setActive(active);
+				const firstTabId = layout.split ? restoredTabIds[layout.split.firstIndex] : undefined;
+				const secondTabId = layout.split ? restoredTabIds[layout.split.secondIndex] : undefined;
+				if (layout.split && firstTabId && secondTabId) {
+					this.setTabView(win, activeTabId, [firstTabId, secondTabId], {
+						axis: layout.split.axis,
+						firstTabId,
+						secondTabId,
+						ratio: layout.split.ratio,
+					});
+				} else this.setTabView(win, activeTabId, [activeTabId]);
 			}
 		} finally {
 			this.#restoringWindows.delete(winId);
@@ -618,6 +695,8 @@ export class SidecarPool {
 		this.#entries.clear();
 		this.#byTabId.clear();
 		this.#activeByWindow.clear();
+		this.#visibleByWindow.clear();
+		this.#splitByWindow.clear();
 		this.#sessionOwners.clear();
 		this.#requestOwners.clear();
 		this.#restoringWindows.clear();

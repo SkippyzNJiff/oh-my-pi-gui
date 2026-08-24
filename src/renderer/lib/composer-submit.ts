@@ -13,6 +13,7 @@ import { hydrateSession } from "../hooks/use-rpc-events";
 import { toast } from "../stores/toast";
 import { buildCurrentCommandMenu, type CommandAffordance } from "./command-registry";
 import { translate } from "./i18n";
+import type { TabRpc } from "./tab-rpc";
 
 export type ComposerSendMode = "prompt" | "steer" | "followUp";
 
@@ -93,8 +94,9 @@ export function planComposerSubmit(input: {
 	isStreaming: boolean;
 	mode: ComposerSendMode;
 	commands: AvailableCommand[];
+	rpc?: Pick<TabRpc, "compact" | "followUp" | "prompt" | "steer">;
 }): ComposerSubmit {
-	const { message, images, isStreaming, mode, commands } = input;
+	const { message, images, isStreaming, mode, commands, rpc = window.omp.rpc } = input;
 	const isSlashCommand = message.startsWith("/");
 	if (isSlashCommand && isStreaming) {
 		const commandName = /^\/([a-z-]+)/i.exec(message)?.[1]?.toLowerCase();
@@ -113,28 +115,30 @@ export function planComposerSubmit(input: {
 	// exact command through its dedicated RPC so it gets the compact timeout
 	// instead of timing out as an 8s prompt while still blocking the RPC queue.
 	if (isSlashCommand && message.trim() === "/compact") {
-		return { kind: "send", request: () => window.omp.rpc.compact() };
+		return { kind: "send", request: () => rpc.compact() };
 	}
 	const guiHandled = isSlashCommand ? runGuiOnlyBuiltin(message, commands) : undefined;
 	if (guiHandled !== undefined) return { kind: guiHandled ? "handled" : "blocked" };
 	if (!isSlashCommand && isStreaming) {
 		return {
 			kind: "send",
-			request: () =>
-				mode === "followUp" ? window.omp.rpc.followUp(message, images) : window.omp.rpc.steer(message, images),
+			request: () => (mode === "followUp" ? rpc.followUp(message, images) : rpc.steer(message, images)),
 		};
 	}
-	return { kind: "send", request: () => window.omp.rpc.prompt(message, images) };
+	return { kind: "send", request: () => rpc.prompt(message, images) };
 }
 
 /** Post-success settle: rehydrate after local-only slash commands. */
-export async function settleComposerResponse(response: RpcResponse): Promise<void> {
+export async function settleComposerResponse(
+	response: RpcResponse,
+	hydrate: () => Promise<void> = hydrateSession,
+): Promise<void> {
 	if (!response.success) return;
 	const data: unknown = response.data;
 	if (
 		response.command === "compact" ||
 		(data !== null && typeof data === "object" && "agentInvoked" in data && data.agentInvoked === false)
 	) {
-		await hydrateSession();
+		await hydrate();
 	}
 }

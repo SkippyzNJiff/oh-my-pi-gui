@@ -10,7 +10,7 @@ import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, type Mock, vi } from "vitest";
 import type { IpcSpawnTabPayload, IpcTabInfo, IpcTabStatusPayload, SessionInfo } from "../../../shared/ipc-types";
-import type { RpcResponse } from "../../../shared/rpc-types";
+import type { RpcCommand, RpcResponse } from "../../../shared/rpc-types";
 import { I18nProvider } from "../../lib/i18n";
 import { useComposerStore } from "../../stores/composer";
 import { useMessagesStore } from "../../stores/messages";
@@ -75,6 +75,7 @@ interface MockOmp {
 		spawn: Mock<(payload: IpcSpawnTabPayload) => Promise<{ tabId: string } | null>>;
 		close: Mock<(tabId: string) => Promise<boolean>>;
 		setActive: Mock<(tabId: string) => Promise<boolean>>;
+		setView: Mock<(tabId: string, visibleTabIds: string[], split?: unknown) => Promise<boolean>>;
 	};
 	events: {
 		onTabStatus: Mock<(callback: (payload: IpcTabStatusPayload) => void) => () => void>;
@@ -89,6 +90,7 @@ interface MockOmp {
 		getVibeMode: Mock<() => Promise<RpcResponse>>;
 		getQueue: Mock<() => Promise<RpcResponse>>;
 		setSubagentSubscription: Mock<(level: string) => Promise<RpcResponse>>;
+		commandForTab: Mock<(tabId: string, command: RpcCommand) => Promise<RpcResponse>>;
 	};
 }
 
@@ -100,6 +102,7 @@ function installMockOmp(): MockOmp {
 			spawn: vi.fn(async () => ({ tabId: "t9" })),
 			close: vi.fn(async () => true),
 			setActive: vi.fn(async () => true),
+			setView: vi.fn(async () => true),
 		},
 		events: {
 			onTabStatus: vi.fn(() => () => {}),
@@ -128,6 +131,32 @@ function installMockOmp(): MockOmp {
 			getVibeMode: vi.fn(async () => ok({ enabled: false })),
 			getQueue: vi.fn(async () => ok({ steering: [], followUp: [] })),
 			setSubagentSubscription: vi.fn(async () => ok({})),
+			commandForTab: vi.fn(async (tabId, command) => {
+				switch (command.type) {
+					case "get_state":
+						return ok({
+							sessionId: "srv",
+							sessionName: null,
+							sessionFile: null,
+							cwd: tabId === "t1" ? "/beta" : "/srv",
+							isStreaming: false,
+							isCompacting: false,
+							contextUsage: null,
+							messageCount: 0,
+							queuedMessageCount: 0,
+							planModeEnabled: false,
+							todoPhases: [],
+						});
+					case "get_transcript":
+						return ok({ messages: [] });
+					case "get_subagents":
+						return ok({ subagents: [] });
+					case "get_queue":
+						return ok({ steering: [], followUp: [] });
+					default:
+						return ok({ enabled: false });
+				}
+			}),
 		},
 	};
 	(window as unknown as { omp: MockOmp }).omp = omp;
@@ -182,6 +211,17 @@ async function rightClick(element: TestElement): Promise<void> {
 	if (!props?.onContextMenu) throw new Error("element onContextMenu not found");
 	await act(async () => props.onContextMenu?.({ clientX: 80, clientY: 40, preventDefault: () => {} }));
 	await flush();
+}
+
+/** Drive an element's React onMouseEnter (linkedom has no layout/event system). */
+async function mouseEnter(element: TestElement): Promise<void> {
+	const record = element as unknown as Record<string, unknown>;
+	const propsKey = Object.getOwnPropertyNames(record).find(key => key.startsWith("__reactProps$"));
+	const props = propsKey
+		? (record[propsKey] as { onMouseEnter?: (event: { currentTarget: TestElement }) => void } | undefined)
+		: undefined;
+	if (!props?.onMouseEnter) throw new Error("element onMouseEnter not found");
+	await act(async () => props.onMouseEnter?.({ currentTarget: element }));
 }
 
 function menuItem(label: string): TestElement | null {
@@ -351,6 +391,47 @@ describe("TabBar", () => {
 		expect(tabWorkspaces()).toEqual(["alpha", "beta"]);
 	});
 
+	it("keeps chips fixed-width and only arms hover scrolling for an overflowing title", async () => {
+		useTabsStore.setState({
+			tabs: [
+				{
+					kind: "agent",
+					id: "t0",
+					cwd: "/work/alpha",
+					status: "ready",
+					title: "A deliberately long session title",
+					unreadDone: false,
+				},
+				{ kind: "agent", id: "t1", cwd: "/work/beta", status: "ready", title: "Short", unreadDone: false },
+			],
+			activeTabId: "t0",
+			bundles: new Map(),
+		});
+		await mount(<TabBar />);
+
+		const [longChip, shortChip] = chips();
+		expect([longChip, shortChip].every(chip => chip?.getAttribute("class")?.split(/\s+/).includes("w-44"))).toBe(
+			true,
+		);
+		const longTitle = longChip?.querySelector("[data-tab-title-wrap]");
+		const longScroller = longTitle?.querySelector("[data-tab-title-scroll]");
+		const shortTitle = shortChip?.querySelector("[data-tab-title-wrap]");
+		const shortScroller = shortTitle?.querySelector("[data-tab-title-scroll]");
+		if (!longTitle || !longScroller || !shortTitle || !shortScroller)
+			throw new Error("tab title scrollers not rendered");
+		Object.defineProperty(longTitle, "clientWidth", { configurable: true, value: 100 });
+		Object.defineProperty(longScroller, "scrollWidth", { configurable: true, value: 240 });
+		Object.defineProperty(shortTitle, "clientWidth", { configurable: true, value: 100 });
+		Object.defineProperty(shortScroller, "scrollWidth", { configurable: true, value: 80 });
+
+		await mouseEnter(longTitle);
+		await mouseEnter(shortTitle);
+
+		expect(longTitle.getAttribute("data-overflowing")).toBe("true");
+		expect((longTitle as unknown as HTMLElement).style.getPropertyValue("--omp-tab-title-overflow")).toBe("140px");
+		expect(shortTitle.getAttribute("data-overflowing")).toBe("false");
+	});
+
 	it("hides the close button at the single-tab floor and shows it with two tabs", async () => {
 		useTabsStore.setState({
 			tabs: [{ kind: "agent", id: "t0", cwd: "/alpha", status: "ready", unreadDone: false }],
@@ -389,6 +470,38 @@ describe("TabBar", () => {
 		expect(rendered[1]?.querySelector(".omp-signal-light--active")).toBeNull();
 		expect(rendered[0]?.querySelector('[aria-label="Working"]')).not.toBeNull();
 		expect(rendered[1]?.querySelector('[aria-label="Run completed"]')).not.toBeNull();
+		expect(rendered.every(chip => chip.getAttribute("draggable") === "true")).toBe(true);
+	});
+
+	it("right-click creates and removes a two-session split without changing either runtime", async () => {
+		useTabsStore.setState({
+			tabs: [
+				{ kind: "agent", id: "t0", cwd: "/alpha", status: "ready", unreadDone: false },
+				{ kind: "agent", id: "t1", cwd: "/beta", status: "ready", unreadDone: false },
+			],
+			activeTabId: "t0",
+			split: null,
+			bundles: new Map(),
+		});
+		await mount(<TabBar />);
+
+		await rightClick(chips()[1]!);
+		await click(menuItem("Split right")!);
+		expect(useTabsStore.getState()).toMatchObject({
+			activeTabId: "t1",
+			split: { axis: "columns", firstTabId: "t0", secondTabId: "t1", ratio: 0.5 },
+		});
+		expect(omp.tabs.setView).toHaveBeenCalledWith("t1", ["t0", "t1"], {
+			axis: "columns",
+			firstTabId: "t0",
+			secondTabId: "t1",
+			ratio: 0.5,
+		});
+
+		await rightClick(chips()[1]!);
+		await click(menuItem("Exit split view")!);
+		expect(useTabsStore.getState().split).toBeNull();
+		expect(omp.tabs.setActive).toHaveBeenLastCalledWith("t1");
 	});
 
 	it("right-click closes tabs to either side or replaces all original tabs", async () => {

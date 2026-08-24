@@ -175,6 +175,7 @@ export function AgentsDockCard({ pollMs = STREAM_POLL_MS }: { pollMs?: number })
 	const toolCallOwners = useSubagentGraphStore(state => state.toolCallOwners);
 	const messages = useMessagesStore(state => state.messages);
 	const isStreaming = useSessionStore(s => s.isStreaming);
+	const refresh = useSubagentsStore(state => state.refresh);
 	const [expanded, setExpanded] = useState<Set<string>>(new Set());
 	const [view, setView] = useState<PanelView>("list");
 	const [now, setNow] = useState(() => Date.now());
@@ -197,10 +198,10 @@ export function AgentsDockCard({ pollMs = STREAM_POLL_MS }: { pollMs?: number })
 			// re-checked inside the store AFTER the await, before the write.
 			const origin = capture();
 			if (!isActive(origin)) return;
-			void useSubagentsStore.getState().refresh({ expect: () => isActive(origin) });
+			void refresh({ expect: () => isActive(origin) });
 		}, pollMs);
 		return () => clearInterval(timer);
-	}, [capture, isActive, isStreaming, pollMs]);
+	}, [capture, isActive, isStreaming, pollMs, refresh]);
 
 	const rootToolCallIds = useMemo(() => new Set(extractTaskToolCallIds(messages)), [messages]);
 	const rows = useMemo(

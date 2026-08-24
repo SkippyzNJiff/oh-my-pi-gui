@@ -1,5 +1,6 @@
-import { create } from "zustand";
+import { createStore } from "zustand/vanilla";
 import type { ExtensionUIRequest } from "../../shared/rpc-types";
+import { createScopedStoreHook } from "./session-runtime-context";
 
 export interface ExtensionUiSnapshot {
 	pendingRequests: ExtensionUIRequest[];
@@ -7,7 +8,7 @@ export interface ExtensionUiSnapshot {
 	widgetPanels: Record<string, string[]>;
 }
 
-interface ExtensionUiStore extends ExtensionUiSnapshot {
+export interface ExtensionUiStore extends ExtensionUiSnapshot {
 	pushRequest: (request: ExtensionUIRequest) => void;
 	removeRequest: (id: string) => void;
 	setStatus: (key: string, text: string | undefined) => void;
@@ -38,29 +39,33 @@ export function applyExtensionUiRequest(
 	return { ...snapshot, pendingRequests: [...snapshot.pendingRequests, request] };
 }
 
-export const useExtensionUiStore = create<ExtensionUiStore>()((set, get) => ({
-	pendingRequests: [],
-	statusWidgets: {},
-	widgetPanels: {},
-	pushRequest: request => set(state => applyExtensionUiRequest(state, request)),
-	removeRequest: id => set({ pendingRequests: get().pendingRequests.filter(r => r.id !== id) }),
-	setStatus: (key, text) => {
-		const next = { ...get().statusWidgets };
-		if (text) {
-			next[key] = text;
-		} else {
-			delete next[key];
-		}
-		set({ statusWidgets: next });
-	},
-	setWidget: (key, lines) => {
-		const next = { ...get().widgetPanels };
-		if (lines && lines.length > 0) {
-			next[key] = lines;
-		} else {
-			delete next[key];
-		}
-		set({ widgetPanels: next });
-	},
-	clearAll: () => set({ pendingRequests: [], statusWidgets: {}, widgetPanels: {} }),
-}));
+export const createExtensionUiStore = () =>
+	createStore<ExtensionUiStore>()((set, get) => ({
+		pendingRequests: [],
+		statusWidgets: {},
+		widgetPanels: {},
+		pushRequest: request => set(state => applyExtensionUiRequest(state, request)),
+		removeRequest: id => set({ pendingRequests: get().pendingRequests.filter(r => r.id !== id) }),
+		setStatus: (key, text) => {
+			const next = { ...get().statusWidgets };
+			if (text) {
+				next[key] = text;
+			} else {
+				delete next[key];
+			}
+			set({ statusWidgets: next });
+		},
+		setWidget: (key, lines) => {
+			const next = { ...get().widgetPanels };
+			if (lines && lines.length > 0) {
+				next[key] = lines;
+			} else {
+				delete next[key];
+			}
+			set({ widgetPanels: next });
+		},
+		clearAll: () => set({ pendingRequests: [], statusWidgets: {}, widgetPanels: {} }),
+	}));
+
+const defaultExtensionUiStore = createExtensionUiStore();
+export const useExtensionUiStore = createScopedStoreHook("extensionUi", defaultExtensionUiStore);

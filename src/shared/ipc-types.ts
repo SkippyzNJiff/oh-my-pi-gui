@@ -172,6 +172,8 @@ export const IPC_COMMANDS = {
 	CLOSE_TAB: "tab:close",
 	/** Move full event forwarding to the window's active tab */
 	SET_ACTIVE_TAB: "tab:set-active",
+	/** Atomically set the focused tab and the one or two tabs receiving full event streams. */
+	SET_TAB_VIEW: "tab:set-view",
 	/** List the calling window's tabs (boot reconciliation) */
 	GET_TABS: "tab:get-all",
 	/** Look up the tab/window currently attached to a session file (F-OWN double-attach guard) */
@@ -558,6 +560,8 @@ export interface IpcPrefsSetPayload {
 // ============================================================================
 
 export interface IpcFsListPayload {
+	/** Visible tab whose workspace roots this operation. */
+	tabId?: string;
 	/** Directory to walk, relative to the workspace root; defaults to the root. */
 	path?: string;
 	/** Max directory depth to descend into (root level = 0). */
@@ -584,6 +588,8 @@ export interface IpcFsListResult {
 }
 
 export interface IpcFsReadPayload {
+	/** Visible tab whose workspace resolves relative paths. */
+	tabId?: string;
 	/** Workspace-relative path, or an absolute/~/ path selected for local preview. */
 	path: string;
 	/** Max bytes to read; hard-capped in main. */
@@ -610,6 +616,8 @@ export interface IpcOpenPathResult {
 }
 
 export interface IpcFsReadPlanPayload {
+	/** Visible tab whose workspace is an allowed root. */
+	tabId?: string;
 	/** Absolute path of the configured plan file. */
 	fsPath: string;
 	/** Session-local artifacts root for the newest-`*plan.md` fallback (plan under `local://`); null disables the fallback. */
@@ -617,6 +625,8 @@ export interface IpcFsReadPlanPayload {
 }
 
 export interface IpcFsReadImagePayload {
+	/** Visible tab whose workspace resolves relative paths. */
+	tabId?: string;
 	/**
 	 * Image path from a markdown `![alt](src)` in model output. Relative paths
 	 * resolve against the session workspace; absolute paths (and `~`) are read
@@ -692,6 +702,10 @@ export interface IpcTabInfo {
 	status: TabStatus;
 	/** Present on GET_TABS for the tab main currently routes as active. */
 	active?: boolean;
+	/** Present on GET_TABS for the one or two tabs whose full stream is visible. */
+	visible?: boolean;
+	/** Restored split geometry for this visible tab. */
+	split?: { axis: "columns" | "rows"; index: 0 | 1; ratio: number };
 	/** True while automatic transcript compaction is mutating this session. */
 	compacting?: boolean;
 	/** Immutable session kind, fixed when the tab's sidecar was spawned. */
@@ -772,6 +786,12 @@ export interface IpcCloseTabPayload {
 
 export interface IpcSetActiveTabPayload {
 	tabId: string;
+}
+
+export interface IpcSetTabViewPayload {
+	focusedTabId: string;
+	visibleTabIds: string[];
+	split?: { axis: "columns" | "rows"; firstTabId: string; secondTabId: string; ratio: number };
 }
 
 export interface IpcSidecarRestartPayload {
@@ -1030,6 +1050,17 @@ export interface OmpApi {
 		onCommandOutput(callback: (frame: CommandOutputFrame) => void): () => void;
 		onSessionInfoUpdate(callback: (frame: SessionInfoUpdateFrame) => void): () => void;
 		onExtensionError(callback: (frame: ExtensionErrorFrame) => void): () => void;
+		/** Full-stream variants keep the originating visible tab id. */
+		onTabBatch(callback: (events: AgentSessionEvent[], tabId: string) => void): () => void;
+		onTabSidecarStatus(callback: (status: IpcSidecarStatusPayload, tabId: string) => void): () => void;
+		onTabSubagentFrame(callback: (frame: SubagentFrame, tabId: string) => void): () => void;
+		onTabModelCatalogUpdate(callback: (frame: ModelCatalogUpdateFrame, tabId: string) => void): () => void;
+		onTabCommandsUpdate(callback: (commands: AvailableCommand[], tabId: string) => void): () => void;
+		onTabConfigUpdate(callback: (payload: ConfigUpdateFrame, tabId: string) => void): () => void;
+		onTabPromptResult(callback: (frame: PromptResultFrame, tabId: string) => void): () => void;
+		onTabCommandOutput(callback: (frame: CommandOutputFrame, tabId: string) => void): () => void;
+		onTabSessionInfoUpdate(callback: (frame: SessionInfoUpdateFrame, tabId: string) => void): () => void;
+		onTabExtensionError(callback: (frame: ExtensionErrorFrame, tabId: string) => void): () => void;
 		onSessionsChanged(callback: () => void): () => void;
 		onLogLines(callback: (lines: string[]) => void): () => void;
 		onMenuAction(callback: (action: MenuAction, payload?: MenuActionPayload) => void): () => void;
@@ -1077,6 +1108,8 @@ export interface OmpApi {
 		close(tabId: string): Promise<boolean>;
 		/** Move full event forwarding to this tab. False when unknown or foreign. */
 		setActive(tabId: string): Promise<boolean>;
+		/** Set the focused tab plus the one or two tabs rendered by the window. */
+		setView(focusedTabId: string, visibleTabIds: string[], split?: IpcSetTabViewPayload["split"]): Promise<boolean>;
 		/** The tab/window currently attached to a session file, if any (F-OWN). */
 		getSessionOwner(sessionPath: string): Promise<IpcSessionOwner | null>;
 	};
@@ -1123,10 +1156,10 @@ export interface OmpApi {
 		openConfig(): Promise<{ path: string; opened: boolean }>;
 	};
 	fs: {
-		list(path?: string, maxDepth?: number, maxEntries?: number): Promise<IpcFsListResult>;
-		read(path: string, maxBytes?: number): Promise<IpcFsReadResult>;
+		list(path?: string, maxDepth?: number, maxEntries?: number, tabId?: string): Promise<IpcFsListResult>;
+		read(path: string, maxBytes?: number, tabId?: string): Promise<IpcFsReadResult>;
 		readPlan(payload: IpcFsReadPlanPayload): Promise<IpcFsReadPlanResult>;
-		readImage(path: string): Promise<IpcFsReadImageResult>;
+		readImage(path: string, tabId?: string): Promise<IpcFsReadImageResult>;
 	};
 	editor: {
 		openExternal(content: string): Promise<{

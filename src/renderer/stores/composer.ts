@@ -7,15 +7,16 @@
  * restore, the `omp:fill-composer` window event) calls setDraft with a value
  * or an updater.
  */
-import { create } from "zustand";
+import { createStore } from "zustand/vanilla";
 import type { ImageContent } from "../../shared/rpc-types";
+import { createScopedStoreHook } from "./session-runtime-context";
 
 export interface ComposerImage {
 	content: ImageContent;
 	preview: string;
 }
 
-interface ComposerStore {
+export interface ComposerStore {
 	draft: string;
 	images: ComposerImage[];
 	/** Replace the draft, or compute the next value from the current one
@@ -25,10 +26,14 @@ interface ComposerStore {
 	reset: () => void;
 }
 
-export const useComposerStore = create<ComposerStore>()(set => ({
-	draft: "",
-	images: [],
-	setDraft: next => set(state => ({ draft: typeof next === "function" ? next(state.draft) : next })),
-	setImages: next => set(state => ({ images: typeof next === "function" ? next(state.images) : next })),
-	reset: () => set({ draft: "", images: [] }),
-}));
+export const createComposerStore = () =>
+	createStore<ComposerStore>()(set => ({
+		draft: "",
+		images: [],
+		setDraft: next => set(state => ({ draft: typeof next === "function" ? next(state.draft) : next })),
+		setImages: next => set(state => ({ images: typeof next === "function" ? next(state.images) : next })),
+		reset: () => set({ draft: "", images: [] }),
+	}));
+
+const defaultComposerStore = createComposerStore();
+export const useComposerStore = createScopedStoreHook("composer", defaultComposerStore);

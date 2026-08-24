@@ -6,7 +6,7 @@
 
 import { useCallback } from "react";
 import type { AgentMessage, AvailableCommand } from "../../../shared/rpc-types";
-import { hydrateSession } from "../../hooks/use-rpc-events";
+import { hydrateTabSession } from "../../hooks/use-rpc-events";
 import { isGuiOnlyBuiltinCommand, planComposerSubmit, settleComposerResponse } from "../../lib/composer-submit";
 import { expandEmoticons } from "../../lib/emoji";
 import { useT } from "../../lib/i18n";
@@ -14,11 +14,12 @@ import { parseComposerMode } from "../../lib/input-modes";
 import { clearSessionContext } from "../../lib/messages";
 import { dropReferencedPastes, expandPasteMarkers } from "../../lib/paste-blobs";
 import { parseQueueShorthand, splitQueuedMessages } from "../../lib/queue-input";
-import { acceptsActiveTabEvents } from "../../lib/tab-routing";
+import { useTabRpc } from "../../lib/tab-rpc";
 import type { ComposerImage } from "../../stores/composer";
 import { useInputHistoryStore } from "../../stores/input-history";
-import { useMessagesStore } from "../../stores/messages";
-import { useSessionStore } from "../../stores/session";
+import { type MessagesStore, useMessagesStore } from "../../stores/messages";
+import { type SessionStore, useSessionStore } from "../../stores/session";
+import { sessionRuntimeStore, useRuntimeTabId } from "../../stores/session-runtime-context";
 import { restoreTabComposer, useTabsStore } from "../../stores/tabs";
 import { toast } from "../../stores/toast";
 
@@ -56,6 +57,10 @@ export function useComposerSubmit({
 	setSending: (value: boolean) => void;
 }) {
 	const t = useT();
+	const rpc = useTabRpc();
+	const contextTabId = useRuntimeTabId();
+	const activeTabId = useTabsStore(state => state.activeTabId);
+	const runtimeTabId = contextTabId ?? activeTabId;
 	const send = useCallback(
 		// `overrideText` sends a freshly computed value (voice dictation submit
 		// trigger) instead of the rendered `text` state, which lags a setText.
@@ -63,17 +68,20 @@ export function useComposerSubmit({
 		(overrideText?: string, forceMode?: SendMode) => {
 			const message = (overrideText ?? text).trim();
 			if ((!message && images.length === 0) || sending) return;
-			if (!routeReady || !acceptsActiveTabEvents()) return;
+			if (!routeReady || !runtimeTabId) return;
 			if (status !== "ready") {
 				toast({ variant: "warning", message: t("input.agentConnecting") });
 				return;
 			}
-			const originTabId = useTabsStore.getState().activeTabId;
-			const originSessionId = useSessionStore.getState().sessionId;
+			const originTabId = runtimeTabId;
+			const originSession = sessionRuntimeStore<SessionStore>(originTabId, "session");
+			const originMessages = sessionRuntimeStore<MessagesStore>(originTabId, "messages") ?? useMessagesStore;
+			const originSessionId = originSession?.getState().sessionId ?? useSessionStore.getState().sessionId;
 			const originStillActive = () =>
-				useTabsStore.getState().activeTabId === originTabId &&
-				useSessionStore.getState().sessionId === originSessionId &&
-				acceptsActiveTabEvents();
+				originSession
+					? originSession.getState().sessionId === originSessionId
+					: useTabsStore.getState().activeTabId === originTabId &&
+						useSessionStore.getState().sessionId === originSessionId;
 
 			// Paste markers expand to full blob content BEFORE mode/queue parsing and
 			// every dispatch path (bash, python, prompt, queue items) — the wire only
@@ -100,11 +108,11 @@ export function useComposerSubmit({
 					timestamp: Date.now(),
 					running: true,
 				};
-				useMessagesStore.getState().appendMessage(pending);
-				void window.omp.rpc
+				originMessages?.getState().appendMessage(pending);
+				void rpc
 					.bash(parsed.body, parsed.excluded)
 					.then(async response => {
-						if (originStillActive()) useMessagesStore.getState().removeMessage(pending);
+						if (originStillActive()) originMessages?.getState().removeMessage(pending);
 						if (!response.success) {
 							restoreTabComposer(originTabId, originSessionId, message, previousImages);
 							toast({ variant: "error", title: t("input.bashFailed"), message: response.error });
@@ -112,10 +120,10 @@ export function useComposerSubmit({
 						}
 						if (!originStillActive()) return;
 						dropReferencedPastes(message);
-						await hydrateSession();
+						await hydrateTabSession(originTabId);
 					})
 					.catch(error => {
-						if (originStillActive()) useMessagesStore.getState().removeMessage(pending);
+						if (originStillActive()) originMessages?.getState().removeMessage(pending);
 						restoreTabComposer(originTabId, originSessionId, message, previousImages);
 						toast({ variant: "error", title: t("input.bashFailed"), message: String(error) });
 					})
@@ -140,11 +148,11 @@ export function useComposerSubmit({
 					timestamp: Date.now(),
 					running: true,
 				};
-				useMessagesStore.getState().appendMessage(pending);
-				void window.omp.rpc
+				originMessages?.getState().appendMessage(pending);
+				void rpc
 					.eval(parsed.body, undefined, parsed.excluded)
 					.then(async response => {
-						if (originStillActive()) useMessagesStore.getState().removeMessage(pending);
+						if (originStillActive()) originMessages?.getState().removeMessage(pending);
 						if (!response.success) {
 							restoreTabComposer(originTabId, originSessionId, message, previousImages);
 							toast({ variant: "error", title: t("input.evalFailed"), message: response.error });
@@ -152,10 +160,10 @@ export function useComposerSubmit({
 						}
 						if (!originStillActive()) return;
 						dropReferencedPastes(message);
-						await hydrateSession();
+						await hydrateTabSession(originTabId);
 					})
 					.catch(error => {
-						if (originStillActive()) useMessagesStore.getState().removeMessage(pending);
+						if (originStillActive()) originMessages?.getState().removeMessage(pending);
 						restoreTabComposer(originTabId, originSessionId, message, previousImages);
 						toast({ variant: "error", title: t("input.evalFailed"), message: String(error) });
 					})
@@ -206,10 +214,10 @@ export function useComposerSubmit({
 								item.startsWith("/") && extensionCommandNames.has(/^\/([a-z0-9-]+)/i.exec(item)?.[1] ?? "");
 							const response =
 								startImmediately && index === 0
-									? await window.omp.rpc.prompt(item, itemImages, "followUp")
+									? await rpc.prompt(item, itemImages, "followUp")
 									: isExtensionCommand
-										? await window.omp.rpc.prompt(item, itemImages)
-										: await window.omp.rpc.followUp(item, itemImages);
+										? await rpc.prompt(item, itemImages)
+										: await rpc.followUp(item, itemImages);
 							if (!response.success) throw new Error(response.error ?? "queue dispatch failed");
 							sent += 1;
 						}
@@ -256,6 +264,7 @@ export function useComposerSubmit({
 				isStreaming,
 				mode: forceMode ?? mode,
 				commands,
+				rpc,
 			});
 			if (submit.kind === "blocked") return;
 			if (submit.kind === "handled") {
@@ -272,7 +281,7 @@ export function useComposerSubmit({
 				setText("");
 				setImages([]);
 				setMenu(null);
-				void clearSessionContext().then(cleared => {
+				void clearSessionContext(rpc, () => hydrateTabSession(originTabId)).then(cleared => {
 					if (cleared) {
 						if (originStillActive()) dropReferencedPastes(message);
 						return;
@@ -303,7 +312,7 @@ export function useComposerSubmit({
 						}
 						if (!originStillActive()) return;
 						dropReferencedPastes(message);
-						await settleComposerResponse(response);
+						await settleComposerResponse(response, () => hydrateTabSession(originTabId));
 					})
 					.catch(error => {
 						restoreTabComposer(originTabId, originSessionId, message, previousImages);
@@ -322,6 +331,8 @@ export function useComposerSubmit({
 			commands,
 			emojiAutocomplete,
 			routeReady,
+			rpc,
+			runtimeTabId,
 			t,
 			setText,
 			setImages,

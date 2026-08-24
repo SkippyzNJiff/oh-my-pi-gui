@@ -3,7 +3,6 @@ import type { ClipboardEvent, KeyboardEvent } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { AvailableCommand, ImageContent } from "../../../shared/rpc-types";
-import { useActiveTabRouteReady } from "../../hooks/use-active-tab-route";
 import { tryEmojiInlineReplace } from "../../lib/emoji";
 import { cx } from "../../lib/format";
 import { useT } from "../../lib/i18n";
@@ -19,7 +18,7 @@ import {
 	wrapPasteInAttachmentBlock,
 } from "../../lib/paste-blobs";
 import { parseQueueShorthand, splitQueuedMessages } from "../../lib/queue-input";
-import { acceptsActiveTabEvents, onActiveTabRouteSettled } from "../../lib/tab-routing";
+import { useTabRpc } from "../../lib/tab-rpc";
 import {
 	cancelVoiceRecording,
 	evaluateSttSubmitTrigger,
@@ -30,7 +29,8 @@ import {
 import { useComposerStore } from "../../stores/composer";
 import { useInputHistoryStore } from "../../stores/input-history";
 import { useModelStore } from "../../stores/model";
-import { useSessionStore } from "../../stores/session";
+import { type SessionStore, useSessionStore } from "../../stores/session";
+import { sessionRuntimeStore, useRuntimeTabId } from "../../stores/session-runtime-context";
 import { useSettingsStore } from "../../stores/settings";
 import { useActiveTabKind, useTabsStore } from "../../stores/tabs";
 import { toast } from "../../stores/toast";
@@ -56,7 +56,11 @@ const MENTION_FS_DEBOUNCE_MS = 150;
 export function InputArea() {
 	const isStreaming = useSessionStore(s => s.isStreaming);
 	const t = useT();
-	const routeReady = useActiveTabRouteReady();
+	const rpc = useTabRpc();
+	const contextTabId = useRuntimeTabId();
+	const activeTabId = useTabsStore(state => state.activeTabId);
+	const runtimeTabId = contextTabId ?? activeTabId;
+	const routeReady = runtimeTabId !== null;
 	/** Chat tabs are tool-free: approval/mode chrome is meaningless there. */
 	const isChat = useActiveTabKind() === "chat";
 	const status = useSessionStore(s => s.status);
@@ -227,16 +231,19 @@ export function InputArea() {
 	// Keep slash commands current across sidecar startup and extension reloads.
 	useEffect(() => {
 		let cancelled = false;
-		const unsubscribe = window.omp.events.onCommandsUpdate(next => {
-			if (!cancelled && acceptsActiveTabEvents()) setCommands(next);
-		});
+		const applyCommands = (next: AvailableCommand[], tabId: string | null) => {
+			if (!cancelled && tabId === runtimeTabId) setCommands(next);
+		};
+		const unsubscribe =
+			typeof window.omp.events.onTabCommandsUpdate === "function"
+				? window.omp.events.onTabCommandsUpdate(applyCommands)
+				: window.omp.events.onCommandsUpdate(next => applyCommands(next, runtimeTabId));
 		const load = () => {
-			if (status !== "ready" || !acceptsActiveTabEvents()) return;
-			void window.omp.rpc.getAvailableCommands().then(res => {
+			if (status !== "ready" || !runtimeTabId) return;
+			void rpc.getAvailableCommands().then(res => {
 				if (
 					cancelled ||
-					!acceptsActiveTabEvents() ||
-					useSessionStore.getState().sessionId !== sessionId ||
+					sessionRuntimeStore<SessionStore>(runtimeTabId, "session")?.getState().sessionId !== sessionId ||
 					!res.success
 				)
 					return;
@@ -244,21 +251,20 @@ export function InputArea() {
 				setCommands(data?.commands ?? []);
 			});
 		};
-		const unsubscribeRoute = onActiveTabRouteSettled(load);
 		load();
 		return () => {
 			cancelled = true;
 			unsubscribe();
-			unsubscribeRoute();
 		};
-	}, [status, sessionId]);
+	}, [status, sessionId, runtimeTabId, rpc]);
 
 	// Auto-grow the textarea to fit its content (up to ~40% of the viewport).
 	useEffect(() => {
 		const el = textareaRef.current;
 		if (!el) return;
 		el.style.height = "0px";
-		const maxHeight = text.length === 0 ? 24 : window.innerHeight * 0.4;
+		const paneHeight = el.closest<HTMLElement>(".omp-session-pane")?.clientHeight ?? window.innerHeight;
+		const maxHeight = text.length === 0 ? 24 : paneHeight * 0.4;
 		el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
 	}, [text]);
 
@@ -287,29 +293,38 @@ export function InputArea() {
 		if (!/(^|\s)@[\w./-]*$/.test(before)) return;
 		const key = cwd;
 		const timer = setTimeout(() => {
-			void listMentionFiles(key).then(paths => {
-				if (useSessionStore.getState().cwd === key) setFilePaths(paths);
+			void listMentionFiles(key, runtimeTabId).then(paths => {
+				if (sessionRuntimeStore<SessionStore>(runtimeTabId, "session")?.getState().cwd === key) setFilePaths(paths);
 			});
 		}, MENTION_FS_DEBOUNCE_MS);
 		return () => clearTimeout(timer);
-	}, [text, cwd, routeReady]);
+	}, [text, cwd, routeReady, runtimeTabId]);
 
 	useEffect(() => {
 		const onInsertMention = (event: Event) => {
-			const path = (event as CustomEvent<{ path?: string }>).detail?.path;
+			const detail = (event as CustomEvent<{ path?: string; tabId?: string }>).detail;
+			if ((detail?.tabId ?? useTabsStore.getState().activeTabId) !== runtimeTabId) return;
+			const path = detail?.path;
 			if (!path) return;
 			setText(current => `${current}${current && !current.endsWith(" ") ? " " : ""}@${path} `);
 			requestAnimationFrame(() => textareaRef.current?.focus());
 		};
 		window.addEventListener("omp:insert-mention", onInsertMention);
 		return () => window.removeEventListener("omp:insert-mention", onInsertMention);
-	}, [setText]);
+	}, [setText, runtimeTabId]);
 
 	useEffect(() => {
 		const fillComposer = (event: Event) => {
 			const detail = (
-				event as CustomEvent<{ text?: string; images?: ImageContent[]; prepend?: boolean; clearPastes?: boolean }>
+				event as CustomEvent<{
+					text?: string;
+					images?: ImageContent[];
+					prepend?: boolean;
+					clearPastes?: boolean;
+					tabId?: string;
+				}>
 			).detail;
+			if ((detail?.tabId ?? useTabsStore.getState().activeTabId) !== runtimeTabId) return;
 			const next = detail?.text;
 			const restoredImages = detail?.images ?? [];
 			if (!next && restoredImages.length === 0) return;
@@ -344,6 +359,7 @@ export function InputArea() {
 		// otherwise replace (starter cards, history recall).
 		setText,
 		setImages,
+		runtimeTabId,
 	]);
 
 	const insertCompletion = useCallback(
@@ -417,16 +433,15 @@ export function InputArea() {
 		// different session's draft (in-place session replace). Both success
 		// and fallback paths are gated — a cross-session paste corrupts both.
 		const origin = {
-			tabId: useTabsStore.getState().activeTabId ?? "",
-			sessionId: useSessionStore.getState().sessionId ?? null,
+			tabId: runtimeTabId,
+			sessionId: sessionRuntimeStore<SessionStore>(runtimeTabId, "session")?.getState().sessionId,
 		};
 		const stillOrigin = () =>
-			acceptsActiveTabEvents() &&
-			(useTabsStore.getState().activeTabId ?? "") === origin.tabId &&
-			useSessionStore.getState().sessionId === origin.sessionId;
+			origin.tabId !== null &&
+			sessionRuntimeStore<SessionStore>(origin.tabId, "session")?.getState().sessionId === origin.sessionId;
 		void (async () => {
 			try {
-				const response = await window.omp.rpc.writeLocalPaste(pendingPaste.content);
+				const response = await rpc.writeLocalPaste(pendingPaste.content);
 				if (!stillOrigin()) return;
 				if (!response.success) throw new Error(response.error);
 				const data = response.data as { url?: string } | undefined;
@@ -456,7 +471,7 @@ export function InputArea() {
 				insertPasteBlob(pendingPaste.content);
 			}
 		})();
-	}, [insertPasteBlob, pasteMenu, text, t, setText]);
+	}, [insertPasteBlob, pasteMenu, text, t, setText, runtimeTabId, rpc]);
 
 	const send = useComposerSubmit({
 		text,
@@ -987,7 +1002,7 @@ export function InputArea() {
 										<button
 											type="button"
 											disabled={!routeReady}
-											onClick={() => void abortActiveTurn()}
+											onClick={() => void abortActiveTurn(rpc, runtimeTabId)}
 											title={t("input.abort")}
 											className="omp-pressable flex h-7 w-7 items-center justify-center rounded-md bg-[var(--omp-error-dim)] text-[var(--omp-error)] hover:bg-[var(--omp-error)] hover:text-[var(--omp-btn-danger-text)]"
 										>
@@ -1020,12 +1035,13 @@ function FastModeControl({ menuItem = false }: { menuItem?: boolean }) {
 	const t = useT();
 	const enabled = useModelStore(s => s.fastModeEnabled);
 	const active = useModelStore(s => s.fastModeActive);
+	const toggleFastMode = useModelStore(s => s.toggleFastMode);
 	return (
 		<button
 			type="button"
 			role={menuItem ? "menuitem" : undefined}
 			aria-pressed={enabled}
-			onClick={() => void useModelStore.getState().toggleFastMode()}
+			onClick={() => void toggleFastMode()}
 			title={`${enabled ? t("input.fast.on") : t("input.fast.off")}${active ? t("input.fast.active") : ""}`}
 			className={cx(
 				"omp-pressable flex h-8 items-center gap-1.5 rounded-lg px-2 text-omp-md font-medium hover:bg-[var(--omp-selected-bg)]",
