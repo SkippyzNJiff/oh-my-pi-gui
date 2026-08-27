@@ -72,6 +72,11 @@ function fingerprintPhases(
 	return JSON.stringify(phases.map(phase => [phase.name, phase.tasks.map(task => [task.content, task.status])]));
 }
 
+/** Todo identity without progress — status-only changes update one transcript row. */
+function fingerprintTodo(phases: readonly { name: string; tasks: readonly { content: string }[] }[]): string {
+	return JSON.stringify(phases.map(phase => [phase.name, phase.tasks.map(task => task.content)]));
+}
+
 export const createTodoStore = () =>
 	createStore<TodoStore>()((set, get) => ({
 		...initialState,
@@ -82,15 +87,21 @@ export const createTodoStore = () =>
 				set({ phases: next, historyHydrated: true });
 				return;
 			}
-			const snapshot: TodoSnapshot = {
-				id: `todo-snapshot-${Date.now()}-${state.history.length}`,
-				ts: Date.now(),
-				phases: next.map(phase => ({
-					name: phase.name,
-					tasks: phase.tasks.map(task => ({ content: task.content, status: task.status })),
-				})),
-			};
-			const history = [...state.history, snapshot];
+			const archivedPhases = next.map(phase => ({
+				name: phase.name,
+				tasks: phase.tasks.map(task => ({ content: task.content, status: task.status })),
+			}));
+			const previous = state.history.at(-1);
+			const snapshot: TodoSnapshot =
+				previous && fingerprintTodo(previous.phases) === fingerprintTodo(archivedPhases)
+					? { ...previous, phases: archivedPhases }
+					: {
+							id: `todo-snapshot-${Date.now()}-${state.history.length}`,
+							ts: Date.now(),
+							phases: archivedPhases,
+						};
+			const history =
+				previous?.id === snapshot.id ? [...state.history.slice(0, -1), snapshot] : [...state.history, snapshot];
 			if (history.length > HISTORY_LIMIT) history.shift();
 			set({ phases: next, history, historyHydrated: true });
 		},

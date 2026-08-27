@@ -39,6 +39,18 @@ describe("todo snapshot archive", () => {
 		expect(history[0]?.phases[0]?.tasks.map(task => task.status)).toEqual(["completed", "in_progress"]);
 	});
 
+	it("updates one snapshot while the same todo list progresses", () => {
+		useTodoStore.getState().setPhases([phase("Build", ["scaffold", "pending"], ["wire", "pending"])]);
+		useTodoStore.getState().setPhases([phase("Build", ["scaffold", "in_progress"], ["wire", "pending"])]);
+		const id = useTodoStore.getState().history[0]?.id;
+		useTodoStore.getState().setPhases([phase("Build", ["scaffold", "completed"], ["wire", "completed"])]);
+
+		const history = useTodoStore.getState().history;
+		expect(history).toHaveLength(1);
+		expect(history[0]?.id).toBe(id);
+		expect(history[0]?.phases[0]?.tasks.map(task => task.status)).toEqual(["completed", "completed"]);
+	});
+
 	it("records an explicit clear transition as an empty snapshot", () => {
 		useTodoStore.getState().setPhases([phase("Build", ["scaffold", "completed"])]);
 		useTodoStore.getState().setPhases([]);
