@@ -55,6 +55,7 @@ The omp TUI is powerful, but some things are easier with a visual interface. omp
 ### Highlights
 
 - **Parallel sessions.** Open up to 10 tabs, each with its own sidecar, session, queue, and optional git worktree. Background tabs keep running, and the open/active tab workspace survives restarts and app upgrades.
+- **Two-session split view.** Drag a tab into the workspace or use its context menu to run two isolated sessions side by side or stacked, with a resizable divider.
 - **Chats stay separate from agent workspaces.** The sidebar keeps tool-free chat history in a global section while project groups contain only coding-agent tasks, so workspace actions never sweep chats into project operations.
 - **Dense execution state without nested scrollbars.** Large Todo and Agents collections collapse into bounded summaries, keep urgent rows visible, and expand one card into a focused full-list view when you need every item.
 - **Every `/` command as a menu.** `⌘K` opens a searchable command palette — sub-menus, argument prompts, and toggles all run real RPC, never a fake input box.
@@ -76,10 +77,10 @@ The omp TUI is powerful, but some things are easier with a visual interface. omp
 
 ### Install
 
-Current release: [**v0.9.1**](https://github.com/nornzach/oh-my-pi-gui/releases/tag/v0.9.1)
+Current release: [**v0.9.2**](https://github.com/nornzach/oh-my-pi-gui/releases/tag/v0.9.2)
 
-- **Apple Silicon (M1/M2/M3/M4):** `omp-0.9.1-arm64.dmg`
-- **Intel:** `omp-0.9.1.dmg`
+- **Apple Silicon (M1/M2/M3/M4):** `omp-0.9.2-arm64.dmg`
+- **Intel:** `omp-0.9.2.dmg`
 
 Open the `.dmg` and drag **omp** into **Applications**. The build is ad-hoc signed but not notarized, so on first launch macOS may block it: **right-click → Open** (or *System Settings → Privacy & Security → Open Anyway*).
 
@@ -209,6 +210,7 @@ omp TUI 很强大,但有些事情用可视化界面更方便。omp GUI 不替代
 ### 核心特性
 
 - **并行会话。** 最多同时打开 10 个标签页,每个拥有独立 sidecar、会话、队列和可选 git worktree。后台标签页持续运行,已打开及选中的标签工作区会跨重启和应用升级保留。
+- **双会话分屏。** 拖动标签页到工作区或使用右键菜单,即可让两个隔离会话左右或上下同时运行,并通过分隔条调整大小。
 - **Chat 与 Agent 工作区分离。** 左侧栏把无工具聊天历史放进全局分组,项目工作区只保留编码 agent 任务,工作区操作不会再把 chat 混入项目范围。
 - **大量任务也不出现双层滚动。** Todo 与 Agents 使用受控摘要展示,保留待处理和紧急项；需要查看全部时可将单一卡片展开为聚焦视图。
 - **所有 `/` 命令做成菜单。** `⌘K` 打开可搜索的命令面板——子菜单、参数输入、开关项都走真实 RPC,绝不是套个输入框。
@@ -230,10 +232,10 @@ omp TUI 很强大,但有些事情用可视化界面更方便。omp GUI 不替代
 
 ### 安装
 
-当前版本：[**v0.9.1**](https://github.com/nornzach/oh-my-pi-gui/releases/tag/v0.9.1)
+当前版本：[**v0.9.2**](https://github.com/nornzach/oh-my-pi-gui/releases/tag/v0.9.2)
 
-- **Apple Silicon（M1/M2/M3/M4）：** `omp-0.9.1-arm64.dmg`
-- **Intel：** `omp-0.9.1.dmg`
+- **Apple Silicon（M1/M2/M3/M4）：** `omp-0.9.2-arm64.dmg`
+- **Intel：** `omp-0.9.2.dmg`
 
 打开 `.dmg`,把 **omp** 拖进 **应用程序**。当前构建采用 ad-hoc 签名但未经 Apple 公证,首次打开 macOS 可能拦截:**右键 → 打开**(或 *系统设置 → 隐私与安全性 → 仍要打开*)。
 

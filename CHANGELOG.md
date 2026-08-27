@@ -2,9 +2,22 @@
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-08-27
+
 ### Added
 
 - **Two-session split view**: drag a tab onto the workspace or use its context menu to run two isolated sessions side by side or stacked, with a resizable, keyboard-accessible divider and restored layout.
+
+### Changed
+
+- **Bundled agent upgraded to omp 18.0.6**: packaged sidecars now include current provider, browser, task, streaming, TUI, and runtime fixes from monorepo commit `ef0bd7d84a`.
+
+### Fixed
+
+- **Completed-turn reconciliation**: a reply that finalizes while streaming now remains one conversation turn instead of appearing twice.
+- **Provider configuration cancellation**: cancelling an edit exits the provider configuration flow instead of repeatedly reopening it.
+- **Recovered conversation errors**: reactivating a conversation keeps partial output but removes stale interruption and network error boxes from older turns.
+- **Todo transcript progress**: status updates replace the existing Todo history row instead of stacking one row per progress step.
 
 ## [0.9.1] - 2026-08-23
 
