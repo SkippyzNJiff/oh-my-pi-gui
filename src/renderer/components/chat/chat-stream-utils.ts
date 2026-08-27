@@ -257,13 +257,20 @@ function summarizeProcess(messages: AgentMessage[]): ProcessMeta {
 export function buildHistoryRows(messages: AgentMessage[], detail: TranscriptDetail): HistoryRow[] {
 	const rows: HistoryRow[] = [];
 	let processMessages: AgentMessage[] = [];
+	const lastUserIndex = messages.findLastIndex(message => message.role === "user");
 	const flushProcess = () => {
 		if (processMessages.length === 0) return;
 		rows.push({ kind: "process", messages: processMessages, ...summarizeProcess(processMessages) });
 		processMessages = [];
 	};
 
-	for (const message of messages) {
+	for (let index = 0; index < messages.length; index++) {
+		const incoming = messages[index];
+		if (!incoming) continue;
+		// A later user turn reactivates the conversation. Keep any partial reply,
+		// but drop the stale interruption/network error chrome from older turns.
+		const message =
+			index < lastUserIndex && incoming.errorMessage ? { ...incoming, errorMessage: undefined } : incoming;
 		// toolResult/display:false/empty-filler messages must not split a process
 		// run — they are invisible transport records, not transcript boundaries.
 		if (!isVisibleTranscriptMessage(message)) continue;

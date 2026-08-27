@@ -124,6 +124,22 @@ describe("compact transcript rows", () => {
 });
 
 describe("full transcript rows", () => {
+	it("clears a stale error box after the user reactivates the conversation", () => {
+		const rows = buildHistoryRows(
+			[
+				{ ...assistant([{ type: "text", text: "Partial reply" }]), errorMessage: "network disconnected" },
+				{ role: "user", content: [{ type: "text", text: "Try again" }], timestamp: at },
+			],
+			"full",
+		);
+
+		expect(rows).toHaveLength(2);
+		const failed = rows[0];
+		if (failed?.kind !== "message") throw new Error("partial reply row missing");
+		expect(failed.message.errorMessage).toBeUndefined();
+		expect(failed.message.content).toEqual([{ type: "text", text: "Partial reply" }]);
+	});
+
 	it("keeps individual process messages but removes standalone tool-result transport rows", () => {
 		const rows = buildHistoryRows(toolRun, "full");
 		expect(rows.map(row => row.kind)).toEqual(["message", "message", "message"]);
