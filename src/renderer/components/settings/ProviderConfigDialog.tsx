@@ -26,6 +26,7 @@ import { CUSTOM_PROVIDER_APIS } from "../../../shared/ipc-types";
 import { useT } from "../../lib/i18n";
 import { useModelStore } from "../../stores/model";
 import { toast } from "../../stores/toast";
+import { useUiStore } from "../../stores/ui";
 import { Button, Input, Modal, Spinner } from "../common";
 import { FieldError, FieldLabel } from "./providers/FormFields";
 import { ModelEditor, type ModelRow } from "./providers/ModelEditor";
@@ -656,6 +657,10 @@ export function ProviderConfigDialog({ open, onClose, editProvider = null }: Pro
 		setPendingDelete(null);
 		onClose();
 	};
+	const handleCancel = () => {
+		handleClose();
+		useUiStore.getState().closeProviders();
+	};
 
 	const confirmDelete = async () => {
 		if (!pendingDelete) return;
@@ -708,7 +713,7 @@ export function ProviderConfigDialog({ open, onClose, editProvider = null }: Pro
 							void load();
 							onClose();
 						}}
-						onCancel={onClose}
+						onCancel={handleCancel}
 					/>
 				) : (
 					<div className="flex max-h-[70vh] flex-col gap-3 overflow-y-auto p-4">

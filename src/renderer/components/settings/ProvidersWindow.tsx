@@ -251,8 +251,7 @@ export function ProvidersWindow() {
 		try {
 			const provider = result?.providers.find(p => p.id === providerId);
 			if (!provider) return;
-			const views = await window.omp.models.listProviders();
-			const action = resolveProviderEditAction(provider, views);
+			const action = resolveProviderEditAction(provider, customConfigs);
 			if (!action) return;
 			if (action.kind === "login") {
 				await handleLogin(providerId);
