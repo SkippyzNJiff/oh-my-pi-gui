@@ -939,6 +939,17 @@ describe("hydrateSession streaming reconcile (F-HYDRATE)", () => {
 
 	it("clears the stale streaming bubble when the hydrated tab has settled", async () => {
 		const { omp } = installMockOmp();
+		const optimistic: AgentMessage = {
+			role: "user",
+			content: "locally visible before RPC accepts it",
+			timestamp: 1,
+			optimistic: true,
+		};
+		const staleLive: AgentMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "stale live reply" }],
+			timestamp: 1,
+		};
 		const finalized: AgentMessage = {
 			role: "assistant",
 			content: [{ type: "text", text: "settled reply" }],
@@ -949,6 +960,7 @@ describe("hydrateSession streaming reconcile (F-HYDRATE)", () => {
 		// carries the mid-run slice while the transcript holds the final text.
 		useMessagesStore.setState({
 			messages: [],
+			liveMessages: [optimistic, staleLive],
 			streamingMessage: assistantMessage,
 			streamingText: "partial reply",
 			streamingThinking: "partial thinking",
@@ -961,10 +973,25 @@ describe("hydrateSession streaming reconcile (F-HYDRATE)", () => {
 		expect(messages.streamingMessage).toBeNull();
 		expect(messages.streamingText).toBe("");
 		expect(messages.streamingThinking).toBe("");
+		expect(messages.liveMessages).toEqual([optimistic]);
 		// The finalized content arrives via the transcript merge, not the bubble.
 		expect(messages.messages).toEqual([finalized]);
 		// Hydrate re-asserts the per-tab subagent subscription (switch-in path).
 		expect(omp.rpc.setSubagentSubscription).toHaveBeenCalledWith("events");
+	});
+
+	it("does not clear live deliveries that arrived after an idle hydration began", async () => {
+		const { omp } = installMockOmp();
+		const transcript = Promise.withResolvers<RpcResponse>();
+		omp.rpc.getTranscript.mockReturnValue(transcript.promise);
+		const hydration = hydrateSession();
+		const delivered: AgentMessage = { role: "user", content: "new run", timestamp: 3 };
+		useMessagesStore.getState().applyEvents([{ type: "message_end", message: delivered }]);
+
+		transcript.resolve(success({ messages: [] }));
+		await hydration;
+
+		expect(useMessagesStore.getState().liveMessages).toEqual([delivered]);
 	});
 
 	it("keeps the live stream while the hydrated tab is still streaming", async () => {

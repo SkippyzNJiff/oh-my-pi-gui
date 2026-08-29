@@ -70,6 +70,8 @@ export function ChatStream() {
 	const t = useT();
 	const tabId = useRuntimeTabId();
 	const messages = useMessagesStore(s => s.messages);
+	const liveMessages = useMessagesStore(s => s.liveMessages);
+	const displayMessages = useMemo(() => [...messages, ...liveMessages], [messages, liveMessages]);
 	const streamingMessage = useMessagesStore(s => s.streamingMessage);
 	const hasStreamingText = useMessagesStore(s => isRenderableMessageText(s.streamingText));
 	const hasStreamingThinking = useMessagesStore(s => isRenderableMessageText(s.streamingThinking));
@@ -117,18 +119,21 @@ export function ChatStream() {
 		setVisibleRowIndex(Number.MAX_SAFE_INTEGER);
 	}, [sessionId]);
 
-	const lastCompactionIndex = messages.findLastIndex(message => message.role === "compactionSummary");
+	const lastCompactionIndex = displayMessages.findLastIndex(message => message.role === "compactionSummary");
 	const hiddenCount = collapseCompacted && !preCompactionOpen && lastCompactionIndex > 0 ? lastCompactionIndex : 0;
 	const todoHistory = useTodoStore(s => s.history);
 	const historyRows = useMemo<HistoryRow[]>(() => {
-		const built = buildHistoryRows(hiddenCount > 0 ? messages.slice(hiddenCount) : messages, transcriptDetail);
+		const built = buildHistoryRows(
+			hiddenCount > 0 ? displayMessages.slice(hiddenCount) : displayMessages,
+			transcriptDetail,
+		);
 		// Read-tool grouping (TUI parity) folds consecutive collapsible reads into
 		// one card — only in full mode; compact mode's ProcessGroup already folds
 		// ALL consecutive tool work, so a second fold would nest redundantly.
 		const grouped = transcriptDetail === "compact" ? built : (groupReadRows(built) as HistoryRow[]);
 		// Archived todo changes interleave by timestamp (transcript archive rows).
 		return mergeTodoSnapshots(grouped, todoHistory);
-	}, [messages, hiddenCount, transcriptDetail, todoHistory]);
+	}, [displayMessages, hiddenCount, transcriptDetail, todoHistory]);
 
 	// The assistant message exists as an empty shell from message_start until
 	// the first delta — only real content swaps the status row for the
@@ -565,6 +570,7 @@ function ProcessGroup({
 		<div className="ps-(--omp-editorial-inset) pe-(--omp-editorial-edge) py-2">
 			<ExecutionGroup
 				expanded={expanded}
+				failureCount={row.failedEvents}
 				onExpandedChange={onExpandedChange}
 				stepCount={row.stepCount}
 				toolCallIds={row.toolCallIds}

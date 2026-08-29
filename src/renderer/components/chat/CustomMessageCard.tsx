@@ -26,11 +26,13 @@ import { cx, formatDuration, formatTimeAgo, headLines, resultDetails, resultText
 import { useT } from "../../lib/i18n";
 import { MarkdownRenderer } from "../../lib/markdown";
 import { Badge, type BadgeVariant } from "../common/Badge";
+import { launchCompletionDaemons } from "./completion-events";
 
 /** customTypes with a dedicated card (the TUI dispatch set). */
 const CARD_TYPES: Record<string, true> = {
 	advisor: true,
 	"async-result": true,
+	"launch-completion": true,
 	"lsp-late-diagnostic": true,
 	"skill-prompt": true,
 	"collab-prompt": true,
@@ -45,12 +47,14 @@ export function isCustomMessageCardType(customType: string | undefined): boolean
 	return customType != null && CARD_TYPES[customType] === true;
 }
 
-export function CustomMessageCard({ message }: { message: AgentMessage }) {
+export function CustomMessageCard({ message, inProcess = false }: { message: AgentMessage; inProcess?: boolean }) {
 	switch (message.customType) {
 		case "advisor":
 			return <AdvisorCard message={message} />;
 		case "async-result":
-			return <AsyncResultCard message={message} />;
+			return <AsyncResultCard inProcess={inProcess} message={message} />;
+		case "launch-completion":
+			return <LaunchCompletionCard inProcess={inProcess} message={message} />;
 		case "lsp-late-diagnostic":
 			return <LateDiagnosticsCard message={message} />;
 		case "skill-prompt":
@@ -124,6 +128,69 @@ function CollapsibleText({ text, lines, className }: { text: string; lines: numb
 				</button>
 			)}
 		</div>
+	);
+}
+
+function CompletionRows({ children, inProcess }: { children: ReactNode; inProcess: boolean }) {
+	return (
+		<div
+			className={
+				inProcess
+					? "py-0.5"
+					: "omp-custom-turn omp-fade-up ps-(--omp-editorial-inset) pe-(--omp-editorial-edge) py-2"
+			}
+		>
+			<div className={cx("space-y-0.5", !inProcess && "omp-transcript-content")}>{children}</div>
+		</div>
+	);
+}
+
+function CompletionRow({
+	failed,
+	label,
+	meta,
+	output,
+}: {
+	failed?: boolean;
+	label: string;
+	meta?: string;
+	output?: string;
+}) {
+	const Icon = failed === undefined ? Zap : failed ? XCircle : CheckCircle2;
+	const content = (
+		<>
+			<Icon
+				aria-hidden="true"
+				className={cx(
+					"shrink-0",
+					failed === undefined
+						? "text-[var(--omp-custom-msg-label)]"
+						: failed
+							? "text-[var(--omp-error)]"
+							: "text-[var(--omp-success)]",
+				)}
+				size={13}
+			/>
+			<span className="min-w-0 truncate text-omp-md font-medium text-[var(--omp-text)]">{label}</span>
+			{meta && <span className="min-w-0 truncate font-mono text-omp-xs text-[var(--omp-dim)]">{meta}</span>}
+		</>
+	);
+	const rowClass = "flex min-h-8 w-full items-center gap-2 rounded-md px-1.5 py-1 text-left";
+	if (!output) return <div className={rowClass}>{content}</div>;
+	return (
+		<details className="group">
+			<summary className={cx("omp-pressable cursor-pointer list-none", rowClass)}>
+				{content}
+				<ChevronRight
+					aria-hidden="true"
+					className="omp-disclosure-chevron ml-auto shrink-0 text-[var(--omp-dim)] group-open:rotate-90"
+					size={13}
+				/>
+			</summary>
+			<div className="pb-2 pl-6">
+				<CollapsibleText className="mt-0.5" lines={3} text={output} />
+			</div>
+		</details>
 	);
 }
 
@@ -279,46 +346,64 @@ function asyncJobResults(content: string, jobs: AsyncJob[]): Map<string, string>
 	return results;
 }
 
-function AsyncResultCard({ message }: { message: AgentMessage }) {
+function AsyncResultCard({ message, inProcess }: { message: AgentMessage; inProcess: boolean }) {
 	const t = useT();
 	const jobs = asyncJobs(resultDetails(message));
 	const results = asyncJobResults(resultText(message.content), jobs);
 
 	return (
-		<CardFrame>
-			<div className="space-y-2.5">
-				{jobs.map((job, i) => {
-					const preview = job.jobId ? results.get(job.jobId) : undefined;
-					return (
-						<div key={job.jobId ?? i}>
-							<div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-								<CheckCircle2 size={13} className="shrink-0 text-[var(--omp-success)]" />
-								<span className="text-omp-md font-semibold text-[var(--omp-text)]">
-									{t("chat.custom.asyncDone")}
-								</span>
-								<span className="font-mono text-omp-sm text-[var(--omp-dim)]">[{job.type ?? "job"}]</span>
-								<span className="font-mono text-omp-sm text-[var(--omp-accent)]">{job.jobId ?? "unknown"}</span>
-								{job.label && (
-									<span className="min-w-0 truncate font-mono text-omp-sm text-[var(--omp-muted)]">
-										({job.label})
-									</span>
-								)}
-								{job.durationMs != null && (
-									<span className="font-mono text-omp-xs tabular-nums text-[var(--omp-dim)]">
-										({formatDuration(job.durationMs)})
-									</span>
-								)}
-							</div>
-							{preview && (
-								<div className="mt-1 border-l-2 border-[var(--omp-border-muted)] pl-2.5">
-									<CollapsibleText text={preview} lines={3} />
-								</div>
-							)}
-						</div>
-					);
-				})}
-			</div>
-		</CardFrame>
+		<CompletionRows inProcess={inProcess}>
+			{jobs.map((job, index) => {
+				const id = job.jobId ?? "unknown";
+				const meta = [
+					t("chat.custom.asyncDone"),
+					`[${job.type ?? "job"}]`,
+					job.label ? id : undefined,
+					job.durationMs != null ? formatDuration(job.durationMs) : undefined,
+				]
+					.filter(Boolean)
+					.join(" · ");
+				return (
+					<CompletionRow
+						failed={false}
+						key={job.jobId ?? index}
+						label={job.label ?? id}
+						meta={meta}
+						output={job.jobId ? results.get(job.jobId) : undefined}
+					/>
+				);
+			})}
+		</CompletionRows>
+	);
+}
+
+function LaunchCompletionCard({ message, inProcess }: { message: AgentMessage; inProcess: boolean }) {
+	const t = useT();
+	const daemons = launchCompletionDaemons(message);
+	if (daemons.length === 0) {
+		return (
+			<CompletionRows inProcess={inProcess}>
+				<CompletionRow label={resultText(message.content) || t("chat.exec.finished")} />
+			</CompletionRows>
+		);
+	}
+	return (
+		<CompletionRows inProcess={inProcess}>
+			{daemons.map(daemon => {
+				const failed = daemon.state === "failed" || (daemon.exitCode !== undefined && daemon.exitCode !== 0);
+				const duration =
+					daemon.startedAt !== undefined && daemon.exitedAt !== undefined
+						? formatDuration(daemon.exitedAt - daemon.startedAt)
+						: undefined;
+				const meta = [
+					daemon.exitCode !== undefined ? t("chat.exec.exit", { code: daemon.exitCode }) : undefined,
+					duration,
+				]
+					.filter(Boolean)
+					.join(" · ");
+				return <CompletionRow failed={failed} key={daemon.name} label={daemon.name} meta={meta} />;
+			})}
+		</CompletionRows>
 	);
 }
 

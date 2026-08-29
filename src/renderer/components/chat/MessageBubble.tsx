@@ -270,7 +270,7 @@ export const MessageBubble = memo(function MessageBubble({
 		// Dedicated cards for the TUI customType set; unknown types fall through
 		// to the generic label + content bubble below.
 		if (isCustomMessageCardType(message.customType)) {
-			return <CustomMessageCard message={message} />;
+			return <CustomMessageCard inProcess={compact} message={message} />;
 		}
 	}
 	if (message.role === "toolResult") return null;

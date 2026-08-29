@@ -102,6 +102,14 @@ describe("compact transcript rows", () => {
 					{ type: "text", text: "." },
 					{ type: "toolCall", id: "call-format", name: "bash", arguments: { command: "bun format" } },
 				]),
+				{
+					role: "custom",
+					customType: "launch-completion",
+					content: "Supervised process audit failed with exit code 1.",
+					details: { daemons: [{ name: "audit", state: "failed", exitCode: 1 }] },
+					display: true,
+					timestamp: at,
+				},
 				assistant([
 					{ type: "thinking", thinking: "The checks passed; launch the audit build." },
 					{ type: "text", text: "Launch the audit build." },
@@ -111,6 +119,14 @@ describe("compact transcript rows", () => {
 					{ type: "text", text: "." },
 					{ type: "toolCall", id: "call-launch", name: "hub", arguments: { name: "gui-final" } },
 				]),
+				{
+					role: "custom",
+					customType: "async-result",
+					content: "<system-notice>Background job bg-1 has completed.\npassed</system-notice>",
+					details: { jobs: [{ jobId: "bg-1", type: "bash", label: "tests" }] },
+					display: true,
+					timestamp: at,
+				},
 			],
 			"compact",
 		);
@@ -119,7 +135,13 @@ describe("compact transcript rows", () => {
 		const process = rows[0];
 		if (process?.kind !== "process") throw new Error("process row missing");
 		expect(process.stepCount).toBe(5);
+		expect(process.failedEvents).toBe(1);
 		expect(process.toolNames).toEqual(["bash", "bash", "bash", "hub"]);
+		expect(process.messages.map(message => message.customType).filter(Boolean)).toEqual([
+			"launch-completion",
+			"async-result",
+		]);
+		expect(buildTimelineMarkers(rows)[0]?.state).toBe("error");
 	});
 });
 

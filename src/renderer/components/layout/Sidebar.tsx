@@ -38,6 +38,7 @@ import { dropSessionNow } from "../../hooks/use-session-switch";
 import { basename, cx } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { sessionDisplayTitle } from "../../lib/session-title";
+import { tabSignalPresentation } from "../../lib/tab-signal";
 import { useSessionStore } from "../../stores/session";
 import { useSidebarPrefs } from "../../stores/sidebar-prefs";
 import { useTabsStore } from "../../stores/tabs";
@@ -156,7 +157,8 @@ export function Sidebar() {
 	const openTab = useTabsStore(s => s.openTab);
 	const tabs = useTabsStore(s => s.tabs);
 	const activeTabId = useTabsStore(s => s.activeTabId);
-	const activeTabKind = tabs.find(tab => tab.id === activeTabId)?.kind;
+	const activeTab = tabs.find(tab => tab.id === activeTabId);
+	const activeTabKind = activeTab?.kind;
 	const pinnedGroups = useSidebarPrefs(s => s.pinnedGroups);
 	const pinnedSessions = useSidebarPrefs(s => s.pinnedSessions);
 	const groupAliases = useSidebarPrefs(s => s.groupAliases);
@@ -301,10 +303,17 @@ export function Sidebar() {
 	const toggleGroup = (groupCwd: string) => {
 		setCollapsed(prev => ({ ...prev, [groupCwd]: !isCollapsed(groupCwd) }));
 	};
-	const isSessionRunning = (session: SessionInfo) => {
+	const tabForSession = (session: SessionInfo) =>
+		tabs.find(tab => tab.sessionId === session.id) ?? (session.id === sessionId ? activeTab : undefined);
+	const sessionTabSignal = (session: SessionInfo) => {
+		const tab = tabForSession(session);
+		return tab ? tabSignalPresentation(tab, session.id === sessionId && (isStreaming || isCompacting)) : null;
+	};
+	const isSessionBusy = (session: SessionInfo) => {
+		if (session.id === sessionId && awaitingConfirmation) return true;
+		const signal = sessionTabSignal(session);
+		if (signal) return signal.active;
 		if (session.id === sessionId && (isStreaming || isCompacting)) return true;
-		const ownerTab = tabs.find(tab => tab.sessionId === session.id);
-		if (ownerTab) return ownerTab.status === "running" || ownerTab.compacting === true;
 		return session.status === "pending";
 	};
 
@@ -348,7 +357,7 @@ export function Sidebar() {
 	};
 
 	const confirmDeleteSession = async (session: SessionInfo) => {
-		if (isSessionRunning(session)) {
+		if (isSessionBusy(session)) {
 			toast({ variant: "warning", message: t("sidebar.menu.taskRunning") });
 			setConfirmingDeletePath(null);
 			return;
@@ -369,7 +378,7 @@ export function Sidebar() {
 	};
 
 	const confirmDeleteGroup = async (group: WorkspaceGroup) => {
-		if (group.sessions.some(isSessionRunning)) {
+		if (group.sessions.some(isSessionBusy)) {
 			toast({ variant: "warning", message: t("sidebar.deleteGroupStreaming") });
 			setConfirmingGroupDeleteCwd(null);
 			return;
@@ -392,19 +401,22 @@ export function Sidebar() {
 
 	const renderSessionRow = (session: SessionInfo, nested = false) => {
 		const active = session.id === sessionId;
-		// Signal light: every open task uses its owning tab's live status.
-		// Waiting-for-confirmation wins for the attached task.
-		const signal: "waiting" | "running" | null = active
-			? awaitingConfirmation
-				? "waiting"
-				: isStreaming
-					? "running"
-					: null
-			: isSessionRunning(session)
-				? "running"
-				: null;
+		const tabSignal = sessionTabSignal(session);
+		const waiting = active && awaitingConfirmation;
+		const externalRunning = tabSignal === null && isSessionBusy(session);
+		const signalActive = waiting || tabSignal?.active === true || externalRunning;
+		const signalLabel = waiting
+			? t("sidebar.signal.waiting")
+			: tabSignal
+				? t(tabSignal.labelKey)
+				: externalRunning
+					? t("sidebar.signal.running")
+					: t(STATUS_LABEL_KEY[session.status]);
+		const signalColor = waiting
+			? "var(--omp-warning)"
+			: (tabSignal?.color ?? (externalRunning ? "var(--omp-accent)" : STATUS_COLOR[session.status]));
 		const title = sessionDisplayTitle(session, t("sidebar.untitled"));
-		const hasActions = signal == null || !active;
+		const hasActions = !signalActive || !active;
 		const actionsOpen = confirmingDeletePath === session.path || renamingSessionPath === session.path;
 		return (
 			<div
@@ -433,29 +445,10 @@ export function Sidebar() {
 				<div className="flex min-w-0 items-center">
 					<span
 						role="img"
-						aria-label={
-							signal === "waiting"
-								? t("sidebar.signal.waiting")
-								: signal === "running"
-									? t("sidebar.signal.running")
-									: t(STATUS_LABEL_KEY[session.status])
-						}
-						title={
-							signal === "waiting"
-								? t("sidebar.signal.waiting")
-								: signal === "running"
-									? t("sidebar.signal.running")
-									: t(STATUS_LABEL_KEY[session.status])
-						}
-						className={cx("omp-signal-light mr-2", signal && "omp-signal-light--active")}
-						style={{
-							color:
-								signal === "waiting"
-									? "var(--omp-warning)"
-									: signal === "running"
-										? "var(--omp-accent)"
-										: STATUS_COLOR[session.status],
-						}}
+						aria-label={signalLabel}
+						title={signalLabel}
+						className={cx("omp-signal-light mr-2", signalActive && "omp-signal-light--active")}
+						style={{ color: signalColor }}
 					/>
 					{session.kind === "chat" ? (
 						<MessageCircle
@@ -525,7 +518,7 @@ export function Sidebar() {
 							</>
 						) : (
 							<>
-								{!signal && renamingSessionPath !== session.path ? (
+								{!signalActive && renamingSessionPath !== session.path ? (
 									<button
 										type="button"
 										title={t("sidebar.rename")}
@@ -548,7 +541,7 @@ export function Sidebar() {
 								) : (
 									<span className="h-5 w-5 shrink-0" />
 								)}
-								{!signal ? (
+								{!signalActive ? (
 									<button
 										className="omp-sidebar-action flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--omp-dim)] hover:bg-[var(--omp-tool-error-bg)] hover:text-[var(--omp-error)]"
 										onClick={() => setConfirmingDeletePath(session.path)}
@@ -1019,7 +1012,7 @@ export function Sidebar() {
 			{/* Workspace group menu: new sessions, rename (alias), pin, delete. */}
 			{groupMenu &&
 				(() => {
-					const groupHasRunningSession = groupMenu.group.sessions.some(isSessionRunning);
+					const groupHasBusySession = groupMenu.group.sessions.some(isSessionBusy);
 					return (
 						<ContextMenu
 							x={groupMenu.anchor.x}
@@ -1071,7 +1064,7 @@ export function Sidebar() {
 									label: t("common.delete"),
 									icon: Trash2,
 									danger: true,
-									disabled: groupHasRunningSession,
+									disabled: groupHasBusySession,
 									disabledReason: t("sidebar.deleteGroupStreaming"),
 									onSelect: () => {
 										setConfirmingGroupDeleteCwd(groupMenu.group.cwd);
@@ -1086,7 +1079,7 @@ export function Sidebar() {
 			{/* Session row menu: open variants, per-task rename, pin, and delete. */}
 			{sessionMenu &&
 				(() => {
-					const targetRunning = isSessionRunning(sessionMenu.session);
+					const targetBusy = isSessionBusy(sessionMenu.session);
 					return (
 						<ContextMenu
 							x={sessionMenu.anchor.x}
@@ -1128,7 +1121,7 @@ export function Sidebar() {
 									id: "session-rename",
 									label: t("sidebar.rename"),
 									icon: Pencil,
-									disabled: targetRunning,
+									disabled: targetBusy,
 									disabledReason: t("sidebar.menu.taskRunning"),
 									onSelect: () => {
 										setSessionMenu(null);
@@ -1157,7 +1150,7 @@ export function Sidebar() {
 									label: t("common.delete"),
 									icon: Trash2,
 									danger: true,
-									disabled: targetRunning,
+									disabled: targetBusy,
 									disabledReason: t("sidebar.menu.taskRunning"),
 									onSelect: () => {
 										setConfirmingDeletePath(sessionMenu.session.path);

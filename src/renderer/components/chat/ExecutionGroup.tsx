@@ -8,6 +8,7 @@ interface ExecutionGroupProps {
 	children: ReactNode;
 	className?: string;
 	expanded: boolean;
+	failureCount?: number;
 	live?: boolean;
 	onExpandedChange: (expanded: boolean) => void;
 	stepCount: number;
@@ -23,6 +24,7 @@ export function ExecutionGroup({
 	children,
 	className,
 	expanded,
+	failureCount = 0,
 	live = false,
 	onExpandedChange,
 	stepCount,
@@ -41,7 +43,8 @@ export function ExecutionGroup({
 		}
 		return `${running}:${failed}`;
 	});
-	const [running, failed] = encoded.split(":").map(Number);
+	const [running, toolFailures] = encoded.split(":").map(Number);
+	const failed = toolFailures + failureCount;
 
 	const active = live || running > 0;
 	const state = active ? "running" : failed > 0 ? "failed" : "complete";

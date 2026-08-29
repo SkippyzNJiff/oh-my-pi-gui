@@ -24,7 +24,7 @@ import { translate } from "../lib/i18n";
 import { normalizeLoopUpdate } from "../lib/loop-mode";
 import { acceptsActiveTabEvents } from "../lib/tab-routing";
 import { useExtensionUiStore } from "../stores/extension-ui";
-import { type MessagesStore, messageIdentityKey, useMessagesStore } from "../stores/messages";
+import { type MessagesStore, mergeFetchedTranscript, useMessagesStore } from "../stores/messages";
 import { useModelStore } from "../stores/model";
 import { usePlanApprovalStore } from "../stores/plan-approval";
 import { type QueueStore, useQueueStore } from "../stores/queue";
@@ -342,6 +342,7 @@ async function hydrateLegacySession(fallbackName?: string, initialState?: RpcRes
 	const version = ++legacyHydrationVersion;
 	const isCurrent = () => version === legacyHydrationVersion;
 	const beforeMessages = useMessagesStore.getState().messages;
+	const beforeLiveMessages = useMessagesStore.getState().liveMessages;
 	const core = Promise.allSettled([
 		initialState ? Promise.resolve(initialState) : activeTabCommand({ type: "get_state" }),
 		activeTabCommand({ type: "get_transcript" }),
@@ -357,6 +358,11 @@ async function hydrateLegacySession(fallbackName?: string, initialState?: RpcRes
 	]);
 	const [stateResult, messagesResult] = await core;
 	if (!isCurrent()) return;
+	const stateIsIdle =
+		stateResult.status === "fulfilled" &&
+		stateResult.value.success &&
+		stateResult.value.data != null &&
+		!(stateResult.value.data as RpcSessionState).isStreaming;
 	if (stateResult.status === "fulfilled" && stateResult.value.success && stateResult.value.data != null) {
 		const wire = stateResult.value.data as RpcSessionState;
 		applySessionState(wire, fallbackName);
@@ -369,13 +375,10 @@ async function hydrateLegacySession(fallbackName?: string, initialState?: RpcRes
 	if (messagesResult.status === "fulfilled" && messagesResult.value.success) {
 		const fetched = (messagesResult.value.data as { messages?: AgentMessage[] } | undefined)?.messages ?? [];
 		const current = useMessagesStore.getState().messages;
-		const prefixIntact =
-			current.length >= beforeMessages.length && beforeMessages.every((message, i) => current[i] === message);
-		const tail = prefixIntact ? current.slice(beforeMessages.length) : [];
-		const fetchedKeys = new Set(fetched.map(messageIdentityKey));
-		useMessagesStore
-			.getState()
-			.reconcileFetched([...fetched, ...tail.filter(message => !fetchedKeys.has(messageIdentityKey(message)))]);
+		useMessagesStore.getState().reconcileFetched(mergeFetchedTranscript(fetched, beforeMessages, current));
+		if (stateIsIdle && useMessagesStore.getState().liveMessages === beforeLiveMessages) {
+			useMessagesStore.getState().clearDeliveredLiveMessages();
+		}
 		useToolsStore.getState().hydrateMessages(useMessagesStore.getState().messages);
 	}
 	const settledSubagents = await subagents;
@@ -401,9 +404,11 @@ export async function hydrateTabSession(tabId: string, fallbackName?: string): P
 	const version = (hydrationVersions.get(tabId) ?? 0) + 1;
 	hydrationVersions.set(tabId, version);
 	const isCurrent = (): boolean => hydrationVersions.get(tabId) === version && sessionRuntime(tabId) === runtime;
-	// Capture before the fetch: messages the live stream appends while the
+	// Capture before the fetch: committed agent_end rows arriving while the
 	// transcript RPC is in flight must survive the merge below.
-	const beforeMessages = sessionRuntimeStore<MessagesStore>(tabId, "messages")?.getState().messages ?? [];
+	const initialMessagesStore = sessionRuntimeStore<MessagesStore>(tabId, "messages")?.getState();
+	const beforeMessages = initialMessagesStore?.messages ?? [];
+	const beforeLiveMessages = initialMessagesStore?.liveMessages ?? [];
 
 	const coreResult = Promise.allSettled([
 		runtime.command({ type: "get_state" }),
@@ -434,6 +439,11 @@ export async function hydrateTabSession(tabId: string, fallbackName?: string): P
 	]);
 	const [stateResult, messagesResult] = await coreResult;
 	if (!isCurrent()) return;
+	const stateIsIdle =
+		stateResult.status === "fulfilled" &&
+		stateResult.value.success &&
+		stateResult.value.data != null &&
+		!(stateResult.value.data as RpcSessionState).isStreaming;
 
 	if (stateResult.status === "fulfilled" && stateResult.value.success && stateResult.value.data != null) {
 		const wire = stateResult.value.data as RpcSessionState;
@@ -451,10 +461,9 @@ export async function hydrateTabSession(tabId: string, fallbackName?: string): P
 		if (!wire.isStreaming) {
 			// Zombie settle: the run finished while this tab sat in the
 			// background, so its message_end/agent_end never forwarded and the
-			// restored bundle still paints a live bubble. The transcript merge
-			// below already carries the finalized content — drop the stale
-			// stream slice wholesale. While streaming, keep it: live deltas
-			// resume onto the restored buffers.
+			// restored bundle still paints partial assistant content. Clear only
+			// those stream buffers here; the transcript merge below separately
+			// removes delivered live rows while preserving an unsent local prompt.
 			messages?.getState().clearStreaming();
 		}
 		// Per-tab subagent subscription (F-HYDRATE), re-asserted on every
@@ -472,26 +481,10 @@ export async function hydrateTabSession(tabId: string, fallbackName?: string): P
 		const messages = sessionRuntimeStore<MessagesStore>(tabId, "messages");
 		const tools = sessionRuntimeStore<ToolsStore>(tabId, "tools");
 		const current = messages?.getState().messages ?? [];
-		// Streamed tail: whatever the live stream appended beyond the captured
-		// prefix. If the prefix was replaced meanwhile (pagination, another
-		// hydration), the transcript fetch alone wins.
-		let tail: AgentMessage[] = [];
-		if (current.length >= beforeMessages.length) {
-			let prefixIntact = true;
-			for (let i = 0; i < beforeMessages.length; i++) {
-				if (current[i] !== beforeMessages[i]) {
-					prefixIntact = false;
-					break;
-				}
-			}
-			if (prefixIntact) tail = current.slice(beforeMessages.length);
+		messages?.getState().reconcileFetched(mergeFetchedTranscript(fetched, beforeMessages, current));
+		if (stateIsIdle && messages?.getState().liveMessages === beforeLiveMessages) {
+			messages.getState().clearDeliveredLiveMessages();
 		}
-		const fetchedKeys = new Set(fetched.map(messageIdentityKey));
-		const merged =
-			tail.length > 0
-				? [...fetched, ...tail.filter(message => !fetchedKeys.has(messageIdentityKey(message)))]
-				: fetched;
-		messages?.getState().reconcileFetched(merged);
 		tools?.getState().hydrateMessages(messages?.getState().messages ?? []);
 	}
 

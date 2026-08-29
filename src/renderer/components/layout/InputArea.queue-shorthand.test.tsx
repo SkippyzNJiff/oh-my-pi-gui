@@ -290,7 +290,7 @@ describe("InputArea queue shorthand submit", () => {
 		await pressEnter(findTextarea());
 
 		expect(prompt).toHaveBeenCalledWith("slow network prompt", []);
-		expect(useMessagesStore.getState().messages).toMatchObject([
+		expect(useMessagesStore.getState().liveMessages).toMatchObject([
 			{
 				role: "user",
 				content: [{ type: "text", text: "slow network prompt" }],
@@ -310,8 +310,12 @@ describe("InputArea queue shorthand submit", () => {
 				{ type: "message_end", message: delivered },
 			]),
 		);
-		expect(useMessagesStore.getState().messages).toEqual([delivered]);
+		expect(useMessagesStore.getState().messages).toEqual([]);
+		expect(useMessagesStore.getState().liveMessages).toEqual([delivered]);
 		expect(useMessagesStore.getState().streamingMessage).toBeNull();
+		await act(async () => useMessagesStore.getState().applyEvents([{ type: "agent_end", messages: [delivered] }]));
+		expect(useMessagesStore.getState().messages).toEqual([delivered]);
+		expect(useMessagesStore.getState().liveMessages).toEqual([]);
 
 		deferred.resolve(ok());
 		await flush();

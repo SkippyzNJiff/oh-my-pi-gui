@@ -70,7 +70,7 @@ export function DockCard({ id, icon: Icon, title, badge, actions, children }: Do
 		<section
 			aria-label={title}
 			className={cx(
-				"shrink-0 overflow-hidden rounded-[18px] border bg-[color-mix(in_srgb,var(--omp-bg-secondary)_72%,transparent)] transition-shadow duration-300",
+				"shrink-0 overflow-clip rounded-[18px] border bg-[color-mix(in_srgb,var(--omp-bg-secondary)_72%,transparent)] transition-shadow duration-300",
 				flash
 					? "border-[var(--omp-accent)] shadow-[0_0_0_2px_color-mix(in_srgb,var(--omp-accent)_35%,transparent)]"
 					: "border-[var(--omp-border)]",
@@ -79,10 +79,7 @@ export function DockCard({ id, icon: Icon, title, badge, actions, children }: Do
 			data-dock-focused={focused || undefined}
 		>
 			<div
-				className={cx(
-					"flex min-h-10 items-center gap-2 px-3 py-2",
-					focused && "sticky top-0 z-10 bg-[var(--omp-bg-secondary)]", // surface-ok: focused-card sticky navigation chrome
-				)}
+				className="sticky top-0 z-10 flex min-h-10 items-center gap-2 bg-[var(--omp-bg-secondary)] px-3 py-2" // surface-ok: dock-card sticky navigation chrome
 			>
 				<button
 					aria-expanded={expanded}

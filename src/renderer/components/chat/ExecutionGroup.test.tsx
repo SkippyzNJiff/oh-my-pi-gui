@@ -38,10 +38,12 @@ function toolEntry(status: "running" | "error", isError = false): ToolEntry {
 
 function StatefulExecutionGroup({
 	children,
+	failureCount,
 	live,
 	toolCallIds,
 }: {
 	children: ReactNode;
+	failureCount: number;
 	live: boolean;
 	toolCallIds: string[];
 }) {
@@ -49,6 +51,7 @@ function StatefulExecutionGroup({
 	return (
 		<ExecutionGroup
 			expanded={expanded}
+			failureCount={failureCount}
 			live={live}
 			onExpandedChange={setExpanded}
 			stepCount={2}
@@ -63,6 +66,7 @@ async function mount(
 	toolCallIds: string[] = [],
 	live = false,
 	children: ReactNode = <div data-testid="details">tool details</div>,
+	failureCount = 0,
 ): Promise<void> {
 	container = document.createElement("div") as unknown as HTMLElement;
 	document.body.appendChild(container as never);
@@ -70,7 +74,7 @@ async function mount(
 	await act(async () => {
 		root.render(
 			<I18nProvider>
-				<StatefulExecutionGroup live={live} toolCallIds={toolCallIds}>
+				<StatefulExecutionGroup failureCount={failureCount} live={live} toolCallIds={toolCallIds}>
 					{children}
 				</StatefulExecutionGroup>
 			</I18nProvider>,
@@ -109,6 +113,12 @@ describe("ExecutionGroup", () => {
 			(container.querySelector("button") as unknown as { click: () => void }).click();
 		});
 		expect(container.querySelector('[data-testid="details"]')).not.toBeNull();
+	});
+
+	it("includes failed completion events in the existing group status", async () => {
+		await mount([], false, undefined, 1);
+		expect(container.textContent).toContain("1 failed · 2 steps");
+		expect(container.querySelector('[data-state="failed"]')).not.toBeNull();
 	});
 
 	it("never overrides the user's disclosure while execution activity changes", async () => {

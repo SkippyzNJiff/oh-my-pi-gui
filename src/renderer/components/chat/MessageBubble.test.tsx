@@ -236,6 +236,54 @@ describe("MessageBubble compaction summaries", () => {
 	});
 });
 
+describe("MessageBubble completion events", () => {
+	it("renders supervised-process failures as one compact status row without the wire type", () => {
+		const html = renderToStaticMarkup(
+			<I18nProvider>
+				<MessageBubble
+					compact
+					message={{
+						role: "custom",
+						customType: "launch-completion",
+						content: "Supervised process backend-smoke failed with exit code 1.",
+						details: {
+							daemons: [{ name: "backend-smoke", state: "failed", exitCode: 1 }],
+						},
+						display: true,
+						timestamp: "2026-08-20T00:00:00.000Z",
+					}}
+				/>
+			</I18nProvider>,
+		);
+		expect(html).toContain("backend-smoke");
+		expect(html).toContain("exit 1");
+		expect(html).not.toContain("launch-completion");
+		expect(html).not.toContain("omp-custom-turn");
+	});
+
+	it("keeps background output behind one native disclosure row", () => {
+		const html = renderToStaticMarkup(
+			<I18nProvider>
+				<MessageBubble
+					message={{
+						role: "custom",
+						customType: "async-result",
+						content: "<system-notice>Background job bg-7 has completed.\nBUILD_OUTPUT</system-notice>",
+						details: { jobs: [{ jobId: "bg-7", type: "bash", label: "bun run build" }] },
+						display: true,
+						timestamp: "2026-08-20T00:00:00.000Z",
+					}}
+				/>
+			</I18nProvider>,
+		);
+		expect(html).toContain("bun run build");
+		expect(html).toContain("Background job completed");
+		expect(html).toContain("<details");
+		expect(html).not.toContain("<details open");
+		expect(html).toContain("BUILD_OUTPUT");
+	});
+});
+
 describe("MessageBubble noise filtering", () => {
 	const at = "2026-08-02T12:00:00.000Z";
 

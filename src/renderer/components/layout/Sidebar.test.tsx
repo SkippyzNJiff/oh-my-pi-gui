@@ -398,6 +398,35 @@ describe("Sidebar menus and pinned ordering", () => {
 		expect(rows[0]?.querySelector('[aria-label="Completed"]')).not.toBeNull();
 	});
 
+	it("uses the open tab's live status instead of the session file's stale completion status", async () => {
+		const attached = session("/work/alpha/mine.jsonl", "/work/alpha", { id: "attached-id", status: "complete" });
+		installMockOmp([attached]);
+		seedStores();
+		useTabsStore.setState({
+			tabs: [
+				{
+					id: "t0",
+					cwd: "/work/alpha",
+					status: "ready",
+					kind: "agent",
+					sessionId: "attached-id",
+					unreadDone: false,
+				},
+			],
+		});
+		await mount(<Sidebar />);
+
+		const signal = () => container.querySelector('[data-active="true"] .omp-signal-light') as unknown as Element;
+		expect(signal().getAttribute("aria-label")).toBe("Ready");
+		expect(signal().getAttribute("style")).toContain("--omp-dim");
+
+		await act(async () => {
+			useTabsStore.setState({ tabs: [{ ...useTabsStore.getState().tabs[0]!, status: "running" }] });
+		});
+		expect(signal().getAttribute("aria-label")).toBe("Working");
+		expect(signal().className).toContain("omp-signal-light--active");
+	});
+
 	it("aligns workspace and session titles with folder, chat, and reserved icon slots", async () => {
 		installMockOmp(LIST);
 		seedStores();

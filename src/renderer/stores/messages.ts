@@ -3,13 +3,14 @@ import type { AgentMessage, AgentSessionEvent, MessagesPage } from "../../shared
 import { createScopedStoreHook } from "./session-runtime-context";
 
 /**
- * Session-tab snapshot of the message stream: the zustand fields PLUS the
- * streaming fields and run-dedupe set. The accumulated strings are sufficient
+ * Session-tab snapshot of committed history plus the active run overlay. The
+ * accumulated strings are sufficient
  * to resume after a tab switch; keeping a second chunk-array copy only made
  * every snapshot and every join progressively more expensive.
  */
 export interface MessagesSnapshot {
 	messages: AgentMessage[];
+	liveMessages: AgentMessage[];
 	lastAppended: AgentMessage[];
 	streamingMessage: AgentMessage | null;
 	streamingText: string;
@@ -17,11 +18,12 @@ export interface MessagesSnapshot {
 	totalMessages: number;
 	nextCursor: string | undefined;
 	isLoadingPage: boolean;
-	deliveredKeys: string[];
 }
 
 export interface MessagesStore {
 	messages: AgentMessage[];
+	/** Uncommitted local echo and message_end deliveries for the active run. */
+	liveMessages: AgentMessage[];
 	/**
 	 * Messages appended by the most recent applyEvents/appendMessage call —
 	 * the voice auto-speak watcher's clean signal: hydration/pagination
@@ -39,14 +41,15 @@ export interface MessagesStore {
 	loadPage: (page: MessagesPage) => void;
 	appendMessage: (message: AgentMessage) => void;
 	removeMessage: (message: AgentMessage) => void;
-	/** Clear the live-stream slice and chunk buffers without touching history —
-	 * for a run that settled unseen (background tab: its message_end/agent_end
-	 * never forwarded), where hydrate's transcript merge owns the final content. */
+	appendLiveMessage: (message: AgentMessage) => void;
+	removeLiveMessage: (message: AgentMessage) => void;
+	/** Clear partial assistant stream buffers without touching committed or live rows. */
 	clearStreaming: () => void;
+	/** Drop delivered live rows after an idle transcript hydrate; keep unsent local echo. */
+	clearDeliveredLiveMessages: () => void;
 	/**
-	 * Apply a fetched transcript. When delivery identities match the current
-	 * prefix, patch in place instead of replacing the array (avoids a second
-	 * paint after tab restore). A different identity sequence replaces wholesale.
+	 * Apply a fetched committed transcript. In-flight stable rows are merged by
+	 * mergeFetchedTranscript before this replacement.
 	 */
 	reconcileFetched: (fetched: AgentMessage[]) => void;
 	/** Capture the full stream state (fields + buffers) for a session-tab switch. */
@@ -58,6 +61,7 @@ export interface MessagesStore {
 
 const initialState = {
 	messages: [] as AgentMessage[],
+	liveMessages: [] as AgentMessage[],
 	lastAppended: [] as AgentMessage[],
 	streamingMessage: null as AgentMessage | null,
 	streamingText: "",
@@ -67,79 +71,17 @@ const initialState = {
 	isLoadingPage: false,
 };
 
-function assistantToolCallIds(message: AgentMessage): string[] {
-	if (message.role !== "assistant") return [];
-	const content: unknown = message.content;
-	if (!Array.isArray(content)) return [];
-	const blocks: unknown[] = content;
-	const ids: string[] = [];
-	for (const block of blocks) {
-		if (
-			block !== null &&
-			typeof block === "object" &&
-			"type" in block &&
-			block.type === "toolCall" &&
-			"id" in block &&
-			typeof block.id === "string"
-		) {
-			ids.push(block.id);
-		}
-	}
-	return ids;
-}
-
-/**
- * Delivery identity for run-local dedupe. Message content is intentionally
- * excluded: post-turn maintenance may rewrite a tool result (for example,
- * replacing its full text with a shake marker) before `agent_end` re-delivers
- * the run. Those are two representations of one message, not two transcript
- * entries.
- *
- * Provider response ids and tool-call ids strengthen the timestamp identity
- * where the wire exposes them.
- */
-export function messageIdentityKey(message: AgentMessage): string {
-	const stableId =
-		message.role === "assistant"
-			? [message.responseId ?? null, assistantToolCallIds(message)]
-			: message.role === "toolResult"
-				? message.toolCallId
-				: null;
-	return JSON.stringify([message.role, stableId, message.timestamp]);
-}
-
-/** True when `fetched` starts with the same delivery identities as `current`. */
-export function sameIdentityPrefix(current: AgentMessage[], fetched: AgentMessage[]): boolean {
-	const limit = Math.min(current.length, fetched.length);
-	if (limit === 0) return current.length === 0 && fetched.length === 0;
-	for (let i = 0; i < limit; i++) {
-		const left = current[i];
-		const right = fetched[i];
-		if (!left || !right || messageIdentityKey(left) !== messageIdentityKey(right)) return false;
-	}
-	return true;
-}
-
 function isOptimisticUser(message: AgentMessage): boolean {
 	return message.role === "user" && message.optimistic === true;
 }
 
-/** Replace the local echo with the canonical OMP user message. */
-function replaceOptimisticUser(messages: AgentMessage[], delivered: AgentMessage): AgentMessage[] {
-	if (delivered.role !== "user") return messages;
-	const index = messages.findIndex(isOptimisticUser);
-	if (index < 0) return messages;
-	const next = [...messages];
-	next[index] = delivered;
-	return next;
-}
-
-function appendDeliveredMessages(messages: AgentMessage[], delivered: AgentMessage[]): AgentMessage[] {
+function appendLiveMessages(messages: AgentMessage[], delivered: AgentMessage[]): AgentMessage[] {
 	let next = messages;
 	for (const message of delivered) {
-		const replaced = replaceOptimisticUser(next, message);
-		if (replaced !== next) {
-			next = replaced;
+		const optimisticIndex = message.role === "user" ? next.findIndex(isOptimisticUser) : -1;
+		if (optimisticIndex >= 0) {
+			next = [...next];
+			next[optimisticIndex] = message;
 			continue;
 		}
 		next = [...next, message];
@@ -147,68 +89,50 @@ function appendDeliveredMessages(messages: AgentMessage[], delivered: AgentMessa
 	return next;
 }
 
-/**
- * Merge run-scoped agent_end messages onto the transcript. Messages streamed
- * live via message_end (or hydrated mid-run) already form a suffix of the
- * current list, so find the longest delivery-identity prefix of `run` matching
- * that suffix and append only the remainder. History is never replaced.
- */
-function mergeRunMessages(current: AgentMessage[], run: AgentMessage[]): AgentMessage[] {
-	if (run.length === 0) return current;
-	if (current.length === 0) return run;
-	const maxOverlap = Math.min(current.length, run.length);
-	const runKeys = run.map(messageIdentityKey);
-	// A full agent_end run can contain a maintenance-rewritten message whose
-	// delivery identity changed after it streamed. When the run still maps
-	// exactly onto the current tail, keep the live representations and only
-	// attach persisted ids instead of appending the whole run again.
-	const runStart = current.findLastIndex(message => messageIdentityKey(message) === runKeys[0]);
-	if (runStart >= 0 && current.length - runStart === run.length) {
-		let changed = false;
-		const merged = current.map((message, index) => {
-			if (index < runStart) return message;
-			const entryId = run[index - runStart]?.entryId;
-			if (!entryId || message.entryId === entryId) return message;
-			changed = true;
-			return { ...message, entryId };
-		});
-		return changed ? merged : current;
-	}
-	const currentTailKeys = current.slice(current.length - maxOverlap).map(messageIdentityKey);
-	let overlap = 0;
-	for (let k = maxOverlap; k > 0; k--) {
-		let match = true;
-		for (let i = 0; i < k; i++) {
-			if (currentTailKeys[maxOverlap - k + i] !== runKeys[i]) {
-				match = false;
-				break;
-			}
-		}
-		if (match) {
-			overlap = k;
-			break;
+function upsertCommittedMessages(current: AgentMessage[], committed: AgentMessage[]): AgentMessage[] {
+	const persisted = committed.filter(message => message.entryId);
+	if (persisted.length === 0) return current;
+	const indexByEntryId = new Map<string, number>();
+	current.forEach((message, index) => {
+		if (message.entryId) indexByEntryId.set(message.entryId, index);
+	});
+	const next = [...current];
+	for (const message of persisted) {
+		if (!message.entryId) continue;
+		const index = indexByEntryId.get(message.entryId);
+		if (index === undefined) {
+			indexByEntryId.set(message.entryId, next.length);
+			next.push(message);
+		} else {
+			next[index] = message;
 		}
 	}
-	const merged = [...current];
-	let changed = overlap < run.length;
-	for (let index = 0; index < overlap; index++) {
-		const currentIndex = current.length - overlap + index;
-		const entryId = run[index]?.entryId;
-		if (!entryId || merged[currentIndex]?.entryId === entryId) continue;
-		merged[currentIndex] = { ...merged[currentIndex], entryId };
-		changed = true;
-	}
-	if (overlap < run.length) merged.push(...run.slice(overlap));
-	return changed ? merged : current;
+	return next;
 }
 
-export const createMessagesStore = () => {
-	/**
-	 * Keys of messages appended during this runtime's current agent run.
-	 * Per-store ownership is required when two session panes stream at once.
-	 */
-	let deliveredThisRun = new Set<string>();
-	return createStore<MessagesStore>()((set, get) => ({
+/** Preserve only committed rows appended after a transcript request began. */
+export function mergeFetchedTranscript(
+	fetched: AgentMessage[],
+	before: AgentMessage[],
+	current: AgentMessage[],
+): AgentMessage[] {
+	const prefixIntact =
+		current.length >= before.length &&
+		before.every((message, index) => {
+			const currentMessage = current[index];
+			if (!currentMessage) return false;
+			return message.entryId || currentMessage.entryId
+				? message.entryId !== undefined && message.entryId === currentMessage.entryId
+				: message === currentMessage;
+		});
+	if (!prefixIntact) return fetched;
+	const fetchedIds = new Set(fetched.flatMap(message => (message.entryId ? [message.entryId] : [])));
+	const tail = current.slice(before.length).filter(message => message.entryId && !fetchedIds.has(message.entryId));
+	return tail.length === 0 ? fetched : [...fetched, ...tail];
+}
+
+export const createMessagesStore = () =>
+	createStore<MessagesStore>()((set, get) => ({
 		...initialState,
 		applyEvents: events => {
 			let textAccum = "";
@@ -220,14 +144,10 @@ export const createMessagesStore = () => {
 
 			for (const event of events) {
 				switch (event.type) {
-					case "agent_start": {
-						deliveredThisRun = new Set();
-						break;
-					}
 					case "message_start": {
 						// The composer already paints an idle user prompt locally. User
 						// messages do not stream deltas, so a second live row would flash.
-						if (event.message.role === "user" && get().messages.some(isOptimisticUser)) break;
+						if (event.message.role === "user" && get().liveMessages.some(isOptimisticUser)) break;
 						streamingStart = event.message;
 						textAccum = "";
 						thinkAccum = "";
@@ -244,27 +164,13 @@ export const createMessagesStore = () => {
 					}
 					case "message_end": {
 						newMessages.push(event.message);
-						deliveredThisRun.add(messageIdentityKey(event.message));
 						streamingEnd = true;
 						break;
 					}
 					case "agent_end": {
-						// Wire sends run-scoped newMessages, NOT the full transcript —
-						// append-merge onto history, never replace.
+						// Only this persisted, entry-id-bearing frame owns committed history.
 						if (event.messages) {
 							runMessages = event.messages;
-						}
-						break;
-					}
-					case "turn_end": {
-						// turn_end re-delivers the turn's assistant message; append only
-						// when this run has not already delivered it via message_end.
-						if (event.message) {
-							const key = messageIdentityKey(event.message);
-							if (!deliveredThisRun.has(key)) {
-								newMessages.push(event.message);
-								deliveredThisRun.add(key);
-							}
 						}
 						break;
 					}
@@ -289,20 +195,19 @@ export const createMessagesStore = () => {
 				patch.streamingThinking = `${streamingStart ? "" : state.streamingThinking}${thinkAccum}`;
 			}
 
-			let messages = state.messages;
+			let liveMessages = state.liveMessages;
 			if (newMessages.length > 0) {
-				messages = appendDeliveredMessages(messages, newMessages);
+				liveMessages = appendLiveMessages(liveMessages, newMessages);
 			}
+			let messages = state.messages;
 			if (runMessages) {
-				const deliveredUser = runMessages.find(message => message.role === "user");
-				if (deliveredUser) messages = replaceOptimisticUser(messages, deliveredUser);
-				messages = mergeRunMessages(messages, runMessages);
+				messages = upsertCommittedMessages(messages, runMessages);
+				liveMessages = [];
 			}
+			if (liveMessages !== state.liveMessages) patch.liveMessages = liveMessages;
 			if (messages !== state.messages) {
 				patch.messages = messages;
-				patch.totalMessages = state.totalMessages + (messages.length - state.messages.length);
-				// Both paths above are append-only, so everything beyond the prior
-				// length is new (message_end/turn_end/agent_end deliveries).
+				patch.totalMessages = messages.length;
 				const appended = messages.slice(state.messages.length);
 				if (appended.length > 0) patch.lastAppended = appended;
 			}
@@ -320,6 +225,7 @@ export const createMessagesStore = () => {
 		loadPage: page =>
 			set({
 				messages: page.messages,
+				liveMessages: [],
 				lastAppended: [],
 				totalMessages: page.totalMessages,
 				nextCursor: page.nextCursor,
@@ -339,35 +245,20 @@ export const createMessagesStore = () => {
 				if (removed === 0) return s;
 				return { messages, totalMessages: Math.max(0, s.totalMessages - removed) };
 			}),
-		clearStreaming: () => {
-			set({ streamingMessage: null, streamingText: "", streamingThinking: "" });
-		},
+		appendLiveMessage: message => set(s => ({ liveMessages: [...s.liveMessages, message] })),
+		removeLiveMessage: message => set(s => ({ liveMessages: s.liveMessages.filter(entry => entry !== message) })),
+		clearStreaming: () => set({ streamingMessage: null, streamingText: "", streamingThinking: "" }),
+		clearDeliveredLiveMessages: () => set(s => ({ liveMessages: s.liveMessages.filter(isOptimisticUser) })),
 		reconcileFetched: fetched => {
 			const current = get().messages;
-			if (sameIdentityPrefix(current, fetched)) {
-				if (fetched.length === current.length) {
-					let changed = false;
-					const next = current.map((message, index) => {
-						const incoming = fetched[index];
-						if (!incoming || incoming === message) return message;
-						changed = true;
-						return incoming;
-					});
-					if (!changed) return;
-					set({ messages: next, totalMessages: next.length });
-					return;
-				}
-				if (fetched.length > current.length) {
-					set({ messages: [...current, ...fetched.slice(current.length)], totalMessages: fetched.length });
-					return;
-				}
-			}
+			if (fetched.length === current.length && fetched.every((message, index) => message === current[index])) return;
 			set({ messages: fetched, totalMessages: fetched.length });
 		},
 		snapshot: () => {
 			const state = get();
 			return {
 				messages: state.messages,
+				liveMessages: state.liveMessages,
 				lastAppended: state.lastAppended,
 				streamingMessage: state.streamingMessage,
 				streamingText: state.streamingText,
@@ -375,7 +266,6 @@ export const createMessagesStore = () => {
 				totalMessages: state.totalMessages,
 				nextCursor: state.nextCursor,
 				isLoadingPage: state.isLoadingPage,
-				deliveredKeys: [...deliveredThisRun],
 			};
 		},
 		restoreSnapshot: snapshot => {
@@ -383,9 +273,9 @@ export const createMessagesStore = () => {
 				get().reset();
 				return;
 			}
-			deliveredThisRun = new Set(snapshot.deliveredKeys);
 			set({
 				messages: snapshot.messages,
+				liveMessages: snapshot.liveMessages,
 				lastAppended: snapshot.lastAppended,
 				streamingMessage: snapshot.streamingMessage,
 				streamingText: snapshot.streamingText,
@@ -395,12 +285,8 @@ export const createMessagesStore = () => {
 				isLoadingPage: snapshot.isLoadingPage,
 			});
 		},
-		reset: () => {
-			deliveredThisRun = new Set();
-			set(initialState);
-		},
+		reset: () => set(initialState),
 	}));
-};
 
 const defaultMessagesStore = createMessagesStore();
 export const useMessagesStore = createScopedStoreHook("messages", defaultMessagesStore);

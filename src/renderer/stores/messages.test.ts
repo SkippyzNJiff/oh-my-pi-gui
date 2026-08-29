@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AgentMessage, AgentSessionEvent } from "../../shared/rpc-types";
-import { useMessagesStore } from "./messages";
+import { mergeFetchedTranscript, useMessagesStore } from "./messages";
 
 const streamingMessage: AgentMessage = {
 	role: "assistant",
@@ -21,8 +21,8 @@ function delta(text: string): AgentSessionEvent {
 	};
 }
 
-function userMessage(id: string): AgentMessage {
-	return { role: "user", content: id, timestamp: Number(id.length), id };
+function userMessage(entryId: string): AgentMessage {
+	return { role: "user", content: entryId, timestamp: Number(entryId.length), entryId };
 }
 
 beforeEach(() => useMessagesStore.getState().reset());
@@ -46,16 +46,39 @@ describe("messages streaming snapshots", () => {
 
 		expect(useMessagesStore.getState().streamingText).toBe("new");
 	});
+
+	it("clears partial assistant buffers without deleting an optimistic user prompt", () => {
+		const optimistic: AgentMessage = { role: "user", content: "send now", timestamp: 2, optimistic: true };
+		useMessagesStore.getState().appendLiveMessage(optimistic);
+		useMessagesStore.setState({
+			streamingMessage,
+			streamingText: "partial",
+			streamingThinking: "thinking",
+		});
+
+		useMessagesStore.getState().clearStreaming();
+
+		expect(useMessagesStore.getState().liveMessages).toEqual([optimistic]);
+		expect(useMessagesStore.getState().streamingMessage).toBeNull();
+	});
 });
 
-describe("agent-end delivery dedupe", () => {
-	it("adds persisted tree ids to live user and assistant messages without reopening the tab", () => {
-		const user: AgentMessage = { role: "user", content: "question", timestamp: 5 };
-		const assistant: AgentMessage = { role: "assistant", content: "answer", timestamp: 6 };
-		useMessagesStore.getState().applyEvents([
-			{ type: "message_end", message: user },
-			{ type: "message_end", message: assistant },
-		]);
+describe("committed transcript ownership", () => {
+	it("keeps message_end deliveries temporary and commits the turn once by entry id", () => {
+		const optimistic: AgentMessage = {
+			role: "user",
+			content: "question",
+			timestamp: 10,
+			optimistic: true,
+		};
+		const user: AgentMessage = { role: "user", content: "question", timestamp: 10 };
+		const assistant: AgentMessage = { role: "assistant", content: "answer", timestamp: 11 };
+		useMessagesStore.getState().appendLiveMessage(optimistic);
+
+		useMessagesStore.getState().applyEvents([{ type: "message_end", message: user }]);
+		useMessagesStore.getState().applyEvents([{ type: "message_end", message: assistant }]);
+		expect(useMessagesStore.getState().messages).toEqual([]);
+		expect(useMessagesStore.getState().liveMessages).toEqual([user, assistant]);
 
 		useMessagesStore.getState().applyEvents([
 			{
@@ -67,104 +90,64 @@ describe("agent-end delivery dedupe", () => {
 			},
 		]);
 
-		expect(useMessagesStore.getState().messages).toMatchObject([
-			{ role: "user", entryId: "user-entry" },
-			{ role: "assistant", entryId: "assistant-entry" },
-		]);
-	});
-
-	it("does not append a maintenance-rewritten copy of an already delivered tool result", () => {
-		const original: AgentMessage = {
-			role: "toolResult",
-			toolCallId: "call-1",
-			toolName: "read",
-			content: [{ type: "text", text: "full tool output" }],
-			isError: false,
-			timestamp: 10,
-		};
-		const shaken: AgentMessage = {
-			...original,
-			content: [{ type: "text", text: "[Shaken] 35 tokens – recover: artifact://0" }],
-		};
-		const next: AgentMessage = {
-			role: "toolResult",
-			toolCallId: "call-2",
-			toolName: "read",
-			content: [{ type: "text", text: "next result" }],
-			isError: false,
-			timestamp: 11,
-		};
-
-		useMessagesStore.getState().applyEvents([{ type: "agent_start" }, { type: "message_end", message: original }]);
-		useMessagesStore.getState().applyEvents([{ type: "agent_end", messages: [shaken, next] }]);
-
-		expect(useMessagesStore.getState().messages).toEqual([original, next]);
-		expect(useMessagesStore.getState().totalMessages).toBe(2);
-	});
-
-	it("does not append the full turn when one settled message changes delivery identity", () => {
-		const user: AgentMessage = { role: "user", content: "question", timestamp: 12 };
-		const live: AgentMessage = {
-			role: "assistant",
-			content: "answer",
-			responseId: "live-response",
-			timestamp: 13,
-		};
-		useMessagesStore
-			.getState()
-			.applyEvents([
-				{ type: "agent_start" },
-				{ type: "message_end", message: user },
-				{ type: "message_end", message: live },
-			]);
-
-		useMessagesStore.getState().applyEvents([
-			{
-				type: "agent_end",
-				messages: [
-					{ ...user, entryId: "user-entry" },
-					{ ...live, responseId: "settled-response", entryId: "assistant-entry" },
-				],
-			},
-		]);
-
 		expect(useMessagesStore.getState().messages).toEqual([
 			{ ...user, entryId: "user-entry" },
-			{ ...live, entryId: "assistant-entry" },
+			{ ...assistant, entryId: "assistant-entry" },
 		]);
-		expect(useMessagesStore.getState().totalMessages).toBe(2);
+		expect(useMessagesStore.getState().liveMessages).toEqual([]);
 	});
 
-	it("keeps response-id-less assistant tool calls distinct when their wire call ids differ", () => {
-		const first: AgentMessage = {
-			role: "assistant",
-			content: [{ type: "toolCall", id: "call-a", name: "read", arguments: {} }],
-			timestamp: 20,
-		};
-		const second: AgentMessage = {
-			role: "assistant",
-			content: [{ type: "toolCall", id: "call-b", name: "read", arguments: {} }],
-			timestamp: 20,
-		};
+	it("upserts repeated or maintenance-rewritten settlements by entry id", () => {
+		const first = userMessage("entry-1");
+		useMessagesStore.getState().applyEvents([{ type: "agent_end", messages: [first] }]);
+		const rewritten = { ...first, content: "rewritten" };
+		useMessagesStore.getState().applyEvents([{ type: "agent_end", messages: [rewritten] }]);
 
-		useMessagesStore.getState().applyEvents([{ type: "message_end", message: first }]);
-		useMessagesStore.getState().applyEvents([{ type: "agent_end", messages: [second] }]);
+		expect(useMessagesStore.getState().messages).toEqual([rewritten]);
+		expect(useMessagesStore.getState().totalMessages).toBe(1);
+	});
 
-		expect(useMessagesStore.getState().messages).toEqual([first, second]);
+	it("does not promote a non-persisted settlement into committed history", () => {
+		const transient: AgentMessage = { role: "custom", customType: "notice", content: "temporary", timestamp: 1 };
+		useMessagesStore.getState().applyEvents([{ type: "message_end", message: transient }]);
+		useMessagesStore.getState().applyEvents([{ type: "agent_end", messages: [transient] }]);
+
+		expect(useMessagesStore.getState().messages).toEqual([]);
+		expect(useMessagesStore.getState().liveMessages).toEqual([]);
 	});
 });
 
-describe("reconcileFetched", () => {
-	it("keeps the array identity when delivery keys match and contents are the same references", () => {
+describe("transcript hydration", () => {
+	it("preserves a committed tail that arrived while the snapshot was in flight", () => {
 		const a = userMessage("a");
+		const before = [a];
 		const b = userMessage("b");
-		useMessagesStore.setState({ messages: [a, b], totalMessages: 2 });
-		const before = useMessagesStore.getState().messages;
-		useMessagesStore.getState().reconcileFetched([a, b]);
-		expect(useMessagesStore.getState().messages).toBe(before);
+		const current = [a, b];
+
+		useMessagesStore.getState().reconcileFetched(mergeFetchedTranscript([a], before, current));
+		expect(useMessagesStore.getState().messages).toEqual([a, b]);
 	});
 
-	it("replaces wholesale when the identity sequence changes", () => {
+	it("preserves the tail when an existing committed row was replaced by the same entry id", () => {
+		const a = userMessage("a");
+		const b = userMessage("b");
+		const refreshedA = { ...a, content: "refreshed" };
+		const fetchedA = { ...a, content: "fetched" };
+
+		expect(mergeFetchedTranscript([fetchedA], [a], [refreshedA, b])).toEqual([fetchedA, b]);
+	});
+
+	it("clears delivered live rows after idle hydration but preserves local echo", () => {
+		const optimistic: AgentMessage = { role: "user", content: "pending", timestamp: 1, optimistic: true };
+		const delivered: AgentMessage = { role: "assistant", content: "stale", timestamp: 2 };
+		useMessagesStore.setState({ liveMessages: [optimistic, delivered] });
+
+		useMessagesStore.getState().clearDeliveredLiveMessages();
+
+		expect(useMessagesStore.getState().liveMessages).toEqual([optimistic]);
+	});
+
+	it("replaces a different persisted branch instead of guessing by content or timestamp", () => {
 		const a = userMessage("a");
 		useMessagesStore.setState({ messages: [a], totalMessages: 1 });
 		const next = userMessage("other");

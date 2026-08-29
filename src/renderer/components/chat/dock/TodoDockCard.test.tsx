@@ -164,6 +164,9 @@ describe("TodoDockCard", () => {
 		// container scroll. Cards must therefore refuse to shrink.
 		const card = container.querySelector("[data-dock-focused]") as unknown as HTMLElement;
 		expect(card).not.toBeNull();
-		expect(card.getAttribute("class") ?? "").toContain("shrink-0");
+		const cardClass = card.getAttribute("class") ?? "";
+		expect(cardClass).toContain("shrink-0");
+		expect(cardClass).toContain("overflow-clip");
+		expect(card.firstElementChild?.getAttribute("class") ?? "").toContain("sticky");
 	});
 });

@@ -11,9 +11,11 @@ import type { QueueLane } from "../../stores/queue";
 import type { TodoSnapshot } from "../../stores/todo";
 import { type ToolEntry, toolEntryKey } from "../../stores/tools";
 import type { TranscriptDetail } from "../../stores/ui";
+import { isCompletionMessage, launchCompletionFailureCount } from "./completion-events";
 
 interface ProcessMeta {
 	stepCount: number;
+	failedEvents: number;
 	toolCallIds: string[];
 	toolNames: string[];
 }
@@ -167,10 +169,6 @@ function hasProcessNarration(message: AgentMessage): boolean {
 	});
 }
 
-function isLaunchMessage(message: AgentMessage): boolean {
-	return message.customType === "async-result" || message.customType === "launch-completion";
-}
-
 /**
  * Keep zero-height/non-display messages out of the virtualizer. Estimating an
  * invisible toolResult row at 128px was the remaining source of blank bands
@@ -235,9 +233,11 @@ export function hasStreamingTranscriptContent(
 
 function summarizeProcess(messages: AgentMessage[]): ProcessMeta {
 	let thinkingCount = 0;
+	let failedEvents = 0;
 	const toolCallIds: string[] = [];
 	const toolNames: string[] = [];
 	for (const message of messages) {
+		failedEvents += launchCompletionFailureCount(message);
 		for (const block of messageContent(message)) {
 			if (block.type === "thinking" && isRenderableMessageText(block.thinking)) thinkingCount++;
 			if (block.type !== "toolCall") continue;
@@ -245,7 +245,7 @@ function summarizeProcess(messages: AgentMessage[]): ProcessMeta {
 			toolNames.push(block.name);
 		}
 	}
-	return { stepCount: thinkingCount + toolCallIds.length, toolCallIds, toolNames };
+	return { stepCount: thinkingCount + toolCallIds.length, failedEvents, toolCallIds, toolNames };
 }
 
 /**
@@ -274,6 +274,13 @@ export function buildHistoryRows(messages: AgentMessage[], detail: TranscriptDet
 		// toolResult/display:false/empty-filler messages must not split a process
 		// run — they are invisible transport records, not transcript boundaries.
 		if (!isVisibleTranscriptMessage(message)) continue;
+		// Completion notifications are transport events inside the current run,
+		// not semantic phase boundaries. Keep them with the tools they report on;
+		// an out-of-band completion with no active run remains a standalone row.
+		if (detail === "compact" && processMessages.length > 0 && isCompletionMessage(message)) {
+			processMessages.push(message);
+			continue;
+		}
 		if (
 			detail !== "compact" ||
 			message.role !== "assistant" ||
@@ -366,10 +373,10 @@ export function buildTimelineMarkers(rows: readonly HistoryRow[]): Array<Timelin
 		const row = rows[index];
 		if (!row) continue;
 
-		if (row.kind === "message" && (row.message.errorMessage || isLaunchMessage(row.message))) {
+		if (row.kind === "message" && (row.message.errorMessage || isCompletionMessage(row.message))) {
 			phaseOwner = null;
 			markers[index] = {
-				state: row.message.errorMessage ? "error" : "launch",
+				state: row.message.errorMessage || launchCompletionFailureCount(row.message) > 0 ? "error" : "launch",
 				timestamp: row.message.timestamp,
 				toolIds: messageToolIds(row.message),
 			};
@@ -379,10 +386,12 @@ export function buildTimelineMarkers(rows: readonly HistoryRow[]): Array<Timelin
 		let timestamp: number | string | undefined;
 		let toolIds: string[] = [];
 		let startsPhase = false;
+		let state: TimelineState = "done";
 		if (row.kind === "process") {
 			timestamp = row.messages[0]?.timestamp;
 			toolIds = row.toolCallIds;
 			startsPhase = true;
+			if (row.failedEvents > 0) state = "error";
 		} else if (row.kind === "readGroup") {
 			timestamp = row.usage?.[0]?.timestamp;
 			toolIds = row.entries.map(entry => entry.toolKey);
@@ -399,7 +408,7 @@ export function buildTimelineMarkers(rows: readonly HistoryRow[]): Array<Timelin
 
 		if (phaseOwner === null || startsPhase) {
 			phaseOwner = index;
-			markers[index] = { state: "done", timestamp, toolIds: [...toolIds] };
+			markers[index] = { state, timestamp, toolIds: [...toolIds] };
 			continue;
 		}
 

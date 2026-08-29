@@ -31,6 +31,7 @@ import { useSessionList } from "../../hooks/use-session-list";
 import { basename, cx } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { sessionHasContent } from "../../lib/session-title";
+import { tabSignalPresentation } from "../../lib/tab-signal";
 import type { ComposerStore } from "../../stores/composer";
 import { useComposerStore } from "../../stores/composer";
 import type { MessagesStore } from "../../stores/messages";
@@ -75,32 +76,14 @@ function TabChip({
 	const switchTab = useTabsStore(s => s.switchTab);
 	const closable = useTabsStore(s => s.tabs.length > 1);
 	// The active tab's live stream state sharpens the signal between status pushes.
-	const activeStreaming = useSessionStore(s => (active ? s.isStreaming : false));
-	const running = tab.status === "running" || tab.compacting === true || (active && activeStreaming);
-	const signalActive = running || tab.status === "starting" || tab.status === "restarting";
-	const signalLabel = running
-		? t("titlebar.status.working")
-		: tab.unreadDone
-			? t("tabs.done")
-			: tab.status === "ready"
-				? t("titlebar.status.ready")
-				: tab.status === "starting"
-					? t("titlebar.status.connecting")
-					: t(`titlebar.status.${tab.status}`);
-	const signalColor = running
-		? "var(--omp-accent)"
-		: tab.unreadDone
-			? "var(--omp-success)"
-			: tab.status === "ready"
-				? "var(--omp-dim)"
-				: tab.status === "error" || tab.status === "exited"
-					? "var(--omp-error)"
-					: "var(--omp-warning)";
+	const activeRuntime = useSessionStore(s => (active ? s.isStreaming || s.isCompacting : false));
+	const signal = tabSignalPresentation(tab, activeRuntime);
+	const signalLabel = t(signal.labelKey);
 	// Closing kills the tab's sidecar: a live run (running, starting, or the
 	// active tab's stream outrunning the pool's status pushes) dies with it,
 	// so those route through the inline confirm. Idle tabs go straight to the
 	// confirm handler (which detours worktree tabs to the cleanup prompt).
-	const closeNeedsConfirm = running || tab.status === "starting";
+	const closeNeedsConfirm = signal.running || tab.status === "starting";
 
 	return (
 		<div
@@ -138,8 +121,8 @@ function TabChip({
 				role="img"
 				aria-label={signalLabel}
 				title={signalLabel}
-				className={cx("omp-signal-light omp-tab-signal", signalActive && "omp-signal-light--active")}
-				style={{ color: signalColor }}
+				className={cx("omp-signal-light omp-tab-signal", signal.active && "omp-signal-light--active")}
+				style={{ color: signal.color }}
 			/>
 			{tab.worktree && (
 				<GitBranch size={11} className="shrink-0 text-[var(--omp-accent)]" aria-label={t("tabs.kind.worktree")} />
