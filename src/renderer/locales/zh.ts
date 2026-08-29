@@ -1380,7 +1380,7 @@ export const zh: Record<string, string> = {
 	"settings.capabilities.loopMode": "循环模式",
 	"settings.capabilities.memory": "跨会话项目记忆",
 	"settings.capabilities.memoryDesc":
-		"通过本地、Hindsight 或 Mnemopi 后端，在多个会话间保留项目事实与已学习的上下文。",
+		"通过本地、Hindsight、Mnemopi 或 Sharpshooter，在多个会话间保留项目事实、已学习上下文与项目决策。",
 	"settings.capabilities.memoryBackend": "后端：{backend}",
 	"settings.capabilities.unconfigured": "未配置",
 	"settings.capabilities.configureMemory": "配置记忆",

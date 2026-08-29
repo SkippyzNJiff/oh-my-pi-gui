@@ -41,6 +41,8 @@ interface TestElement {
 interface MockOmp {
 	sidecar: {
 		defaultWorkspace: Mock<() => Promise<string>>;
+		selectProject: Mock<() => Promise<string | null>>;
+		setProject: Mock<(cwd: string) => Promise<boolean>>;
 	};
 	sessions: {
 		list: Mock<(scope: string) => Promise<SessionInfo[]>>;
@@ -72,6 +74,8 @@ function installMockOmp(sessionList: SessionInfo[]): MockOmp {
 	const omp: MockOmp = {
 		sidecar: {
 			defaultWorkspace: vi.fn(async () => "/default/work"),
+			selectProject: vi.fn(async () => null),
+			setProject: vi.fn(async () => true),
 		},
 		sessions: {
 			list: vi.fn(async () => sessionList),
@@ -347,6 +351,31 @@ describe("Sidebar menus and pinned ordering", () => {
 		});
 	});
 
+	it("creates an agent tab from New session even when the active tab is chat", async () => {
+		const omp = installMockOmp(LIST);
+		useSessionStore.setState({ sessionId: "chat", cwd: "/work/alpha", isStreaming: false });
+		useTabsStore.setState({
+			tabs: [{ id: "chat", cwd: "/work/alpha", status: "ready", kind: "chat", unreadDone: false }],
+			activeTabId: "chat",
+			bundles: new Map(),
+		});
+		await mount(<Sidebar />);
+
+		await fire(container.querySelector("[data-sidebar-new-agent]"), "onClick");
+		const currentWorkspace = [...document.body.querySelectorAll("button")].find(button =>
+			(button.textContent ?? "").includes("/work/alpha"),
+		);
+		await fire(currentWorkspace as Element, "onClick");
+
+		expect(omp.tabs.spawn).toHaveBeenCalledWith({
+			cwd: "/work/alpha",
+			kind: "agent",
+			sessionPath: undefined,
+			worktree: undefined,
+		});
+		expect(omp.sidecar.setProject).not.toHaveBeenCalled();
+	});
+
 	it("opens the existing global session picker from the header", async () => {
 		installMockOmp(LIST);
 		seedStores();
@@ -367,6 +396,18 @@ describe("Sidebar menus and pinned ordering", () => {
 		expect(rows.every(row => row.querySelector(".omp-signal-light") !== null)).toBe(true);
 		expect(rows.every(row => row.querySelector(".omp-signal-light--active") === null)).toBe(true);
 		expect(rows[0]?.querySelector('[aria-label="Completed"]')).not.toBeNull();
+	});
+
+	it("aligns workspace and session titles with folder, chat, and reserved icon slots", async () => {
+		installMockOmp(LIST);
+		seedStores();
+		await mount(<Sidebar />);
+
+		expect(container.querySelectorAll("[data-sidebar-workspace-icon]").length).toBeGreaterThan(0);
+		const chatRow = container.querySelector('[data-session-kind="chat"]');
+		const groupedAgentRow = container.querySelector('[data-session-group="/work/alpha"] [data-session-kind="agent"]');
+		expect(chatRow?.querySelector("svg[data-sidebar-session-icon]")).not.toBeNull();
+		expect(groupedAgentRow?.querySelector("span[data-sidebar-session-icon]")).not.toBeNull();
 	});
 
 	it("right-click on a workspace header opens the agent-only 5-item group menu", async () => {

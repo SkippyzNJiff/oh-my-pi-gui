@@ -1404,7 +1404,7 @@ export const en: Record<string, string> = {
 	"settings.capabilities.loopMode": "Loop mode",
 	"settings.capabilities.memory": "Cross-session project memory",
 	"settings.capabilities.memoryDesc":
-		"Keep project facts and learned context across sessions using the local, Hindsight, or Mnemopi memory backend.",
+		"Keep project facts, learned context, or friction-earned decisions across sessions using Local, Hindsight, Mnemopi, or Sharpshooter.",
 	"settings.capabilities.memoryBackend": "Backend: {backend}",
 	"settings.capabilities.unconfigured": "not configured",
 	"settings.capabilities.configureMemory": "Configure memory",

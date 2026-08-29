@@ -406,6 +406,9 @@ export const ZH_SCHEMA_OPTION_TEXT: Readonly<Record<string, string>> = {
 	"Vectorize Hindsight remote memory service": "Vectorize Hindsight 远程记忆服务",
 	Mnemopi: "Mnemopi",
 	"Local SQLite recall/retain backend with optional embeddings": "本地 SQLite 回忆/保留后端，可选用嵌入",
+	Sharpshooter: "Sharpshooter",
+	"Friction-gated project decision files (architecture/product/style), consolidated in the background":
+		"按摩擦信号沉淀项目决策文件（架构、产品、风格），并在后台合并",
 	"One shared Mnemopi bank for every project": "所有项目共用一个 Mnemopi 记忆库",
 	"Per project": "每个项目",
 	"Project-local Mnemopi bank per cwd basename": "按 cwd 基名使用项目本地 Mnemopi 记忆库",

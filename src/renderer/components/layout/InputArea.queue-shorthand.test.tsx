@@ -7,7 +7,7 @@ import { parseHTML } from "linkedom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, type Mock, vi } from "vitest";
-import type { RpcResponse } from "../../../shared/rpc-types";
+import type { AgentMessage, RpcResponse } from "../../../shared/rpc-types";
 import { I18nProvider, translate } from "../../lib/i18n";
 import { useComposerStore } from "../../stores/composer";
 import { useMessagesStore } from "../../stores/messages";
@@ -278,6 +278,43 @@ describe("InputArea queue shorthand submit", () => {
 
 		expect(steer).toHaveBeenCalledWith("plain guidance", []);
 		expect(followUp).not.toHaveBeenCalled();
+	});
+
+	it("renders an idle prompt before its RPC settles and replaces the local echo on delivery", async () => {
+		await mount();
+		await act(async () => useSessionStore.setState({ isStreaming: false }));
+		const deferred = Promise.withResolvers<RpcResponse>();
+		prompt.mockReturnValueOnce(deferred.promise);
+		await typeInto(findTextarea(), "slow network prompt");
+
+		await pressEnter(findTextarea());
+
+		expect(prompt).toHaveBeenCalledWith("slow network prompt", []);
+		expect(useMessagesStore.getState().messages).toMatchObject([
+			{
+				role: "user",
+				content: [{ type: "text", text: "slow network prompt" }],
+				optimistic: true,
+			},
+		]);
+
+		const delivered: AgentMessage = {
+			role: "user",
+			content: [{ type: "text", text: "slow network prompt" }],
+			timestamp: 2,
+			entryId: "user-entry",
+		};
+		await act(async () =>
+			useMessagesStore.getState().applyEvents([
+				{ type: "message_start", message: delivered },
+				{ type: "message_end", message: delivered },
+			]),
+		);
+		expect(useMessagesStore.getState().messages).toEqual([delivered]);
+		expect(useMessagesStore.getState().streamingMessage).toBeNull();
+
+		deferred.resolve(ok());
+		await flush();
 	});
 
 	it("does not dispatch a deferred prompt through a tab selected after Enter", async () => {

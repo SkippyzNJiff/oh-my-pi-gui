@@ -46,9 +46,13 @@ async function render(element: ReactElement): Promise<void> {
 	await flush();
 }
 
-async function pressEscape(): Promise<void> {
+async function pressEscape({ isComposing = false, keyCode = 27 } = {}): Promise<void> {
 	const event = new Event("keydown", { bubbles: true, cancelable: true });
-	(event as unknown as { key: string }).key = "Escape";
+	Object.defineProperties(event, {
+		isComposing: { value: isComposing },
+		key: { value: "Escape" },
+		keyCode: { value: keyCode },
+	});
 	await act(async () => {
 		document.dispatchEvent(event);
 	});
@@ -133,6 +137,21 @@ describe("Modal", () => {
 
 		await pressEscape();
 		expect(closeBottom).toHaveBeenCalledTimes(1);
+	});
+
+	it("ignores live IME composition but closes on a resolved Escape with legacy keyCode 229", async () => {
+		const onClose = vi.fn();
+		await mount(
+			<Modal open onClose={onClose} title="Dialog">
+				<input defaultValue="输入" />
+			</Modal>,
+		);
+
+		await pressEscape({ isComposing: true, keyCode: 229 });
+		expect(onClose).not.toHaveBeenCalled();
+
+		await pressEscape({ keyCode: 229 });
+		expect(onClose).toHaveBeenCalledTimes(1);
 	});
 
 	it("ignores Escape while a custom fullscreen dialog covers it", async () => {

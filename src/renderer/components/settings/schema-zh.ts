@@ -488,7 +488,22 @@ export const ZH_SETTINGS: Record<string, { label: string; description?: string }
 	"ttsr.disabledRules": { label: "禁用规则", description: "完全忽略的规则名称（对内置默认规则和你自己的规则都生效）" },
 
 	// ── memory ──────────────────────────────────────────────────────────────
-	"memory.backend": { label: "记忆后端", description: "关闭、本地摘要管线、Mnemopi SQLite，或 Hindsight 远程记忆" },
+	"memory.backend": {
+		label: "记忆后端",
+		description: "关闭、本地摘要管线、Mnemopi SQLite、Hindsight 远程记忆，或 Sharpshooter 项目决策记忆",
+	},
+	"sharpshooter.model": {
+		label: "Sharpshooter 模型",
+		description: "用于提取和合并项目决策的模型选择器；留空则使用 smol 角色",
+	},
+	"sharpshooter.intervalMinutes": {
+		label: "Sharpshooter 合并间隔",
+		description: "后台合并待处理项目决策的间隔分钟数",
+	},
+	"sharpshooter.injectionTokenLimit": {
+		label: "Sharpshooter 注入上限",
+		description: "每轮最多注入到上下文中的项目决策记忆 token 数",
+	},
 	"autolearn.enabled": {
 		label: "自动学习（实验性）",
 		description: "Agent 停止后，提醒它把经验教训沉淀到记忆，并创建/完善隔离的受管技能",

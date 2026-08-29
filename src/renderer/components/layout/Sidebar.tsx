@@ -9,6 +9,7 @@ import {
 	Code2,
 	Coins,
 	ExternalLink,
+	Folder,
 	GitBranchPlus,
 	GitPullRequest,
 	Keyboard,
@@ -389,7 +390,7 @@ export function Sidebar() {
 		}
 	};
 
-	const renderSessionRow = (session: SessionInfo) => {
+	const renderSessionRow = (session: SessionInfo, nested = false) => {
 		const active = session.id === sessionId;
 		// Signal light: every open task uses its owning tab's live status.
 		// Waiting-for-confirmation wins for the attached task.
@@ -456,6 +457,16 @@ export function Sidebar() {
 										: STATUS_COLOR[session.status],
 						}}
 					/>
+					{session.kind === "chat" ? (
+						<MessageCircle
+							aria-hidden="true"
+							data-sidebar-session-icon
+							size={14}
+							className="mr-2 shrink-0 text-[var(--omp-dim)]"
+						/>
+					) : nested ? (
+						<span aria-hidden="true" data-sidebar-session-icon className="mr-2 w-3.5 shrink-0" />
+					) : null}
 					{pinnedSessions.includes(session.path) && (
 						<Pin
 							size={10}
@@ -478,7 +489,10 @@ export function Sidebar() {
 						/>
 					) : (
 						<SidebarRowTitle
-							className="text-omp-md font-normal leading-5 text-[var(--omp-muted)]"
+							className={cx(
+								"text-omp-md font-normal leading-5",
+								active ? "text-[var(--omp-text)]" : "text-[var(--omp-muted)]",
+							)}
 							title={title}
 						/>
 					)}
@@ -742,7 +756,7 @@ export function Sidebar() {
 					)}
 					{mode === "work" && workSessions.length > 0 && (
 						<div className="space-y-px" data-work-section>
-							{workSessions.map(renderSessionRow)}
+							{workSessions.map(session => renderSessionRow(session))}
 						</div>
 					)}
 					{mode === "code" && chatSessions.length > 0 && (
@@ -751,14 +765,14 @@ export function Sidebar() {
 								type="button"
 								onClick={() => setCollapsed(prev => ({ ...prev, __chats__: !chatsCollapsed }))}
 								aria-expanded={!chatsCollapsed}
-								className="flex w-full min-w-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-omp-xs font-medium uppercase tracking-[0.08em] text-[var(--omp-dim)] hover:text-[var(--omp-muted)]"
+								className="flex h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left text-omp-md font-normal text-[var(--omp-muted)] hover:text-[var(--omp-text)]"
 							>
 								{chatsCollapsed ? (
 									<ChevronRight size={12} className="shrink-0" />
 								) : (
 									<ChevronDown size={12} className="shrink-0" />
 								)}
-								<MessageCircle size={11} className="shrink-0" />
+								<MessageCircle size={14} className="shrink-0" />
 								<span className="min-w-0 flex-1 truncate">{t("sidebar.chats")}</span>
 								<span className="shrink-0 tabular-nums font-normal">{chatSessions.length}</span>
 							</button>
@@ -770,7 +784,7 @@ export function Sidebar() {
 								inert={chatsCollapsed}
 							>
 								<div className="omp-sidebar-group-content">
-									<div className="space-y-px">{chatSessions.map(renderSessionRow)}</div>
+									<div className="space-y-px">{chatSessions.map(session => renderSessionRow(session))}</div>
 								</div>
 							</div>
 						</div>
@@ -786,10 +800,10 @@ export function Sidebar() {
 									data-actions-open={groupActionsOpen}
 									onContextMenu={event => setGroupMenu({ anchor: anchorFromEvent(event), group })}
 									className={cx(
-										"omp-sidebar-workspace-row omp-color-fade group flex w-full items-center gap-1 rounded-md px-1.5 py-0.5 pr-8 text-left text-omp-xs font-medium uppercase tracking-[0.08em]",
+										"omp-sidebar-workspace-row omp-color-fade group flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 pr-8 text-left text-omp-md font-normal",
 										isCurrent
-											? "text-[var(--omp-muted)]"
-											: "text-[var(--omp-dim)] hover:text-[var(--omp-muted)]",
+											? "text-[var(--omp-text)]"
+											: "text-[var(--omp-muted)] hover:text-[var(--omp-text)]",
 									)}
 								>
 									{renamingGroupCwd === group.cwd ? (
@@ -803,6 +817,12 @@ export function Sidebar() {
 											>
 												{groupCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
 											</button>
+											<Folder
+												aria-hidden="true"
+												data-sidebar-workspace-icon
+												size={14}
+												className="shrink-0"
+											/>
 											{pinnedGroups.includes(group.cwd) && (
 												<Pin
 													size={10}
@@ -825,7 +845,7 @@ export function Sidebar() {
 													}
 													if (event.key === "Escape") setRenamingGroupCwd(null);
 												}}
-												className="min-w-0 flex-1 rounded border border-[var(--omp-input-focus-border)] bg-[var(--omp-input-bg)] px-1 py-0 text-omp-xs font-medium uppercase tracking-[0.08em] text-[var(--omp-text)] outline-none"
+												className="min-w-0 flex-1 rounded border border-[var(--omp-input-focus-border)] bg-[var(--omp-input-bg)] px-1 py-0 text-omp-md font-normal text-[var(--omp-text)] outline-none"
 											/>
 											<span className="shrink-0 tabular-nums text-omp-xs font-normal text-[var(--omp-dim)]">
 												{group.sessions.length}
@@ -836,13 +856,19 @@ export function Sidebar() {
 											type="button"
 											onClick={() => toggleGroup(group.cwd)}
 											aria-expanded={!groupCollapsed}
-											className="flex min-w-0 flex-1 items-center gap-1 text-left"
+											className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
 										>
 											{groupCollapsed ? (
 												<ChevronRight size={12} className="shrink-0" />
 											) : (
 												<ChevronDown size={12} className="shrink-0" />
 											)}
+											<Folder
+												aria-hidden="true"
+												data-sidebar-workspace-icon
+												size={14}
+												className="shrink-0"
+											/>
 											{pinnedGroups.includes(group.cwd) && (
 												<Pin
 													size={10}
@@ -920,7 +946,9 @@ export function Sidebar() {
 								{!groupCollapsed && (
 									<div className="omp-sidebar-group" data-session-group={group.cwd} data-state="expanded">
 										<div className="omp-sidebar-group-content">
-											<div className="space-y-px">{group.sessions.map(renderSessionRow)}</div>
+											<div className="space-y-px">
+												{group.sessions.map(session => renderSessionRow(session, true))}
+											</div>
 										</div>
 									</div>
 								)}

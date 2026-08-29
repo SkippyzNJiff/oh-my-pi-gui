@@ -120,6 +120,33 @@ export function sameIdentityPrefix(current: AgentMessage[], fetched: AgentMessag
 	return true;
 }
 
+function isOptimisticUser(message: AgentMessage): boolean {
+	return message.role === "user" && message.optimistic === true;
+}
+
+/** Replace the local echo with the canonical OMP user message. */
+function replaceOptimisticUser(messages: AgentMessage[], delivered: AgentMessage): AgentMessage[] {
+	if (delivered.role !== "user") return messages;
+	const index = messages.findIndex(isOptimisticUser);
+	if (index < 0) return messages;
+	const next = [...messages];
+	next[index] = delivered;
+	return next;
+}
+
+function appendDeliveredMessages(messages: AgentMessage[], delivered: AgentMessage[]): AgentMessage[] {
+	let next = messages;
+	for (const message of delivered) {
+		const replaced = replaceOptimisticUser(next, message);
+		if (replaced !== next) {
+			next = replaced;
+			continue;
+		}
+		next = [...next, message];
+	}
+	return next;
+}
+
 /**
  * Merge run-scoped agent_end messages onto the transcript. Messages streamed
  * live via message_end (or hydrated mid-run) already form a suffix of the
@@ -198,6 +225,9 @@ export const createMessagesStore = () => {
 						break;
 					}
 					case "message_start": {
+						// The composer already paints an idle user prompt locally. User
+						// messages do not stream deltas, so a second live row would flash.
+						if (event.message.role === "user" && get().messages.some(isOptimisticUser)) break;
 						streamingStart = event.message;
 						textAccum = "";
 						thinkAccum = "";
@@ -261,9 +291,11 @@ export const createMessagesStore = () => {
 
 			let messages = state.messages;
 			if (newMessages.length > 0) {
-				messages = [...messages, ...newMessages];
+				messages = appendDeliveredMessages(messages, newMessages);
 			}
 			if (runMessages) {
+				const deliveredUser = runMessages.find(message => message.role === "user");
+				if (deliveredUser) messages = replaceOptimisticUser(messages, deliveredUser);
 				messages = mergeRunMessages(messages, runMessages);
 			}
 			if (messages !== state.messages) {

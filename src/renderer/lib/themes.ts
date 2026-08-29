@@ -1615,6 +1615,7 @@ export function applyThemeByName(selection: ThemeSelection, opts: { persist?: bo
 		baseThemeTokens = null;
 		applyTheme("system");
 	}
+	writeOverlay();
 	if (persist) {
 		void window.omp.prefs.set("themeName", selection);
 		void window.omp.prefs.set("theme", legacyTheme);

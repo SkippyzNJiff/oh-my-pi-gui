@@ -7,7 +7,8 @@
 
 import { parseHTML } from "linkedom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyPluginThemeOverlay, validatePluginThemeTokens } from "./themes";
+import { markCustomThemeTokens } from "./theme";
+import { applyPluginThemeOverlay, applyThemeByName, validatePluginThemeTokens } from "./themes";
 
 const { document } = parseHTML("<html><body></body></html>");
 (globalThis as unknown as Record<string, unknown>).document = document;
@@ -93,5 +94,12 @@ describe("applyPluginThemeOverlay", () => {
 		const rejected = applyPluginThemeOverlay({ accent: "#ff0000", bogus: "nope" });
 		expect(rejected).toEqual(["accent", "bogus"]);
 		expect(document.documentElement.style.getPropertyValue("--omp-md-link")).toBe("");
+	});
+
+	it("survives a named theme resolving after the overlay", () => {
+		applyPluginThemeOverlay({ mdCode: "#00ff00" });
+		markCustomThemeTokens("dark");
+		applyThemeByName("dark", { persist: false });
+		expect(document.documentElement.style.getPropertyValue("--omp-md-code")).toBe("#00ff00");
 	});
 });

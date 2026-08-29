@@ -110,9 +110,10 @@ export function Modal({
 		}
 
 		const onKeyDown = (event: KeyboardEvent) => {
-			// IME composition owns Escape (candidate dismissal) — a composing
-			// keydown must not close the dialog or cancel an extension request.
-			if (event.isComposing || event.keyCode === 229) return;
+			// A live IME composition owns Escape (candidate dismissal). Chromium can
+			// retain the legacy 229 code after composition ends; an explicitly resolved
+			// Escape with isComposing=false must still close the dialog.
+			if (event.isComposing || (event.keyCode === 229 && event.key !== "Escape")) return;
 			// Include fullscreen/custom dialogs that do not use Modal in the layer
 			// decision; a modal hidden beneath Settings must remain untouched.
 			if (!isTopmostDialog(panel)) return;

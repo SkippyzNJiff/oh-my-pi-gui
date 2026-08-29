@@ -8,11 +8,12 @@
 import { Check, Folder, FolderPlus } from "lucide-react";
 import { useMemo } from "react";
 import { useSessionList } from "../../hooks/use-session-list";
-import { newSessionNow } from "../../hooks/use-session-switch";
 import { basename, cx } from "../../lib/format";
 import { useT } from "../../lib/i18n";
+import { pickWorkspaceDirectory } from "../../lib/workspace-dirs";
 import { useSessionStore } from "../../stores/session";
 import { useSidebarPrefs } from "../../stores/sidebar-prefs";
+import { useTabsStore } from "../../stores/tabs";
 import { toast } from "../../stores/toast";
 import { Modal } from "../common";
 
@@ -38,6 +39,7 @@ export function WorkspaceDialog({
 	const { sessions } = useSessionList("global");
 	const cwd = useSessionStore(s => s.cwd);
 	const workspaceLastUsed = useSidebarPrefs(s => s.workspaceLastUsed);
+	const openTab = useTabsStore(s => s.openTab);
 
 	const workspaces = useMemo<WorkspaceRow[]>(() => {
 		const byCwd = new Map<string, WorkspaceRow>();
@@ -66,11 +68,8 @@ export function WorkspaceDialog({
 		return [...byCwd.values()].sort((a, b) => b.lastModified - a.lastModified);
 	}, [sessions, cwd, workspaceLastUsed]);
 
-	/**
-	 * Session-replacing actions (new session here, workspace jump, open
-	 * project) abort the in-flight run server-side — refuse to kill it
-	 * silently, same busy guard as the menu/deep-link paths.
-	 */
+	/** In-place workspace switches abort the active sidecar run. New-session
+	 * intent opens an independent agent tab and does not need this guard. */
 	const guardBusy = (): boolean => {
 		const { isStreaming, isCompacting } = useSessionStore.getState();
 		if (!isStreaming && !isCompacting) return false;
@@ -78,26 +77,23 @@ export function WorkspaceDialog({
 		return true;
 	};
 
-	const newSessionHere = async () => {
-		if (guardBusy()) return;
-		try {
-			await newSessionNow();
-			onClose();
-		} catch (error) {
-			toast({ variant: "error", title: t("sidebar.newFailed"), message: String(error) });
-		}
+	const newSessionHere = async (target: string) => {
+		const tabId = await openTab({ cwd: target, kind: "agent" });
+		if (tabId) onClose();
 	};
 
 	const pick = async (target: string) => {
-		// "+" on the current workspace: start a new session in place (no restart).
+		if (intent === "new-session") {
+			await newSessionHere(target);
+			return;
+		}
+		// The breadcrumb already points at this workspace.
 		if (target === cwd) {
-			if (intent === "new-session") await newSessionHere();
-			else onClose();
+			onClose();
 			return;
 		}
 		if (guardBusy()) return;
-		// Switching workspace restarts the sidecar there, which boots a fresh
-		// session — that IS the new session for the "+" flow.
+		// Breadcrumb switching deliberately re-roots the current tab.
 		try {
 			const ok = await window.omp.sidecar.setProject(target);
 			if (!ok) {
@@ -111,10 +107,14 @@ export function WorkspaceDialog({
 	};
 
 	const addWorkspace = async () => {
-		if (guardBusy()) return;
+		if (intent === "switch" && guardBusy()) return;
 		try {
-			const picked = await window.omp.sidecar.selectProject();
-			if (picked) onClose();
+			if (intent === "new-session") {
+				const picked = await pickWorkspaceDirectory();
+				if (picked) await newSessionHere(picked);
+				return;
+			}
+			if (await window.omp.sidecar.selectProject()) onClose();
 		} catch (error) {
 			toast({ variant: "error", title: t("titlebar.openProjectFailed"), message: String(error) });
 		}

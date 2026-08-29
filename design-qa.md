@@ -45,7 +45,6 @@ The summary capture shows the intended compression: all actionable todos, the ne
 - P3: consider replacing always-stable scrollbar gutter with overlay scrollbars on macOS if the extra right inset feels visually heavy at narrower widths.
 
 final result: passed
-
 ---
 
 # Sidebar navigation and session metrics QA
@@ -423,5 +422,53 @@ Both full screenshots were opened before comparison. The focused composite shows
 
 - No actionable P0, P1, or P2 difference remains for the requested bottom-spacing change.
 - Pass 1 removed the caption and tightened outer padding. The post-fix Electron capture confirmed the lower composer position, so no further visual iteration was required.
+
+final result: passed
+
+---
+
+# Sidebar hierarchy design QA
+
+- Source visual truth: `/var/folders/4g/qdz4d625641d0d8x4td6t2qm0000gp/T/codex-clipboard-c3f1fdab-1b0b-4ce3-bd7f-9d5cfae22461.png`
+- Implementation screenshot: `/Users/zach/AiProject/oh-my-pi/packages/gui/design-qa-implementation.png`
+- Combined comparison: `/Users/zach/AiProject/oh-my-pi/packages/gui/design-qa-comparison.png`
+- Viewport: 1195 × 768 CSS px, desktop Electron window, device scale factor 1
+- Source pixels: 574 × 1066; normalized to 414 × 768 for comparison
+- Implementation pixels: 1195 × 768; left 202 × 768 sidebar region used for comparison
+- State: Codex dark-theme reference beside OMP light-theme implementation; comparison is limited to hierarchy, icons, alignment, density, and truncation rather than theme colors.
+
+## Full-view comparison evidence
+
+The complete OMP window renders without sidebar overflow at 1195 × 768. The recent list keeps counts, disclosure controls, selected/running signals, truncation, and scroll behavior while adding stable visual anchors.
+
+## Focused region comparison evidence
+
+The combined image compares the complete reference sidebar region with the implementation sidebar at equal height. Workspace rows now use a folder icon, chat rows use a message icon, and grouped agent rows reserve the same icon-width column. Workspace and child-session titles therefore share one vertical text axis.
+
+## Required fidelity surfaces
+
+- Fonts and typography: existing OMP Inter/JetBrains stack is preserved. Workspace and chat headers use the same normal-case medium-size UI typography as session rows instead of small uppercase labels. Truncation remains intact.
+- Spacing and layout rhythm: 28 px group headers and fixed 14 px icon slots produce a consistent hierarchy. Counts remain right-aligned and hover actions continue to overlay rather than reflow titles.
+- Colors and visual tokens: existing OMP theme tokens are preserved. The source is dark and the isolated QA profile is light, so palette matching is intentionally out of scope.
+- Image quality and asset fidelity: all new marks use the existing Lucide icon dependency; there are no generated, rasterized, handcrafted SVG, emoji, or placeholder assets.
+- Copy and content: existing localized labels, workspace names, session titles, and counts are unchanged.
+
+## Findings
+
+No actionable P0, P1, or P2 differences remain in the requested sidebar hierarchy scope.
+
+## Interaction and runtime checks
+
+- Existing collapse, open-session, context-menu, rename, status-light, and action-overlay contracts are covered by the Sidebar regression suite.
+- The isolated Electron build rendered the updated sidebar and exposed the expected workspace/chat controls in the accessibility tree.
+- The QA terminal showed one unrelated provider YAML duplicate-key warning from the local user configuration; no sidebar render or layout error was observed.
+
+## Comparison history
+
+- Pass 1: folder and chat anchors, title alignment, row density, truncation, counts, and status indicators matched the selected structural reference. No P0/P1/P2 fix iteration was required.
+
+## Follow-up polish
+
+None required for this scope.
 
 final result: passed

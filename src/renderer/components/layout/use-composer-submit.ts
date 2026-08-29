@@ -291,6 +291,16 @@ export function useComposerSubmit({
 				return;
 			}
 			const previousImages = images;
+			const optimisticMessage: AgentMessage | undefined =
+				!isStreaming && !expandedMessage.startsWith("/")
+					? {
+							role: "user",
+							content: [{ type: "text", text: expandedMessage }, ...payload],
+							timestamp: Date.now(),
+							optimistic: true,
+						}
+					: undefined;
+			if (optimisticMessage) originMessages.getState().appendMessage(optimisticMessage);
 			setText("");
 			setImages([]);
 			setMenu(null);
@@ -299,6 +309,7 @@ export function useComposerSubmit({
 			// work used to make Enter look ignored for a noticeable beat.
 			setTimeout(() => {
 				if (!originStillActive()) {
+					if (optimisticMessage) originMessages.getState().removeMessage(optimisticMessage);
 					restoreTabComposer(originTabId, originSessionId, message, previousImages);
 					return;
 				}
@@ -306,6 +317,7 @@ export function useComposerSubmit({
 					.request()
 					.then(async response => {
 						if (!response.success) {
+							if (optimisticMessage) originMessages.getState().removeMessage(optimisticMessage);
 							restoreTabComposer(originTabId, originSessionId, message, previousImages);
 							toast({ variant: "error", title: t("input.sendFailed"), message: response.error });
 							return;
@@ -315,6 +327,7 @@ export function useComposerSubmit({
 						await settleComposerResponse(response, () => hydrateTabSession(originTabId));
 					})
 					.catch(error => {
+						if (optimisticMessage) originMessages.getState().removeMessage(optimisticMessage);
 						restoreTabComposer(originTabId, originSessionId, message, previousImages);
 						toast({ variant: "error", title: t("input.sendFailed"), message: String(error) });
 					});
