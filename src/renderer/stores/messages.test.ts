@@ -107,13 +107,13 @@ describe("committed transcript ownership", () => {
 		expect(useMessagesStore.getState().totalMessages).toBe(1);
 	});
 
-	it("does not promote a non-persisted settlement into committed history", () => {
+	it("does not erase a live response without a persisted replacement", () => {
 		const transient: AgentMessage = { role: "custom", customType: "notice", content: "temporary", timestamp: 1 };
 		useMessagesStore.getState().applyEvents([{ type: "message_end", message: transient }]);
 		useMessagesStore.getState().applyEvents([{ type: "agent_end", messages: [transient] }]);
 
 		expect(useMessagesStore.getState().messages).toEqual([]);
-		expect(useMessagesStore.getState().liveMessages).toEqual([]);
+		expect(useMessagesStore.getState().liveMessages).toEqual([transient]);
 	});
 });
 

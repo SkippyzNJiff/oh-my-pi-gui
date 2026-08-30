@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- **Work conversation settlement**: streamed turns now move from a temporary live layer into the persisted transcript by entry ID, preventing full question-and-answer pairs from rendering twice.
+- **Work conversation settlement**: streamed turns stay visible until the persisted transcript replaces them by entry ID, preventing replies from disappearing or rendering twice.
 
 ## [0.9.2] - 2026-08-27
 

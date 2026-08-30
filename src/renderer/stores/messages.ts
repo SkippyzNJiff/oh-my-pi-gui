@@ -202,7 +202,7 @@ export const createMessagesStore = () =>
 			let messages = state.messages;
 			if (runMessages) {
 				messages = upsertCommittedMessages(messages, runMessages);
-				liveMessages = [];
+				if (runMessages.some(message => message.entryId)) liveMessages = [];
 			}
 			if (liveMessages !== state.liveMessages) patch.liveMessages = liveMessages;
 			if (messages !== state.messages) {
