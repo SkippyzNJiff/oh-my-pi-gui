@@ -80,13 +80,29 @@ function appendLiveMessages(messages: AgentMessage[], delivered: AgentMessage[])
 	for (const message of delivered) {
 		const optimisticIndex = message.role === "user" ? next.findIndex(isOptimisticUser) : -1;
 		if (optimisticIndex >= 0) {
+			const optimistic = next[optimisticIndex];
 			next = [...next];
-			next[optimisticIndex] = message;
+			next[optimisticIndex] = {
+				...message,
+				optimistic: true,
+				optimisticAfterEntryId: optimistic?.optimisticAfterEntryId,
+			};
 			continue;
 		}
 		next = [...next, message];
 	}
 	return next;
+}
+
+/** True once fetched history contains the first persisted user after this local echo's anchor. */
+function optimisticUserWasCommitted(message: AgentMessage, fetched: AgentMessage[]): boolean {
+	if (!isOptimisticUser(message) || message.optimisticAfterEntryId === undefined) return false;
+	const anchorIndex =
+		message.optimisticAfterEntryId === null
+			? -1
+			: fetched.findIndex(entry => entry.entryId === message.optimisticAfterEntryId);
+	if (message.optimisticAfterEntryId !== null && anchorIndex < 0) return false;
+	return fetched.slice(anchorIndex + 1).some(entry => entry.role === "user" && entry.entryId !== undefined);
 }
 
 function upsertCommittedMessages(current: AgentMessage[], committed: AgentMessage[]): AgentMessage[] {
@@ -250,9 +266,19 @@ export const createMessagesStore = () =>
 		clearStreaming: () => set({ streamingMessage: null, streamingText: "", streamingThinking: "" }),
 		clearDeliveredLiveMessages: () => set(s => ({ liveMessages: s.liveMessages.filter(isOptimisticUser) })),
 		reconcileFetched: fetched => {
-			const current = get().messages;
-			if (fetched.length === current.length && fetched.every((message, index) => message === current[index])) return;
-			set({ messages: fetched, totalMessages: fetched.length });
+			const state = get();
+			const committedEcho = state.liveMessages.some(message => optimisticUserWasCommitted(message, fetched));
+			const messagesUnchanged =
+				fetched.length === state.messages.length &&
+				fetched.every((message, index) => message === state.messages[index]);
+			if (messagesUnchanged && !committedEcho) return;
+			set({
+				messages: fetched,
+				liveMessages: committedEcho
+					? state.liveMessages.filter(message => !optimisticUserWasCommitted(message, fetched))
+					: state.liveMessages,
+				totalMessages: fetched.length,
+			});
 		},
 		snapshot: () => {
 			const state = get();

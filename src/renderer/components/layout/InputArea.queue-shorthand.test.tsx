@@ -311,7 +311,9 @@ describe("InputArea queue shorthand submit", () => {
 			]),
 		);
 		expect(useMessagesStore.getState().messages).toEqual([]);
-		expect(useMessagesStore.getState().liveMessages).toEqual([delivered]);
+		expect(useMessagesStore.getState().liveMessages).toEqual([
+			{ ...delivered, optimistic: true, optimisticAfterEntryId: null },
+		]);
 		expect(useMessagesStore.getState().streamingMessage).toBeNull();
 		await act(async () => useMessagesStore.getState().applyEvents([{ type: "agent_end", messages: [delivered] }]));
 		expect(useMessagesStore.getState().messages).toEqual([delivered]);

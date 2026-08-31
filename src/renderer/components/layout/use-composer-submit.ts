@@ -298,6 +298,8 @@ export function useComposerSubmit({
 							content: [{ type: "text", text: expandedMessage }, ...payload],
 							timestamp: Date.now(),
 							optimistic: true,
+							optimisticAfterEntryId:
+								originMessages.getState().messages.findLast(entry => entry.entryId)?.entryId ?? null,
 						}
 					: undefined;
 			if (optimisticMessage) originMessages.getState().appendLiveMessage(optimisticMessage);

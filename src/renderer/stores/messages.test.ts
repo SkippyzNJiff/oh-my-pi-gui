@@ -70,6 +70,7 @@ describe("committed transcript ownership", () => {
 			content: "question",
 			timestamp: 10,
 			optimistic: true,
+			optimisticAfterEntryId: null,
 		};
 		const user: AgentMessage = { role: "user", content: "question", timestamp: 10 };
 		const assistant: AgentMessage = { role: "assistant", content: "answer", timestamp: 11 };
@@ -78,7 +79,10 @@ describe("committed transcript ownership", () => {
 		useMessagesStore.getState().applyEvents([{ type: "message_end", message: user }]);
 		useMessagesStore.getState().applyEvents([{ type: "message_end", message: assistant }]);
 		expect(useMessagesStore.getState().messages).toEqual([]);
-		expect(useMessagesStore.getState().liveMessages).toEqual([user, assistant]);
+		expect(useMessagesStore.getState().liveMessages).toEqual([
+			{ ...user, optimistic: true, optimisticAfterEntryId: null },
+			assistant,
+		]);
 
 		useMessagesStore.getState().applyEvents([
 			{
@@ -145,6 +149,27 @@ describe("transcript hydration", () => {
 		useMessagesStore.getState().clearDeliveredLiveMessages();
 
 		expect(useMessagesStore.getState().liveMessages).toEqual([optimistic]);
+	});
+
+	it("retires the live user echo when streaming hydration persists that turn", () => {
+		const previous = userMessage("previous-entry");
+		const optimistic: AgentMessage = {
+			role: "user",
+			content: "new question",
+			timestamp: 2,
+			optimistic: true,
+			optimisticAfterEntryId: previous.entryId ?? null,
+		};
+		const delivered: AgentMessage = { role: "user", content: "new question", timestamp: 3 };
+		const persisted = { ...delivered, entryId: "current-entry" };
+		useMessagesStore.setState({ messages: [previous], totalMessages: 1 });
+		useMessagesStore.getState().appendLiveMessage(optimistic);
+		useMessagesStore.getState().applyEvents([{ type: "message_end", message: delivered }]);
+
+		useMessagesStore.getState().reconcileFetched([previous, persisted]);
+
+		expect(useMessagesStore.getState().messages).toEqual([previous, persisted]);
+		expect(useMessagesStore.getState().liveMessages).toEqual([]);
 	});
 
 	it("replaces a different persisted branch instead of guessing by content or timestamp", () => {

@@ -1395,6 +1395,10 @@ export interface TodoTask {
 export interface AgentMessage {
 	/** Persisted OMP session-tree node id, present on user/assistant transcript messages. */
 	entryId?: string;
+	/** GUI-only local echo awaiting ownership by the persisted transcript. */
+	optimistic?: boolean;
+	/** Last committed entry when this local echo was created; null means an empty transcript. */
+	optimisticAfterEntryId?: string | null;
 	role:
 		| "user"
 		| "assistant"
