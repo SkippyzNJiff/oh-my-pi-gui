@@ -2,9 +2,24 @@
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-09-01
+
+### Added
+
+- **Sharpshooter memory controls**: Settings now exposes the model, consolidation interval, and context injection limit for project decision memory.
+
+### Changed
+
+- **Clearer session navigation**: workspace folders, chat icons, nested task alignment, and stronger active states make the sidebar hierarchy easier to scan.
+- **Bundled agent upgraded to omp 18.0.11**: packaged sidecars include the latest provider compatibility, model discovery, Anthropic context management, and z.ai OAuth fixes from monorepo commit `6655097656`.
+
 ### Fixed
 
 - **Work conversation settlement**: streamed turns stay visible until the persisted transcript replaces them by entry ID, preventing replies from disappearing or rendering twice.
+- **Immediate prompt feedback**: user prompts render locally before a slow RPC settles and hand off to the persisted transcript exactly once.
+- **Workspace creation intent**: choosing a workspace from New task always opens an agent task instead of occasionally creating a chat.
+- **Modal Escape handling**: Escape closes the topmost dialog after IME composition ends instead of being ignored by stale key-code state.
+- **Theme overlays**: session theme accents are reapplied consistently after changing or restoring the global theme.
 
 ## [0.9.2] - 2026-08-27
 
