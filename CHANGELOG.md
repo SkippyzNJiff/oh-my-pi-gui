@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-09-04
+
+### Added
+
+- **Bash terminal images**: Kitty and Sixel graphics returned by the bundled agent render alongside command output, including multiple images.
+- **Richer model and session details**: the model picker shows catalog names, descriptions, release badges, intelligence, and speed, while session info shows routed models and credit usage.
+
+### Changed
+
+- **Clone-first worktrees**: worktree tabs now honor omp's configured copy-on-write backend and fall back to a normal checkout when cloning is unavailable.
+- **Current omp settings**: Settings includes Chinese labels for the new provider, reaction, skill, eval, image-question, and isolation controls.
+- **Bundled agent upgraded to omp 18.1.10**: packaged sidecars include current Codex V2 metadata and cache handling, disabled-reasoning preservation, Plan Review mouse input, and subagent yield updates from monorepo commit `36732cf5ed`.
+
+### Fixed
+
+- **Agent reactions**: opening reaction emoji render as a badge on the preceding user message instead of ordinary assistant prose.
+- **Eval image output**: images returned by eval-backed browser, computer, JavaScript, and Python runs render alongside their text output.
+
+### Removed
+
+- **Obsolete vision controls**: removed the retired `/vision` menu and legacy `inspect_image` settings after omp moved image questions to `read <image>?q=<question>`.
+
 ## [0.9.3] - 2026-09-01
 
 ### Added
