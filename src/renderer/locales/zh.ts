@@ -432,12 +432,6 @@ export const zh: Record<string, string> = {
 	"cmd.computer.on": "启用",
 	"cmd.computer.off": "禁用",
 	"cmd.computer.status": "状态",
-	"cmd.vision": "视觉委托",
-	"cmd.vision.desc": "控制 inspect_image 工具",
-	"cmd.vision.on": "始终开启",
-	"cmd.vision.off": "始终关闭",
-	"cmd.vision.auto": "自动",
-	"cmd.vision.status": "状态",
 	"cmd.browser": "浏览器模式",
 	"cmd.browser.desc": "切换无头与可见模式",
 	"cmd.browser.headless": "无头",
@@ -1592,9 +1586,6 @@ export const zh: Record<string, string> = {
 	"computer.off": "计算机使用：关闭",
 
 	// /vision on|off|auto|status
-	"vision.on": "视觉委托：开启",
-	"vision.off": "视觉委托：关闭",
-	"vision.auto": "视觉委托：自动",
 
 	// /browser headless|visible
 	"browser.headlessOn": "浏览器模式：无头",
@@ -1831,6 +1822,10 @@ export const zh: Record<string, string> = {
 	"sessionInfo.section.usage": "用量",
 	"sessionInfo.premiumRequests": "高级请求",
 	"sessionInfo.cost": "费用",
+	"sessionInfo.credits": "积分",
+	"sessionInfo.committedCredits": "已结算积分",
+	"sessionInfo.committedAcu": "已结算 ACU",
+	"sessionInfo.section.routedModels": "实际服务模型",
 	"sessionInfo.contextWindow": "上下文窗口",
 	"sessionInfo.tokens": "令牌",
 
@@ -1849,6 +1844,11 @@ export const zh: Record<string, string> = {
 	"modelPicker.auth.authenticated": "已认证",
 	"modelPicker.auth.notSignedIn": "未登录",
 	"modelPicker.auth.unavailable": "不可用",
+	"modelPicker.badge.new": "新",
+	"modelPicker.badge.beta": "测试版",
+	"modelPicker.badge.recommended": "推荐",
+	"modelPicker.intelligence": "智力 {value}",
+	"modelPicker.speed": "约 {value} token/秒",
 	"modelPicker.overContext": "先压缩",
 	"modelPicker.overContextHint": "上下文 {current} 超出 {limit} 窗口 —— 将先用当前模型压缩，再切换",
 	"modelPicker.compactFailed": "压缩失败",

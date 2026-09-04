@@ -964,6 +964,13 @@ export interface ContextUsage {
 export interface ModelInfo {
 	provider: string;
 	id: string;
+	name?: string;
+	description?: string;
+	isNew?: boolean;
+	isBeta?: boolean;
+	isRecommended?: boolean;
+	int?: number | null;
+	tps?: number | null;
 	/** Present on the wire (get_available_models / get_state carry full Model
 	 * objects) — used by the picker to flag over-context switches. */
 	contextWindow?: number | null;
@@ -1695,6 +1702,12 @@ export interface SessionStats {
 	};
 	premiumRequests: number;
 	cost: number;
+	credits?: {
+		cost: number;
+		committedCost: number;
+		acuCost: number;
+	};
+	routedModels?: Record<string, number>;
 	contextUsage?: ContextUsage;
 }
 

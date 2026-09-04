@@ -8,11 +8,10 @@
  * highlighted; provider quota from get_usage renders inline per provider.
  *
  * Wire note: `get_available_models` serializes full catalog `Model` objects —
- * `name`, `cost {input,output,cacheRead,cacheWrite}` ($/1M tokens),
+ * `cost {input,output,cacheRead,cacheWrite}` ($/1M tokens),
  * `contextWindow` (number|null), `maxTokens` (number|null), `reasoning` — even
- * though the GUI's `ModelInfo` type narrows to `{provider, id}`. Extra fields
- * are read defensively below and degrade to "—" when absent (e.g. older
- * sidecars or discovery-sourced models without catalog metadata).
+ * though these extended fields may be absent on older sidecars. Values are
+ * read defensively below and degrade to "—" when unavailable.
  */
 
 import { ArrowDown, ArrowUp, ArrowUpDown, Check, RefreshCw, Search } from "lucide-react";
@@ -47,7 +46,6 @@ interface WireModelCost {
 }
 
 export interface WireModel extends ModelInfo {
-	name?: string;
 	reasoning?: boolean;
 	cost?: WireModelCost;
 	contextWindow?: number | null;

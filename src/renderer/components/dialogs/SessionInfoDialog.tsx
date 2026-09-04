@@ -35,6 +35,10 @@ function Section({ title, rows }: { title: string; rows: Row[] }) {
 	);
 }
 
+function formatCredit(value: number): string {
+	return value.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
 export function SessionInfoDialog() {
 	const t = useT();
 	const open = useUiStore(state => state.sessionInfoOpen);
@@ -120,8 +124,26 @@ export function SessionInfoDialog() {
 							rows={[
 								{ label: t("sessionInfo.premiumRequests"), value: String(stats.premiumRequests) },
 								{ label: t("sessionInfo.cost"), value: formatCost(stats.cost) },
+								...(stats.credits
+									? [
+											{ label: t("sessionInfo.credits"), value: formatCredit(stats.credits.cost) },
+											{
+												label: t("sessionInfo.committedCredits"),
+												value: formatCredit(stats.credits.committedCost),
+											},
+											{ label: t("sessionInfo.committedAcu"), value: formatCredit(stats.credits.acuCost) },
+										]
+									: []),
 							]}
 						/>
+						{stats.routedModels && Object.keys(stats.routedModels).length > 0 && (
+							<Section
+								title={t("sessionInfo.section.routedModels")}
+								rows={Object.entries(stats.routedModels)
+									.sort(([aId, aCount], [bId, bCount]) => bCount - aCount || aId.localeCompare(bId))
+									.map(([id, count]) => ({ label: id, value: String(count) }))}
+							/>
+						)}
 						{stats.contextUsage && (
 							<section>
 								<h3 className="mb-1 text-omp-xxs font-semibold tracking-widest text-(--omp-dim) uppercase">

@@ -435,12 +435,6 @@ export const en: Record<string, string> = {
 	"cmd.computer.on": "Enable",
 	"cmd.computer.off": "Disable",
 	"cmd.computer.status": "Status",
-	"cmd.vision": "Vision Delegation",
-	"cmd.vision.desc": "Control inspect_image tool",
-	"cmd.vision.on": "Always On",
-	"cmd.vision.off": "Always Off",
-	"cmd.vision.auto": "Auto",
-	"cmd.vision.status": "Status",
 	"cmd.browser": "Browser Mode",
 	"cmd.browser.desc": "Toggle headless vs visible",
 	"cmd.browser.headless": "Headless",
@@ -1622,9 +1616,6 @@ export const en: Record<string, string> = {
 	"computer.off": "Computer use: off",
 
 	// /vision on|off|auto|status
-	"vision.on": "Vision delegation: on",
-	"vision.off": "Vision delegation: off",
-	"vision.auto": "Vision delegation: auto",
 
 	// /browser headless|visible
 	"browser.headlessOn": "Browser mode: headless",
@@ -1863,6 +1854,10 @@ export const en: Record<string, string> = {
 	"sessionInfo.section.usage": "Usage",
 	"sessionInfo.premiumRequests": "Premium requests",
 	"sessionInfo.cost": "Cost",
+	"sessionInfo.credits": "Credits",
+	"sessionInfo.committedCredits": "Committed credits",
+	"sessionInfo.committedAcu": "Committed ACU",
+	"sessionInfo.section.routedModels": "Served models",
 	"sessionInfo.contextWindow": "Context window",
 	"sessionInfo.tokens": "tokens",
 
@@ -1881,6 +1876,11 @@ export const en: Record<string, string> = {
 	"modelPicker.auth.authenticated": "authenticated",
 	"modelPicker.auth.notSignedIn": "not signed in",
 	"modelPicker.auth.unavailable": "unavailable",
+	"modelPicker.badge.new": "new",
+	"modelPicker.badge.beta": "beta",
+	"modelPicker.badge.recommended": "recommended",
+	"modelPicker.intelligence": "INT {value}",
+	"modelPicker.speed": "~{value} t/s",
 	"modelPicker.overContext": "compact first",
 	"modelPicker.overContextHint":
 		"Context {current} exceeds the {limit} window — compacts with the current model, then switches",

@@ -750,26 +750,6 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 		},
 	});
 	add({
-		name: "vision",
-		label: t("cmd.vision"),
-		description: t("cmd.vision.desc"),
-		category: "tools",
-		affordance: {
-			kind: "submenu",
-			items: [
-				// Same set_setting mutation the SettingsWindow inspect_image.mode selector uses.
-				subAction("vision on", () => writeSetting("inspect_image.mode", "on", t("vision.on"))),
-				subAction("vision off", () => writeSetting("inspect_image.mode", "off", t("vision.off"))),
-				subAction("vision auto", () => writeSetting("inspect_image.mode", "auto", t("vision.auto"))),
-				subAction("vision status", async () => {
-					const value = await readSetting("inspect_image.mode");
-					const mode = value === "on" || value === "off" ? value : "auto";
-					toast({ variant: "info", title: t("cmd.vision"), message: t(`vision.${mode}`) });
-				}),
-			],
-		},
-	});
-	add({
 		name: "browser",
 		label: t("cmd.browser"),
 		description: t("cmd.browser.desc"),

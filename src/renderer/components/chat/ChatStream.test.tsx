@@ -146,6 +146,23 @@ describe("compact transcript rows", () => {
 });
 
 describe("full transcript rows", () => {
+	it("moves an opening assistant emoji onto the preceding user message", () => {
+		const rows = buildHistoryRows(
+			[
+				{ role: "user", content: [{ type: "text", text: "Ship it?" }], timestamp: at },
+				assistant([{ type: "text", text: "👍\nShipped." }]),
+			],
+			"full",
+		);
+
+		expect(rows).toHaveLength(2);
+		const user = rows[0];
+		const reply = rows[1];
+		if (user?.kind !== "message" || reply?.kind !== "message") throw new Error("reaction rows missing");
+		expect(user.reaction).toBe("👍");
+		expect(reply.message.content).toEqual([{ type: "text", text: "Shipped." }]);
+	});
+
 	it("clears a stale error box after the user reactivates the conversation", () => {
 		const rows = buildHistoryRows(
 			[

@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { formatShortClock, resultDetails, resultText } from "./format";
+import { extractImageDataUrl, extractImageDataUrls, formatShortClock, resultDetails, resultText } from "./format";
 
 describe("formatShortClock", () => {
 	it("keeps timeline labels to hour and minute", () => {
@@ -66,5 +66,22 @@ describe("resultDetails", () => {
 		expect(resultDetails([{ type: "text", text: "a" }])).toBeUndefined();
 		expect(resultDetails("str")).toBeUndefined();
 		expect(resultDetails(null)).toBeUndefined();
+	});
+});
+
+describe("image result extraction", () => {
+	it("collects multi-image result details without widening the legacy single-image lookup", () => {
+		const result = {
+			content: [{ type: "text", text: "output" }],
+			details: {
+				images: [
+					{ type: "image", data: "first", mimeType: "image/png" },
+					{ type: "image", data: "second", mimeType: "image/jpeg" },
+				],
+			},
+		};
+
+		expect(extractImageDataUrls(result)).toEqual(["data:image/png;base64,first", "data:image/jpeg;base64,second"]);
+		expect(extractImageDataUrl(result)).toBeNull();
 	});
 });

@@ -5,7 +5,7 @@
  */
 
 import type { AgentMessage, MessageContent, RpcQueuedMessage } from "../../../shared/rpc-types";
-import { isRenderableMessageText, messageText } from "../../lib/messages";
+import { isRenderableMessageText, messageText, splitReaction } from "../../lib/messages";
 import type { ReadGroupEntry, ReadGroupUsage } from "../../lib/read-group";
 import type { QueueLane } from "../../stores/queue";
 import type { TodoSnapshot } from "../../stores/todo";
@@ -47,7 +47,7 @@ export function isTranscriptAtLiveEdge(metrics: {
 }
 
 export type HistoryRow =
-	| { kind: "message"; message: AgentMessage }
+	| { kind: "message"; message: AgentMessage; reaction?: string }
 	| { kind: "readGroup"; entries: ReadGroupEntry[]; usage?: ReadGroupUsage[] }
 	| ({ kind: "process"; messages: AgentMessage[] } & ProcessMeta)
 	| { kind: "todoSnapshot"; entry: TodoSnapshot };
@@ -154,6 +154,23 @@ function messageContent(message: AgentMessage): MessageContent[] {
 	return [];
 }
 
+function splitMessageReaction(message: AgentMessage): { message: AgentMessage; reaction?: string } {
+	if (message.role !== "assistant") return { message };
+	if (typeof message.content === "string") {
+		const split = splitReaction(message.content);
+		return split.emoji ? { message: { ...message, content: split.body }, reaction: split.emoji } : { message };
+	}
+	if (!Array.isArray(message.content)) return { message };
+	const index = message.content.findIndex(block => block.type === "text" && block.text.length > 0);
+	const block = message.content[index];
+	if (block?.type !== "text") return { message };
+	const split = splitReaction(block.text);
+	if (!split.emoji) return { message };
+	const content = message.content.slice();
+	content[index] = { ...block, text: split.body };
+	return { message: { ...message, content }, reaction: split.emoji };
+}
+
 function messageToolIds(message: AgentMessage): string[] {
 	return messageContent(message)
 		.filter(block => block.type === "toolCall")
@@ -257,6 +274,7 @@ function summarizeProcess(messages: AgentMessage[]): ProcessMeta {
 export function buildHistoryRows(messages: AgentMessage[], detail: TranscriptDetail): HistoryRow[] {
 	const rows: HistoryRow[] = [];
 	let processMessages: AgentMessage[] = [];
+	let reactionTargetIndex: number | undefined;
 	const lastUserIndex = messages.findLastIndex(message => message.role === "user");
 	const flushProcess = () => {
 		if (processMessages.length === 0) return;
@@ -269,8 +287,19 @@ export function buildHistoryRows(messages: AgentMessage[], detail: TranscriptDet
 		if (!incoming) continue;
 		// A later user turn reactivates the conversation. Keep any partial reply,
 		// but drop the stale interruption/network error chrome from older turns.
-		const message =
+		let message =
 			index < lastUserIndex && incoming.errorMessage ? { ...incoming, errorMessage: undefined } : incoming;
+		if (message.role === "assistant") {
+			if (reactionTargetIndex !== undefined) {
+				const split = splitMessageReaction(message);
+				const target = rows[reactionTargetIndex];
+				if (split.reaction && target?.kind === "message" && target.message.role === "user") {
+					rows[reactionTargetIndex] = { ...target, reaction: split.reaction };
+					message = split.message;
+				}
+			}
+			reactionTargetIndex = undefined;
+		}
 		// toolResult/display:false/empty-filler messages must not split a process
 		// run — they are invisible transport records, not transcript boundaries.
 		if (!isVisibleTranscriptMessage(message)) continue;
@@ -290,6 +319,7 @@ export function buildHistoryRows(messages: AgentMessage[], detail: TranscriptDet
 		) {
 			flushProcess();
 			rows.push({ kind: "message", message });
+			if (message.role === "user") reactionTargetIndex = rows.length - 1;
 			continue;
 		}
 

@@ -1,8 +1,9 @@
 import { Terminal } from "lucide-react";
 import { AnsiText, hasAnsi } from "../../lib/ansi";
-import { cx, resultText } from "../../lib/format";
+import { cx, extractImageDataUrls, resultText } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { PREVIEW_SCROLL_MD } from "../../lib/preview";
+import { ResultImages } from "./ResultImages";
 import { resultDetails } from "./result";
 import type { ToolRendererProps } from "./ToolCard";
 
@@ -156,7 +157,9 @@ function parseBashResult(result: unknown, isError: boolean | undefined): BashPar
 export function BashRenderer({ args, result, isError, isPartial, partialResult }: ToolRendererProps) {
 	const t = useT();
 	const command = typeof args.command === "string" ? args.command : "";
-	const parsed = parseBashResult(isPartial ? partialResult : result, isError);
+	const effective = isPartial ? partialResult : result;
+	const parsed = parseBashResult(effective, isError);
+	const images = extractImageDataUrls(effective);
 	const hasOutput = parsed.output.length > 0;
 
 	return (
@@ -192,6 +195,7 @@ export function BashRenderer({ args, result, isError, isPartial, partialResult }
 					</div>
 				</div>
 			)}
+			<ResultImages images={images} />
 			{parsed.stats.length > 0 && (
 				<div className="font-mono text-omp-xs text-[var(--omp-dim)]">[{parsed.stats.join(" | ")}]</div>
 			)}

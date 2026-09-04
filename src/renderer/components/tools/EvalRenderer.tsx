@@ -1,9 +1,10 @@
 import { Code2 } from "lucide-react";
 import { AnsiText, hasAnsi } from "../../lib/ansi";
-import { cx, resultText } from "../../lib/format";
+import { cx, extractImageDataUrls, resultText } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { PREVIEW_SCROLL_SM } from "../../lib/preview";
 import { CodeBlock } from "../chat/CodeBlock";
+import { ResultImages } from "./ResultImages";
 import type { ToolRendererProps } from "./ToolCard";
 
 /** Eval: code cell with language badge + output below. */
@@ -13,7 +14,9 @@ export function EvalRenderer({ args, result, isError, isPartial, partialResult }
 	const language =
 		typeof args.language === "string" ? (args.language === "py" ? "python" : args.language) : "javascript";
 	const title = typeof args.title === "string" ? args.title : "";
-	const output = resultText(isPartial ? partialResult : result);
+	const effective = isPartial ? partialResult : result;
+	const output = resultText(effective);
+	const images = extractImageDataUrls(effective);
 
 	return (
 		<div className="flex flex-col gap-1.5">
@@ -47,7 +50,8 @@ export function EvalRenderer({ args, result, isError, isPartial, partialResult }
 					</pre>
 				</div>
 			)}
-			{isPartial && !output && (
+			<ResultImages images={images} />
+			{isPartial && !output && images.length === 0 && (
 				<div className="text-omp-sm italic text-[var(--omp-accent)]">{t("tools.eval.evaluating")}</div>
 			)}
 		</div>

@@ -95,7 +95,12 @@ export function ModelPicker() {
 	const groups = useMemo(() => {
 		const q = query.trim().toLowerCase();
 		const filtered = availableModels.filter(
-			model => q.length === 0 || model.id.toLowerCase().includes(q) || model.provider.toLowerCase().includes(q),
+			model =>
+				q.length === 0 ||
+				model.id.toLowerCase().includes(q) ||
+				model.provider.toLowerCase().includes(q) ||
+				model.name?.toLowerCase().includes(q) ||
+				model.description?.toLowerCase().includes(q),
 		);
 		const map = new Map<string, typeof filtered>();
 		for (const model of filtered) {
@@ -317,11 +322,55 @@ export function ModelPicker() {
 												role="option"
 												type="button"
 											>
-												<span
-													className={`min-w-0 flex-1 truncate font-mono text-xs ${isCurrent ? "font-semibold text-(--omp-accent)" : over ? "text-(--omp-dim)" : "text-(--omp-text)"}`}
-												>
-													{model.id}
-												</span>
+												<div className="flex min-w-0 flex-1 flex-col gap-0.5">
+													<div className="flex min-w-0 items-center gap-1.5">
+														<span
+															className={`truncate text-xs ${isCurrent ? "font-semibold text-(--omp-accent)" : over ? "text-(--omp-dim)" : "text-(--omp-text)"}`}
+														>
+															{model.name || model.id}
+														</span>
+														{model.isRecommended && (
+															<Badge className="px-1.5 text-omp-xxs leading-3" variant="success">
+																{t("modelPicker.badge.recommended")}
+															</Badge>
+														)}
+														{model.isNew && (
+															<Badge className="px-1.5 text-omp-xxs leading-3" variant="info">
+																{t("modelPicker.badge.new")}
+															</Badge>
+														)}
+														{model.isBeta && (
+															<Badge className="px-1.5 text-omp-xxs leading-3" variant="warning">
+																{t("modelPicker.badge.beta")}
+															</Badge>
+														)}
+													</div>
+													{((model.name && model.name !== model.id) || model.description) && (
+														<span
+															className="truncate font-mono text-omp-xxs text-(--omp-dim)"
+															title={model.description}
+														>
+															{[
+																model.name && model.name !== model.id ? model.id : null,
+																model.description,
+															]
+																.filter(Boolean)
+																.join(" · ")}
+														</span>
+													)}
+												</div>
+												{model.int != null && Number.isFinite(model.int) && (
+													<span className="shrink-0 font-mono text-omp-xxs text-(--omp-dim)">
+														{t("modelPicker.intelligence", { value: Math.round(model.int) })}
+													</span>
+												)}
+												{model.tps != null && Number.isFinite(model.tps) && model.tps > 0 && (
+													<span className="shrink-0 font-mono text-omp-xxs text-(--omp-dim)">
+														{t("modelPicker.speed", {
+															value: model.tps >= 10 ? Math.round(model.tps) : model.tps.toFixed(1),
+														})}
+													</span>
+												)}
 												{over && (
 													<span
 														className="flex shrink-0 items-center gap-1 text-(--omp-warning)"

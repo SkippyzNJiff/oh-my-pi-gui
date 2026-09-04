@@ -28,6 +28,20 @@ const MESSAGE_TEXT_CONTENT_CHAR = /[\p{L}\p{N}\p{Extended_Pictographic}]/u;
 export function isRenderableMessageText(text: string): boolean {
 	return MESSAGE_TEXT_CONTENT_CHAR.test(text);
 }
+
+const REACTION_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const REACTION_GRAPHEME_RE = /(?:\p{Extended_Pictographic}|\p{Regional_Indicator}{2}|[#*0-9]\uFE0F?\u20E3)/u;
+const NEXT_REACTION_WHITESPACE_RE = /^[ \t]*\r?\n|^[ \t]+/;
+
+/** Match the TUI contract: an opening emoji reacts to the preceding user bubble. */
+export function splitReaction(text: string): { emoji?: string; body: string } {
+	const head = text.trimStart();
+	const emoji = REACTION_SEGMENTER.segment(head)[Symbol.iterator]().next().value?.segment;
+	if (!emoji || !REACTION_GRAPHEME_RE.test(emoji)) return { body: text };
+	const rest = head.slice(emoji.length);
+	const whitespace = rest.match(NEXT_REACTION_WHITESPACE_RE)?.[0].length ?? 0;
+	return { emoji, body: rest.slice(whitespace) };
+}
 /** Plain-text content of a message (user text lives in text blocks). */
 export function messageText(message: AgentMessage): string {
 	if (typeof message.content === "string") return message.content.trim();

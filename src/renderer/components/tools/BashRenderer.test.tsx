@@ -126,4 +126,24 @@ describe("BashRenderer", () => {
 		await mount(<BashRenderer args={{ command: "ls" }} result={bashResult("a\nb\nc")} />);
 		expect(container.textContent).toContain("a\nb\nc");
 	});
+
+	it("renders every terminal image returned beside bash output", async () => {
+		await mount(
+			<BashRenderer
+				args={{ command: "show-images" }}
+				result={{
+					content: [
+						{ type: "text", text: "captured" },
+						{ type: "image", data: "first", mimeType: "image/png" },
+						{ type: "image", data: "second", mimeType: "image/jpeg" },
+					],
+				}}
+			/>,
+		);
+		const images = [...container.querySelectorAll("img")];
+		expect(images.map(image => image.getAttribute("src"))).toEqual([
+			"data:image/png;base64,first",
+			"data:image/jpeg;base64,second",
+		]);
+	});
 });

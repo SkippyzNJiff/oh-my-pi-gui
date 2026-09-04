@@ -25,6 +25,8 @@ export interface MessageBubbleProps {
 	compact?: boolean;
 	/** The timeline or process group can own the one animated running state. */
 	runningIndicator?: RunningIndicator;
+	/** Opening assistant emoji projected onto this user turn. */
+	reaction?: string;
 }
 
 function toolSummary(toolName: string, input: Record<string, unknown>): string {
@@ -251,6 +253,7 @@ function ContextBubble({ message }: { message: AgentMessage }) {
 export const MessageBubble = memo(function MessageBubble({
 	message,
 	compact = false,
+	reaction,
 	runningIndicator = "spinner",
 }: MessageBubbleProps) {
 	const t = useT();
@@ -321,6 +324,15 @@ export const MessageBubble = memo(function MessageBubble({
 					className="omp-transcript-content omp-user-bubble omp-fade-up relative rounded-xl border border-[var(--omp-user-msg-border)] bg-[var(--omp-user-msg-bg)] px-3.5 py-3"
 					style={{ boxShadow: "var(--omp-shadow-sm)" }}
 				>
+					{reaction ? (
+						<span
+							aria-label={reaction}
+							className="absolute -top-2 right-3 z-10 flex h-7 min-w-7 items-center justify-center rounded-full border border-[var(--omp-border)] bg-[var(--omp-bg-elevated)] px-1 text-omp-lg shadow-[var(--omp-shadow-sm)]"
+							role="img"
+						>
+							{reaction}
+						</span>
+					) : null}
 					<div className="omp-user-bubble-layout">
 						<span className="omp-user-bubble-author">{t("live.you")}</span>
 						<div className="omp-user-bubble-content">

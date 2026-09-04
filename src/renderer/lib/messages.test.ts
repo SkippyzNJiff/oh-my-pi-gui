@@ -9,6 +9,7 @@ import {
 	forkSessionFromEntryInNewTab,
 	forkSessionFromMessageInNewTab,
 	restoreQueuedMessages,
+	splitReaction,
 } from "./messages";
 
 interface FillComposerDetail {
@@ -65,6 +66,13 @@ afterEach(() => {
 	useTabsStore.getState().reset();
 	useUiStore.setState({ switchPending: null });
 	vi.restoreAllMocks();
+});
+
+describe("splitReaction", () => {
+	it("keeps a complete emoji grapheme together and removes its following whitespace", () => {
+		expect(splitReaction("👨‍👩‍👧‍👦 \n\nDone")).toEqual({ emoji: "👨‍👩‍👧‍👦", body: "\nDone" });
+		expect(splitReaction("1. First")).toEqual({ body: "1. First" });
+	});
 });
 
 describe("forkSessionFromEntryInNewTab", () => {

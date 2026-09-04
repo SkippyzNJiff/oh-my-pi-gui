@@ -269,44 +269,49 @@ export function resultBodyText(result: unknown): string {
 	return resultText(result);
 }
 
-/**
- * Find an inline-renderable image (data: URL) inside an unknown tool result.
- * Remote URLs are not returned — the renderer CSP only allows 'self', data:, blob:.
- */
-export function extractImageDataUrl(value: unknown, depth = 0): string | null {
-	if (value == null || depth > 4) return null;
+const SINGLE_IMAGE_KEYS = ["image", "screenshot", "dataUrl", "data_url", "content"] as const;
+const MULTI_IMAGE_KEYS = [...SINGLE_IMAGE_KEYS, "images", "details"] as const;
+
+function collectImageDataUrls(value: unknown, keys: readonly string[], depth = 0): string[] {
+	if (value == null || depth > 4) return [];
 	if (typeof value === "string") {
-		return value.startsWith("data:image/") ? value : null;
+		return value.startsWith("data:image/") ? [value] : [];
 	}
 	if (Array.isArray(value)) {
-		for (const item of value) {
-			const hit = extractImageDataUrl(item, depth + 1);
-			if (hit) return hit;
-		}
-		return null;
+		return value.flatMap(item => collectImageDataUrls(item, keys, depth + 1));
 	}
 	if (typeof value === "object") {
 		const r = value as Record<string, unknown>;
 		if (r.type === "image" && typeof r.data === "string") {
 			const media = typeof r.mimeType === "string" ? r.mimeType : "image/png";
-			return `data:${media};base64,${r.data}`;
+			return [`data:${media};base64,${r.data}`];
 		}
 		if (r.type === "image" && r.source && typeof r.source === "object") {
 			const src = r.source as Record<string, unknown>;
 			if (src.type === "base64" && typeof src.data === "string") {
 				const media = typeof src.media_type === "string" ? src.media_type : "image/png";
-				return `data:${media};base64,${src.data}`;
+				return [`data:${media};base64,${src.data}`];
 			}
 			if (src.type === "url" && typeof src.url === "string" && src.url.startsWith("data:image/")) {
-				return src.url;
+				return [src.url];
 			}
 		}
-		for (const key of ["image", "screenshot", "dataUrl", "data_url", "content"]) {
-			const hit = extractImageDataUrl(r[key], depth + 1);
-			if (hit) return hit;
-		}
+		return keys.flatMap(key => collectImageDataUrls(r[key], keys, depth + 1));
 	}
-	return null;
+	return [];
+}
+
+/** Find every inline-renderable image inside an unknown tool result. */
+export function extractImageDataUrls(value: unknown): string[] {
+	return [...new Set(collectImageDataUrls(value, MULTI_IMAGE_KEYS))];
+}
+
+/**
+ * Find the first inline-renderable image (data: URL) inside an unknown tool result.
+ * Remote URLs are not returned — the renderer CSP only allows 'self', data:, blob:.
+ */
+export function extractImageDataUrl(value: unknown): string | null {
+	return collectImageDataUrls(value, SINGLE_IMAGE_KEYS)[0] ?? null;
 }
 
 /** Copy text to the clipboard (Chromium renderer). Resolves true on success. */

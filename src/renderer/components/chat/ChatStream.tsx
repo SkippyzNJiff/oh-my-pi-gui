@@ -456,7 +456,7 @@ export function ChatStream() {
 											runningIndicator={row.kind === "process" ? "dot" : "spinner"}
 										/>
 										{row.kind === "message" ? (
-											<MessageBubble message={row.message} runningIndicator="dot" />
+											<MessageBubble message={row.message} reaction={row.reaction} runningIndicator="dot" />
 										) : row.kind === "readGroup" ? (
 											<ReadGroupCard entries={row.entries} runningIndicator="dot" usage={row.usage} />
 										) : row.kind === "process" ? (
