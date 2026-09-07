@@ -111,10 +111,12 @@ test("real bundled sidecar persists settings and sessions and serves every stats
 		await exportPage.screenshot({ path: "test-results/exported-session.png", scale: "css", animations: "disabled" });
 		await exportPage.close();
 		await page.screenshot({ path: "test-results/04-real-core.png", scale: "css", animations: "disabled" });
-		if (await page.getByRole("dialog", { name: "Welcome to omp" }).isVisible()) {
-			await page.keyboard.press("Escape");
-			await expect(page.getByRole("dialog")).toHaveCount(0);
-		}
+		await expect(page.getByRole("dialog", { name: "Welcome to omp" })).toBeVisible();
+		await page
+			.getByRole("dialog", { name: "Welcome to omp" })
+			.getByRole("button", { name: "Close", exact: true })
+			.click();
+		await expect(page.getByRole("dialog")).toHaveCount(0);
 		const original = evidence.saved.data as RpcSessionState;
 		await page.locator("textarea").first().fill("/new");
 		await page.getByRole("button", { name: "Send (Enter)", exact: true }).click();
@@ -131,10 +133,12 @@ test("real bundled sidecar persists settings and sessions and serves every stats
 		}, original.sessionFile!);
 		await page.reload();
 		await expect(page.locator("[data-transcript-kind]")).toContainText(["arm audit ok"]);
-		if (await page.getByRole("dialog", { name: "Welcome to omp" }).isVisible()) {
-			await page.keyboard.press("Escape");
-			await expect(page.getByRole("dialog")).toHaveCount(0);
-		}
+		await expect(page.getByRole("dialog", { name: "Welcome to omp" })).toBeVisible();
+		await page
+			.getByRole("dialog", { name: "Welcome to omp" })
+			.getByRole("button", { name: "Close", exact: true })
+			.click();
+		await expect(page.getByRole("dialog")).toHaveCount(0);
 		await page.getByRole("button", { name: "Session stats", exact: true }).click();
 		const stats = page.getByRole("dialog");
 		await expect(stats).toBeVisible();
@@ -161,10 +165,12 @@ test("real bundled sidecar persists settings and sessions and serves every stats
 		});
 		await page.reload();
 		await expect(page.getByRole("button", { name: "设置", exact: true })).toBeVisible();
-		if (await page.getByRole("dialog").count()) {
-			await page.keyboard.press("Escape");
-			await expect(page.getByRole("dialog")).toHaveCount(0);
-		}
+		await expect(page.getByRole("dialog", { name: "欢迎使用 omp", exact: true })).toBeVisible();
+		await page
+			.getByRole("dialog", { name: "欢迎使用 omp", exact: true })
+			.getByRole("button", { name: "关闭", exact: true })
+			.click();
+		await expect(page.getByRole("dialog")).toHaveCount(0);
 		await page.getByRole("button", { name: "设置", exact: true }).click();
 		await expect(page.getByRole("dialog")).toContainText("权限与安全");
 		await expect(page.getByRole("dialog").locator(".settings-nav-group-label")).toHaveCount(8);
@@ -253,7 +259,7 @@ test("real bundled sidecar persists settings and sessions and serves every stats
 		await expect(page.getByRole("button", { name: "选择主题", exact: true })).toBeVisible();
 		const welcome = page.getByRole("dialog", { name: "欢迎使用 omp", exact: true });
 		await expect(welcome).toBeVisible();
-		await page.keyboard.press("Escape");
+		await welcome.getByRole("button", { name: "关闭", exact: true }).click();
 		await expect(welcome).toHaveCount(0);
 		await page.getByRole("button", { name: "选择主题", exact: true }).click();
 		const freshPicker = page.getByRole("dialog", { name: "选择主题", exact: true });
