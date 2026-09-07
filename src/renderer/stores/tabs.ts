@@ -774,7 +774,8 @@ export function useSessionTabs(): void {
 				// A restored sidecar can already be ready before either renderer
 				// subscription attaches. GET_TABS is the durable boot snapshot, so
 				// use it as the final hydration fallback after the active route has
-				// converged. The next task gives the normal status handler first pick.
+				// converged. Session metadata can arrive before the transcript, so
+				// an existing session id cannot prove that history was restored.
 				setTimeout(() => {
 					const state = useTabsStore.getState();
 					for (const tabId of visibleTabIds(state)) {
@@ -782,7 +783,6 @@ export function useSessionTabs(): void {
 						const session = sessionRuntimeStore<SessionStore>(tabId, "session");
 						if (!tab || !session || (tab.status !== "ready" && tab.status !== "running")) continue;
 						session.getState().setStatus("ready", tab.cwd);
-						if (session.getState().sessionId) continue;
 						void hydrateTabSession(tabId);
 					}
 				}, 0);
@@ -790,6 +790,7 @@ export function useSessionTabs(): void {
 		const subscribe = window.omp.events.onTabStatus;
 		if (typeof subscribe !== "function") return;
 		return subscribe.call(window.omp.events, payload => {
+			const previousStatus = useTabsStore.getState().tabs.find(entry => entry.id === payload.tabId)?.status;
 			useTabsStore.getState().applyTabStatus(payload);
 			if (payload.status !== "ready") return;
 			const state = useTabsStore.getState();
@@ -797,14 +798,14 @@ export function useSessionTabs(): void {
 			if (visibleTabIds(state).includes(payload.tabId)) {
 				const runtime = ensureTabRuntime(payload.tabId);
 				void runtime.command({ type: "set_subagent_subscription", level: "events" });
-				if (!tab?.pendingSessionPath) {
+				if (!tab?.pendingSessionPath && previousStatus !== "ready" && previousStatus !== "running") {
 					// Light TAB_STATUS is registered before the full active-tab channel.
 					// If ready raced SET_ACTIVE_TAB, the full ready event was already
-					// missed. Give a concurrently delivered full event one turn to run;
-					// otherwise make the light event authoritative and hydrate here.
+					// missed. Restore history on the connection transition, including
+					// when metadata arrived first; idle metadata and run-end updates
+					// do not need another transcript fetch.
 					setTimeout(() => {
 						if (!visibleTabIds(useTabsStore.getState()).includes(payload.tabId)) return;
-						if (sessionRuntimeStore<SessionStore>(payload.tabId, "session")?.getState().sessionId) return;
 						void hydrateTabSession(payload.tabId);
 					}, 0);
 				}

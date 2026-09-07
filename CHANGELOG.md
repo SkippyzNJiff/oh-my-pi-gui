@@ -6,6 +6,7 @@
 
 ### Fixed
 
+- **History restoration**: reloading a restored task shows its transcript even when task metadata arrives before the ready event.
 - **Preference reliability**: slow startup reads cannot undo a chosen theme or font; failed proxy and launch-profile saves preserve edits and never trigger a premature restart.
 - **Concurrent task updates**: completed subtasks and live goal state survive delayed refreshes, and retired tasks cannot send commands to their replacements.
 - **Settings navigation**: search results for proxy and launch parameters open Advanced; concurrent workspace profile edits preserve each other.

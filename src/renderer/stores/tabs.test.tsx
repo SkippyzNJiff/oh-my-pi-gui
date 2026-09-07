@@ -890,11 +890,13 @@ describe("useSessionTabs hook", () => {
 		expect(omp.rpc.getTranscript).toHaveBeenCalled();
 	});
 
-	it("restores ready controls when metadata arrives before the boot status snapshot", async () => {
+	it("restores transcript and controls when metadata arrives before the boot status snapshot", async () => {
 		ensureTabRuntime("t0");
 		setFocusedSessionRuntime("t0");
 		useSessionStore.setState({ sessionId: "restored", cwd: "/alpha", status: "starting" });
 		omp.tabs.list.mockResolvedValue([{ ...tabInfo("t0", "/alpha"), active: true }]);
+		omp.rpc.getState.mockResolvedValue(ok(serverState({ sessionId: "restored", cwd: "/alpha", messageCount: 1 })));
+		omp.rpc.getTranscript.mockResolvedValue(ok({ messages: [msg("restored history")] }));
 		await mount();
 		await act(async () => {
 			const { promise, resolve } = Promise.withResolvers<void>();
@@ -902,16 +904,21 @@ describe("useSessionTabs hook", () => {
 			await promise;
 		});
 		expect(useSessionStore.getState()).toMatchObject({ sessionId: "restored", status: "ready" });
+		expect(useMessagesStore.getState().messages).toEqual([msg("restored history")]);
 	});
 
-	it("hydrates an active fresh tab when ready only arrives on the light channel", async () => {
+	it("restores history when metadata precedes ready on the light channel", async () => {
 		useTabsStore.setState({
 			tabs: [{ kind: "chat", id: "t1", cwd: "/beta", status: "starting", unreadDone: false }],
 			activeTabId: "t1",
 			bundles: new Map(),
 		});
-		useSessionStore.setState({ status: "starting" });
 		await mount();
+		ensureTabRuntime("t1");
+		setFocusedSessionRuntime("t1");
+		useSessionStore.setState({ sessionId: "restored", status: "starting" });
+		omp.rpc.getState.mockResolvedValue(ok(serverState({ sessionId: "restored", messageCount: 1 })));
+		omp.rpc.getTranscript.mockResolvedValue(ok({ messages: [msg("restored history")] }));
 
 		await act(async () => {
 			emitTabStatus({ kind: "chat", tabId: "t1", cwd: "/beta", status: "ready" });
@@ -923,8 +930,7 @@ describe("useSessionTabs hook", () => {
 		});
 
 		expect(useSessionStore.getState().status).toBe("ready");
-		expect(omp.rpc.getState).toHaveBeenCalled();
-		expect(omp.rpc.getTranscript).toHaveBeenCalled();
+		expect(useMessagesStore.getState().messages).toEqual([msg("restored history")]);
 	});
 
 	it("applies a tab's pending session path on its first ready push while active", async () => {
@@ -1033,6 +1039,12 @@ describe("useSessionTabs hook", () => {
 		seedTabs();
 		useSessionStore.setState({ sessionId: "active" });
 		await mount();
+		await act(async () => {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			setTimeout(resolve, 0);
+			await promise;
+		});
+		omp.rpc.setSubagentSubscription.mockClear();
 
 		// Background ready: renderer RPC routes through the ACTIVE tab, so a
 		// background tab's ready must NOT fire the command (it would land on
