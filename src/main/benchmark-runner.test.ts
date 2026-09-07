@@ -29,4 +29,10 @@ describe("benchmark runner contract", () => {
 			failures: 0,
 		});
 	});
+	it("rejects malformed nested reports before the results table can crash", () => {
+		expect(() =>
+			parseBenchmarkSummary(JSON.stringify({ runs: 1, models: [{ model: "one", results: null }], failures: 0 })),
+		).toThrow("malformed JSON");
+		expect(() => parseBenchmarkSummary("null")).toThrow("malformed JSON");
+	});
 });

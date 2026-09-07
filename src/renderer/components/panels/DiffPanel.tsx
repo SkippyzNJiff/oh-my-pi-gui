@@ -14,13 +14,16 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronDown, ChevronRight, Columns2, FileCode2, Rows3 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { type DiffLine, DiffView, parseDiff } from "../../lib/diff";
-import { basename, dirname, formatClock, formatTimeAgo, resultDetails } from "../../lib/format";
+import { basename, dirname, formatClock, formatTimeAgo, resultDetails, resultText } from "../../lib/format";
 import { useT } from "../../lib/i18n";
-import { useToolsStore } from "../../stores/tools";
+import { PREVIEW_TEXT_CHARS } from "../../lib/preview";
+import { useSessionStore } from "../../stores/session";
+import { type ToolEntry, useToolsStore } from "../../stores/tools";
+import { RepositoryChanges } from "./RepositoryChanges";
 
 const DIFF_TOOLS = new Set(["edit", "apply_patch", "ast_edit", "write"]);
 
-interface DiffCandidate {
+export interface DiffCandidate {
 	id: string;
 	toolName: string;
 	file: string;
@@ -29,6 +32,8 @@ interface DiffCandidate {
 	adds: number;
 	removes: number;
 	isError: boolean;
+	isContent: boolean;
+	isVirtual: boolean;
 }
 
 function asString(value: unknown): string | null {
@@ -42,45 +47,64 @@ function deriveFile(args: Record<string, unknown>, diff: string, details: Record
 		asString(args.file_path) ??
 		asString(args.file) ??
 		asString(details?.path) ??
-		asString(details?.resolvedPath) ??
-		firstPerFilePath(details?.perFileResults);
+		asString(details?.resolvedPath);
 	if (path) return path;
 	const header = diff.match(/^\[([^\]#]+)#/);
 	return header?.[1] ?? "edit";
 }
 
-/** Joined non-empty per-file diffs of a multi-file edit result, when present. */
-function perFileDiff(value: unknown): string | null {
-	if (!Array.isArray(value)) return null;
-	const diffs: string[] = [];
-	for (const entry of value) {
-		if (entry == null || typeof entry !== "object") continue;
-		const diff = (entry as Record<string, unknown>).diff;
-		if (typeof diff === "string" && diff.length > 0) diffs.push(diff);
+/** Keep multi-file results distinct; failed or pending writes are never counted as applied changes. */
+export function buildEditCandidates(activeTools: ReadonlyMap<string, ToolEntry>): DiffCandidate[] {
+	const out: DiffCandidate[] = [];
+	for (const [id, entry] of activeTools) {
+		if (!DIFF_TOOLS.has(entry.toolName) || (entry.status !== "done" && entry.status !== "error")) continue;
+		const details = resultDetails(entry.result);
+		const files = Array.isArray(details?.perFileResults) ? details.perFileResults : [details ?? {}];
+		for (const [index, raw] of files.entries()) {
+			if (!raw || typeof raw !== "object") continue;
+			const fileResult = raw as Record<string, unknown>;
+			const isError =
+				fileResult.error != null || fileResult.isError === true || (entry.isError && files.length === 1);
+			const actualDiff = asString(fileResult.diff);
+			const isContent = isError || !actualDiff;
+			const diff = isError
+				? (asString(fileResult.error) ?? resultText(entry.result))
+				: (actualDiff ?? (entry.toolName === "write" ? asString(entry.args.content) : null));
+			if (diff === null) continue;
+			const file = asString(fileResult.path) ?? deriveFile(entry.args, diff, details);
+			const rows = isContent ? [] : parseDiff(diff);
+			out.push({
+				id: `${id}:${index}`,
+				toolName: entry.toolName,
+				file,
+				diff,
+				timestamp: entry.endTime ?? entry.startTime,
+				adds: rows.filter(row => row.type === "add").length,
+				removes: rows.filter(row => row.type === "remove").length,
+				isError,
+				isContent,
+				isVirtual: /^[a-z][a-z0-9+.-]*:\/\//i.test(file) && !file.startsWith("file://"),
+			});
+		}
 	}
-	return diffs.length > 0 ? diffs.join("\n") : null;
+	return out.sort((a, b) => b.timestamp - a.timestamp);
 }
 
-/** First per-file path of a multi-file edit result, when present. */
-function firstPerFilePath(value: unknown): string | null {
-	if (!Array.isArray(value)) return null;
-	for (const entry of value) {
-		if (entry == null || typeof entry !== "object") continue;
-		const path = (entry as Record<string, unknown>).path;
-		if (typeof path === "string" && path.length > 0) return path;
-	}
-	return null;
-}
-
-/** Cheap +/- line counter mirroring parseDiff's prefix rules (no per-line objects). */
-function countChanges(diff: string): { adds: number; removes: number } {
-	let adds = 0;
-	let removes = 0;
-	for (const line of diff.split("\n")) {
-		if (line.startsWith("+") && !line.startsWith("+++")) adds += 1;
-		else if (line.startsWith("-") && !line.startsWith("---")) removes += 1;
-	}
-	return { adds, removes };
+function EditPreview({ entry }: { entry: DiffCandidate }) {
+	const t = useT();
+	return entry.isContent ? (
+		<div>
+			<p className={`text-omp-xs ${entry.isError ? "text-(--omp-error)" : "text-(--omp-muted)"}`}>
+				{t(entry.isError ? "diffPanel.failedEdit" : "diffPanel.writtenContent")}
+			</p>
+			<pre className="overflow-auto whitespace-pre-wrap break-words font-mono text-omp-sm">
+				{entry.diff.slice(0, PREVIEW_TEXT_CHARS)}
+			</pre>
+			{entry.diff.length > PREVIEW_TEXT_CHARS && <p>{t("diffPanel.previewLimited")}</p>}
+		</div>
+	) : (
+		<DiffView diff={entry.diff} filePath={entry.file} />
+	);
 }
 
 /** Pair remove/add runs into side-by-side rows for split view. */
@@ -321,7 +345,7 @@ function EditTimelineRow({
 			</button>
 			{expanded && (
 				<div className="mt-0.5 overflow-hidden rounded-md border border-(--omp-border-muted) bg-(--omp-code-bg) py-1">
-					<DiffView diff={entry.diff} filePath={entry.file} />
+					<EditPreview entry={entry} />
 				</div>
 			)}
 		</div>
@@ -449,59 +473,34 @@ export function DiffPanel() {
 	const activeTools = useToolsStore(state => state.activeTools);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [split, setSplit] = useState(false);
-	const [mode, setMode] = useState<"current" | "timeline">("current");
-
-	const candidates = useMemo<DiffCandidate[]>(() => {
-		const out: DiffCandidate[] = [];
-		for (const [id, entry] of activeTools) {
-			if (!DIFF_TOOLS.has(entry.toolName)) continue;
-			// Tool results arrive as `{content, details}` envelopes — the real diff
-			// lives in details (aggregate `diff`, else joined per-file diffs).
-			// Replace-mode edits and hashline/apply_patch all land there; only
-			// `write` carries no details diff, so it falls back to its content arg.
-			const details = resultDetails(entry.result) ?? resultDetails(entry.partialResult);
-			const diff =
-				asString(details?.diff) ??
-				perFileDiff(details?.perFileResults) ??
-				(entry.toolName === "write" ? asString(entry.args.content) : null);
-			if (!diff) continue;
-			const { adds, removes } = countChanges(diff);
-			out.push({
-				id,
-				toolName: entry.toolName,
-				file: deriveFile(entry.args, diff, details),
-				diff,
-				timestamp: entry.endTime ?? entry.startTime,
-				adds,
-				removes,
-				isError: entry.isError,
-			});
-		}
-		return out.sort((a, b) => b.timestamp - a.timestamp);
-	}, [activeTools]);
+	const [mode, setMode] = useState<"repository" | "current" | "timeline" | "artifacts">("repository");
+	const sessionId = useSessionStore(state => state.sessionId);
+	const allCandidates = useMemo(() => buildEditCandidates(activeTools), [activeTools]);
+	const candidates = useMemo(
+		() => allCandidates.filter(entry => (mode === "artifacts" ? entry.isVirtual : !entry.isVirtual)),
+		[allCandidates, mode],
+	);
 
 	const selected = candidates.find(c => c.id === selectedId) ?? candidates[0] ?? null;
 
 	return (
 		<div className="flex h-full flex-col">
-			<div className="flex items-center justify-between gap-2 px-3 pt-2.5 pb-1.5">
+			<div className="flex flex-wrap items-center justify-between gap-2 px-3 pt-2.5 pb-1.5">
 				<span className="text-omp-xs font-medium tracking-widest text-(--omp-dim) uppercase">
 					{t("diffPanel.title")}
 				</span>
 				<div className="flex items-center gap-1">
 					<div className="flex items-center gap-0.5 rounded-md border border-(--omp-border-muted) p-0.5">
-						{(["current", "timeline"] as const).map(value => (
+						{(["repository", "current", "timeline", "artifacts"] as const).map(value => (
 							<button
-								aria-label={
-									value === "current" ? t("diffPanel.mode.currentAria") : t("diffPanel.mode.timelineAria")
-								}
+								aria-label={t(`diffPanel.mode.${value}`)}
 								aria-pressed={mode === value}
 								className={`rounded px-1.5 py-0.5 text-omp-xxs font-medium tracking-wide uppercase transition-colors ${mode === value ? "bg-(--omp-selected-bg) text-(--omp-text)" : "text-(--omp-dim) hover:text-(--omp-text)"}`}
 								key={value}
 								onClick={() => setMode(value)}
 								type="button"
 							>
-								{value === "current" ? t("diffPanel.mode.current") : t("diffPanel.mode.timeline")}
+								{t(`diffPanel.mode.${value}`)}
 							</button>
 						))}
 					</div>
@@ -530,7 +529,9 @@ export function DiffPanel() {
 				</div>
 			</div>
 
-			{candidates.length === 0 ? (
+			{mode === "repository" ? (
+				<RepositoryChanges key={sessionId} />
+			) : candidates.length === 0 ? (
 				<div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
 					<div className="px-3 py-8 text-center text-omp-sm leading-relaxed text-(--omp-dim)">
 						{t("diffPanel.empty")}
@@ -538,7 +539,7 @@ export function DiffPanel() {
 						{t("diffPanel.emptyHint")}
 					</div>
 				</div>
-			) : mode === "timeline" ? (
+			) : mode === "timeline" || mode === "artifacts" ? (
 				<DiffTimeline candidates={candidates} />
 			) : (
 				<>
@@ -569,10 +570,10 @@ export function DiffPanel() {
 										{selected.toolName}
 									</span>
 								</div>
-								{split ? (
+								{split && !selected.isContent ? (
 									<SplitDiff diff={selected.diff} />
 								) : (
-									<DiffView diff={selected.diff} filePath={selected.file} />
+									<EditPreview entry={selected} />
 								)}
 							</div>
 						)}

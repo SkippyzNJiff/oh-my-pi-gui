@@ -127,7 +127,14 @@ function SelectDialog({
 						type="button"
 					>
 						<span className="w-4 shrink-0 text-omp-xs text-(--omp-dim)">{index + 1}</span>
-						<span className="min-w-0 break-words">{option}</span>
+						<span className="min-w-0 break-words">
+							<span className="block">{option}</span>
+							{request.optionDetails?.[index]?.description && (
+								<span className="mt-1 block text-omp-xs whitespace-pre-wrap text-(--omp-muted)">
+									{request.optionDetails[index].description}
+								</span>
+							)}
+						</span>
 					</button>
 				))}
 				<div className="flex items-center justify-between pt-2">

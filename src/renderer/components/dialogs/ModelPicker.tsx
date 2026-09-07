@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../lib/tab-rpc";
 /**
  * Model picker: grouped-by-provider dropdown with search, auth status from
  * login providers, current model highlighted. Selection calls set_model.
@@ -16,6 +17,7 @@ import { useUiStore } from "../../stores/ui";
 import { Badge, Modal, Spinner } from "../common";
 
 export function ModelPicker() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const open = useUiStore(state => state.modelPickerOpen);
 	const close = useUiStore(state => state.closeModelPicker);
@@ -44,7 +46,7 @@ export function ModelPicker() {
 		setActiveIndex(0);
 		requestAnimationFrame(() => inputRef.current?.focus());
 		let cancelled = false;
-		void Promise.allSettled([window.omp.rpc.getLoginProviders(), window.omp.rpc.getAvailableModels()])
+		void Promise.allSettled([tabRpc.getLoginProviders(), tabRpc.getAvailableModels()])
 			.then(([providersResult, modelsResult]) => {
 				if (cancelled) return;
 				let gotProviders = false;
@@ -84,7 +86,7 @@ export function ModelPicker() {
 		return () => {
 			cancelled = true;
 		};
-	}, [open, setAvailableModels, t]);
+	}, [open, setAvailableModels, t, tabRpc.getLoginProviders, tabRpc.getAvailableModels]);
 
 	const authByProvider = useMemo(() => {
 		const map = new Map<string, LoginProvider>();
@@ -146,14 +148,14 @@ export function ModelPicker() {
 			const target = availableModels.find(m => m.provider === provider && m.id === modelId);
 			const overContext = target !== undefined && isOverContext(target);
 			if (overContext) {
-				const compactRes = await window.omp.rpc.compact();
+				const compactRes = await tabRpc.compact();
 				if (!compactRes.success) {
 					toast({ variant: "error", title: t("modelPicker.compactFailed"), message: compactRes.error });
 					return;
 				}
 				toast({ variant: "info", message: t("modelPicker.compactedSwitching") });
 			}
-			const response = await window.omp.rpc.setModel(provider, modelId);
+			const response = await tabRpc.setModel(provider, modelId);
 			if (!response.success) {
 				toast({ variant: "error", title: t("modelPicker.failed"), message: response.error });
 				return;
@@ -242,10 +244,7 @@ export function ModelPicker() {
 								onClick={() => {
 									setError(null);
 									setLoading(true);
-									void Promise.allSettled([
-										window.omp.rpc.getLoginProviders(),
-										window.omp.rpc.getAvailableModels(),
-									])
+									void Promise.allSettled([tabRpc.getLoginProviders(), tabRpc.getAvailableModels()])
 										.then(([pr, mr]) => {
 											if (pr.status === "fulfilled" && pr.value.success) {
 												setProviders((pr.value.data as { providers?: LoginProvider[] })?.providers ?? []);

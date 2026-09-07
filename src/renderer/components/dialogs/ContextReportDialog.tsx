@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { RpcContextReportResult } from "../../../shared/rpc-types";
 import { formatTokens } from "../../lib/format";
 import { useT } from "../../lib/i18n";
+import { useTabRpc } from "../../lib/tab-rpc";
 import { useUiStore } from "../../stores/ui";
 import { Modal, ProgressBar, Spinner } from "../common";
 
@@ -18,6 +19,7 @@ interface CategoryRow {
  * invariant.
  */
 export function ContextReportDialog() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const open = useUiStore(state => state.contextReportOpen);
 	const close = useUiStore(state => state.closeContextReport);
@@ -31,7 +33,7 @@ export function ContextReportDialog() {
 		setReport(null);
 		setError(null);
 		setLoading(true);
-		void window.omp.rpc
+		void tabRpc
 			.getContextReport()
 			.then(response => {
 				if (cancelled) return;
@@ -47,7 +49,7 @@ export function ContextReportDialog() {
 		return () => {
 			cancelled = true;
 		};
-	}, [open]);
+	}, [open, tabRpc.getContextReport]);
 
 	const breakdown = report?.breakdown;
 	const contextWindow = report?.contextWindow ?? 0;

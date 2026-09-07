@@ -43,7 +43,9 @@ export function SchemaTabContent({
 	}
 
 	const renderRow = (entry: SettingEntry) => (
-		<SchemaSettingRow entry={entry} key={entry.path} onCommitted={onCommitted} value={values[entry.path]} />
+		<div id={`setting-${entry.path}`} key={entry.path} className="scroll-mt-4">
+			<SchemaSettingRow entry={entry} onCommitted={onCommitted} value={values[entry.path]} />
+		</div>
 	);
 
 	return (

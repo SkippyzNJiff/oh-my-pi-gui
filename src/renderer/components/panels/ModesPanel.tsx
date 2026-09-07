@@ -5,9 +5,9 @@
  * place).
  *
  * Each tab lazy-loads on first view, then silently revalidates whenever it is
- * re-activated. Mutations are optimistic: applied immediately; on failure an
- * error toast fires, the optimistic state is reverted, and the canonical
- * state is silently re-fetched.
+ * re-activated. Mutations keep the confirmed value while pending. A successful response
+ * supplies the effective value; failures remain visible and preserve the last
+ * confirmed state.
  *
  * Parent wiring (parent-owned files): mount once beside the other windows and
  * drive it from a ui-store flag + command-registry entry; deep-link a tab via:
@@ -27,7 +27,9 @@ import { formatDuration, formatTokens } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { loopLimitText, normalizeLoopUpdate, parseLoopLimit } from "../../lib/loop-mode";
 import { acceptsActiveTabEvents } from "../../lib/tab-routing";
-import { useSessionStore } from "../../stores/session";
+import { type TabRpc, useTabRpc } from "../../lib/tab-rpc";
+import { type SessionStore, useSessionStore } from "../../stores/session";
+import { sessionRuntimeStore, useRuntimeTabId } from "../../stores/session-runtime-context";
 import { toast } from "../../stores/toast";
 import {
 	Badge,
@@ -67,16 +69,16 @@ interface ModeRpc<T> {
 	sync: () => void;
 	/** Apply an event payload directly. */
 	apply: (next: T) => void;
-	/** Optimistic mutation: apply `optimistic`, run `action`, toast + revert + re-sync on failure. */
-	mutate: (optimistic: T, action: () => Promise<RpcResponse>) => Promise<void>;
+	/** Apply only confirmed state from the originating session. */
+	mutate: (action: (client: TabRpc) => Promise<RpcResponse>) => Promise<void>;
 }
 
-const fetchVibeMode = (): Promise<RpcResponse> => window.omp.rpc.getVibeMode();
+const fetchVibeMode = (client: TabRpc): Promise<RpcResponse> => client.getVibeMode();
 const pickVibeMode = (data: unknown): RpcVibeModeState => (data as RpcVibeModeState | undefined) ?? { enabled: false };
-const fetchGoal = (): Promise<RpcResponse> => window.omp.rpc.getGoal();
+const fetchGoal = (client: TabRpc): Promise<RpcResponse> => client.getGoal();
 const pickGoal = (data: unknown): RpcGoalState =>
 	(data as RpcGoalState | undefined) ?? { enabled: false, status: "none" };
-const fetchLoopMode = (): Promise<RpcResponse> => window.omp.rpc.getLoopMode();
+const fetchLoopMode = (client: TabRpc): Promise<RpcResponse> => client.getLoopMode();
 const pickLoopMode = (data: unknown): RpcLoopModeState =>
 	(data as RpcLoopModeState | undefined) ?? { enabled: false, state: "off" };
 
@@ -87,26 +89,33 @@ const pickLoopMode = (data: unknown): RpcLoopModeState =>
 function useModeRpc<T>(
 	open: boolean,
 	active: boolean,
-	fetcher: () => Promise<RpcResponse>,
+	fetcher: (client: TabRpc) => Promise<RpcResponse>,
 	pick: (data: unknown) => T,
+	onConfirmed?: (state: T) => void,
 ): ModeRpc<T> {
 	const t = useT();
+	const client = useTabRpc();
 	const sidecarReady = useSessionStore(s => s.status) === "ready";
+	const generation = useRef(0);
+	const sessionId = useSessionStore(s => s.sessionId);
 	const [state, setState] = useState<T | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const attemptedRef = useRef(false);
-	const stateRef = useRef<T | null>(null);
 
-	/** Keep the ref in lockstep so mutations can snapshot for revert. */
-	const setBoth = useCallback((next: T | null) => {
-		stateRef.current = next;
-		setState(next);
-	}, []);
+	/** One confirmed state value for loading, events and mutations. */
+	const setBoth = useCallback(
+		(next: T | null) => {
+			setState(next);
+			if (next !== null) onConfirmed?.(next);
+		},
+		[onConfirmed],
+	);
 
 	const load = useCallback(
 		async (silent: boolean) => {
+			const version = ++generation.current;
 			if (!sidecarReady) {
 				if (!silent) setError(t("modesPanel.notConnected"));
 				return;
@@ -116,23 +125,37 @@ function useModeRpc<T>(
 				setError(null);
 			}
 			try {
-				const res = await fetcher();
+				const res = await fetcher(client);
+				if (version !== generation.current) return;
 				if (res.success) {
 					setBoth(pick(res.data));
 					if (!silent) setError(null);
-				} else if (!silent) {
+				} else {
 					setError(res.error);
 				}
 			} catch (cause) {
-				if (!silent) setError(String(cause));
+				if (version === generation.current) setError(String(cause));
 			} finally {
-				if (!silent) setLoading(false);
+				if (version === generation.current) setLoading(false);
 			}
 		},
-		[sidecarReady, fetcher, pick, t, setBoth],
+		[sidecarReady, client, fetcher, pick, t, setBoth],
 	);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset on runtime or session replacement even before a request starts.
+	useEffect(() => {
+		generation.current++;
+		attemptedRef.current = false;
+		setState(null);
+		setError(null);
+		setBusy(false);
+		return () => {
+			generation.current++;
+		};
+	}, [client, sessionId]);
+
 	// First activation loads loudly; later re-activations silently revalidate.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: an in-place session replacement needs a fresh read.
 	useEffect(() => {
 		if (!open || !active) return;
 		if (attemptedRef.current) {
@@ -141,35 +164,48 @@ function useModeRpc<T>(
 			attemptedRef.current = true;
 			void load(false);
 		}
-	}, [open, active, load]);
+	}, [open, active, load, sessionId]);
 
 	const refresh = useCallback(() => void load(false), [load]);
 	const sync = useCallback(() => void load(true), [load]);
-	const apply = useCallback((next: T) => setBoth(next), [setBoth]);
+	const apply = useCallback(
+		(next: T) => {
+			generation.current++;
+			setBusy(false);
+			setLoading(false);
+			setBoth(next);
+		},
+		[setBoth],
+	);
 
 	const mutate = useCallback(
-		async (optimistic: T, action: () => Promise<RpcResponse>) => {
-			const prev = stateRef.current;
-			setBoth(optimistic);
+		async (action: (client: TabRpc) => Promise<RpcResponse>) => {
+			const version = ++generation.current;
 			setBusy(true);
+			setError(null);
 			try {
-				const res = await action();
-				if (res.success) {
-					if (res.data != null) setBoth(pick(res.data));
-				} else {
-					setBoth(prev);
-					toast({ variant: "error", title: t("modesPanel.actionFailed"), message: res.error });
-					void load(true);
-				}
+				const res = await action(client);
+				if (!res.success) throw new Error(res.error);
+				const settled = res.data == null ? await fetcher(client) : res;
+				if (version !== generation.current) return;
+				if (!settled.success) throw new Error(settled.error);
+				setBoth(pick(settled.data));
 			} catch (cause) {
-				setBoth(prev);
+				if (version !== generation.current) return;
+				setError(String(cause));
 				toast({ variant: "error", title: t("modesPanel.actionFailed"), message: String(cause) });
-				void load(true);
 			} finally {
-				setBusy(false);
+				if (version === generation.current) setBusy(false);
 			}
 		},
-		[pick, t, load, setBoth],
+		[client, fetcher, pick, t, setBoth],
+	);
+
+	useEffect(
+		() => () => {
+			generation.current++;
+		},
+		[],
 	);
 
 	return { state, error, loading, busy, refresh, sync, apply, mutate };
@@ -196,7 +232,7 @@ const GOAL_STATUS_KEY: Record<string, string> = {
 };
 
 /** Goal status → badge color (unknown statuses fall back to muted + raw text). */
-export function goalStatusVariant(status: string): BadgeVariant {
+export function goalStatusVariant(status: string | undefined): BadgeVariant {
 	switch (status) {
 		case "active":
 			return "success";
@@ -211,7 +247,8 @@ export function goalStatusVariant(status: string): BadgeVariant {
 	}
 }
 
-function goalStatusLabel(t: (key: string) => string, status: string): string {
+function goalStatusLabel(t: (key: string) => string, status: string | undefined): string {
+	if (!status) return "—";
 	const key = GOAL_STATUS_KEY[status];
 	return key ? t(key) : status;
 }
@@ -332,15 +369,7 @@ function VibeTab({ rpc }: { rpc: ModeRpc<RpcVibeModeState> }) {
 							description={t("modesPanel.vibe.toggleDesc")}
 							disabled={rpc.busy}
 							label={t("modesPanel.vibe.toggleLabel")}
-							onChange={next =>
-								// set_vibe_mode emits no event — mirror the settled value into
-								// the session store so the footer badge tracks it live.
-								void rpc.mutate({ enabled: next }, async () => {
-									const res = await window.omp.rpc.setVibeMode(next);
-									if (res.success) useSessionStore.setState({ vibeModeEnabled: next });
-									return res;
-								})
-							}
+							onChange={next => void rpc.mutate(client => client.setVibeMode(next))}
 						/>
 					</div>
 					{!state.enabled && typeof state.killedWorkers === "number" && state.killedWorkers > 0 && (
@@ -377,17 +406,11 @@ function GoalEnabledView({ rpc, state }: { rpc: ModeRpc<RpcGoalState>; state: Rp
 
 	const saveObjective = () => {
 		if (!objectiveDirty) return;
-		void rpc.mutate({ ...state, objective: trimmedObjective }, () =>
-			window.omp.rpc.setGoal({ objective: trimmedObjective }),
-		);
+		void rpc.mutate(client => client.setGoal({ objective: trimmedObjective }));
 	};
 
 	const runAction = (action: "pause" | "resume" | "drop") => {
-		const optimistic: RpcGoalState =
-			action === "drop"
-				? { enabled: false, status: "dropped" }
-				: { ...state, status: action === "pause" ? "paused" : "active" };
-		void rpc.mutate(optimistic, () => window.omp.rpc.setGoal({ action }));
+		void rpc.mutate(client => client.setGoal({ action }));
 	};
 
 	return (
@@ -473,10 +496,8 @@ function GoalStartForm({ rpc }: { rpc: ModeRpc<RpcGoalState> }) {
 
 	const start = () => {
 		if (!trimmed) return;
-		void rpc.mutate(
-			{ enabled: true, status: "active", objective: trimmed, tokenBudget, tokensUsed: 0, timeUsedSeconds: 0 },
-			() =>
-				window.omp.rpc.setGoal(tokenBudget === null ? { objective: trimmed } : { objective: trimmed, tokenBudget }),
+		void rpc.mutate(client =>
+			client.setGoal(tokenBudget === null ? { objective: trimmed } : { objective: trimmed, tokenBudget }),
 		);
 	};
 
@@ -537,9 +558,7 @@ function LoopTab({ rpc }: { rpc: ModeRpc<RpcLoopModeState> }) {
 	const toggle = (next: boolean) => {
 		if (!state) return;
 		const args = argsDraft.trim();
-		void rpc.mutate({ ...state, enabled: next, state: next ? "waiting" : "off" }, () =>
-			window.omp.rpc.setLoopMode(next, args === "" ? undefined : args),
-		);
+		void rpc.mutate(client => client.setLoopMode(next, args === "" ? undefined : args));
 	};
 
 	const limit = state ? parseLoopLimit(state.limit) : null;
@@ -604,8 +623,16 @@ function LoopTab({ rpc }: { rpc: ModeRpc<RpcLoopModeState> }) {
 export function ModesPanel({ open, onClose, initialTab = "vibe" }: ModesPanelProps) {
 	const t = useT();
 	const [tab, setTab] = useState<ModesTabId>(initialTab);
+	const tabId = useRuntimeTabId();
 
-	const vibe = useModeRpc(open, tab === "vibe", fetchVibeMode, pickVibeMode);
+	const confirmVibe = useCallback(
+		(state: RpcVibeModeState) => {
+			const session = sessionRuntimeStore<SessionStore>(tabId, "session") ?? useSessionStore;
+			session.setState({ vibeModeEnabled: state.enabled });
+		},
+		[tabId],
+	);
+	const vibe = useModeRpc(open, tab === "vibe", fetchVibeMode, pickVibeMode, confirmVibe);
 	const goal = useModeRpc(open, tab === "goal", fetchGoal, pickGoal);
 	const loop = useModeRpc(open, tab === "loop", fetchLoopMode, pickLoopMode);
 

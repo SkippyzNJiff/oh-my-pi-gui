@@ -1,5 +1,5 @@
 /**
- * Fixed bottom-right toast stack driven by stores/toast.ts.
+ * Toasts sit below the top navigation, clear of composer send/stop controls.
  * Auto-dismisses via a single pruning interval; slide-in per toast.
  */
 
@@ -31,7 +31,7 @@ export function ToastStack() {
 	if (toasts.length === 0) return null;
 
 	return createPortal(
-		<div aria-live="polite" className="pointer-events-none fixed right-4 bottom-4 z-[70] flex w-80 flex-col gap-2">
+		<div aria-live="polite" className="pointer-events-none fixed top-28 right-4 z-[70] flex w-80 flex-col gap-2">
 			{toasts.map(entry => {
 				const style = VARIANT_STYLES[entry.variant];
 				const Icon = style.Icon;

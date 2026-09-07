@@ -26,12 +26,14 @@ import type {
 	TodoPhase,
 } from "../../shared/rpc-types";
 import { TurnStatusRow } from "../components/chat/ChatStream";
+import { formatClock } from "../lib/format";
 import { I18nProvider } from "../lib/i18n";
 import { type MessagesStore, useMessagesStore } from "../stores/messages";
 import { useModelStore } from "../stores/model";
 import { type SessionStore, useSessionStore } from "../stores/session";
 import { sessionRuntime, sessionRuntimeStore, setFocusedSessionRuntime } from "../stores/session-runtime-context";
 import { useSettingsStore } from "../stores/settings";
+import { useSubagentsStore } from "../stores/subagents";
 import { ensureTabRuntime } from "../stores/tab-runtime";
 import { useTabsStore } from "../stores/tabs";
 import { useToastStore } from "../stores/toast";
@@ -210,6 +212,7 @@ function installTabRoutedMockOmp(): {
 	emitTabBatch: TabBatchHandler;
 	emitTabStatus: TabSidecarStatusHandler;
 	notify: Mock<(title: string, body: string) => void>;
+	commandForTab: Mock<(tabId: string, command: RpcCommand) => Promise<RpcResponse>>;
 } {
 	let tabBatchHandler: TabBatchHandler = () => {};
 	let tabStatusHandler: TabSidecarStatusHandler = () => {};
@@ -288,6 +291,7 @@ function installTabRoutedMockOmp(): {
 		emitTabBatch: (events, tabId) => tabBatchHandler(events, tabId),
 		emitTabStatus: (payload, tabId) => tabStatusHandler(payload, tabId),
 		notify,
+		commandForTab,
 	};
 }
 
@@ -318,6 +322,51 @@ function RpcEventsProbe() {
 	return null;
 }
 
+it("does not let a delayed startup snapshot clear the task selected after the request", async () => {
+	installTabRoutedMockOmp();
+	const status = Promise.withResolvers<IpcSidecarStatusPayload>();
+	vi.spyOn(window.omp.sidecar, "getStatus").mockReturnValue(status.promise);
+	useTabsStore.setState({
+		tabs: [
+			{ id: "t0", kind: "agent", cwd: "/alpha", status: "ready", unreadDone: false },
+			{ id: "t1", kind: "agent", cwd: "/beta", status: "ready", unreadDone: false },
+		],
+		activeTabId: "t0",
+	});
+	ensureTabRuntime("t0");
+	ensureTabRuntime("t1");
+	setFocusedSessionRuntime("t0");
+	await mount(<RpcEventsProbe />);
+	const other = sessionRuntimeStore<MessagesStore>("t1", "messages")!;
+	other.getState().appendMessage({ role: "user", content: "Task B history", timestamp: 1 });
+	useTabsStore.setState({ activeTabId: "t1" });
+	setFocusedSessionRuntime("t1");
+	status.resolve({ status: "starting", cwd: "/alpha" });
+	await flush();
+	expect(other.getState().messages).toMatchObject([{ content: "Task B history" }]);
+});
+
+it("does not roll a ready task back to starting when its older startup snapshot resolves", async () => {
+	const { emitTabStatus } = installTabRoutedMockOmp();
+	const status = Promise.withResolvers<IpcSidecarStatusPayload>();
+	vi.spyOn(window.omp.sidecar, "getStatus").mockReturnValue(status.promise);
+	useTabsStore.setState({
+		tabs: [{ id: "t0", kind: "agent", cwd: "/alpha", status: "starting", unreadDone: false }],
+		activeTabId: "t0",
+	});
+	ensureTabRuntime("t0");
+	setFocusedSessionRuntime("t0");
+	await mount(<RpcEventsProbe />);
+	emitTabStatus({ status: "ready", cwd: "/alpha" }, "t0");
+	await flush();
+	const messages = sessionRuntimeStore<MessagesStore>("t0", "messages")!;
+	messages.getState().appendMessage({ role: "user", content: "History loaded after ready", timestamp: 1 });
+	status.resolve({ status: "starting", cwd: "/alpha" });
+	await flush();
+	expect(sessionRuntimeStore<SessionStore>("t0", "session")?.getState().status).toBe("ready");
+	expect(messages.getState().messages).toMatchObject([{ content: "History loaded after ready" }]);
+});
+
 const assistantMessage: AgentMessage = { role: "assistant", content: [], timestamp: Date.now() };
 
 afterEach(async () => {
@@ -334,6 +383,9 @@ afterEach(async () => {
 	useToolsStore.getState().reset();
 	useTodoStore.getState().reset();
 	useSettingsStore.getState().reset();
+	useSubagentsStore.getState().reset();
+	useToastStore.setState({ toasts: [] });
+	vi.restoreAllMocks();
 });
 
 describe("useRpcEvents thinking selection sync", () => {
@@ -452,6 +504,47 @@ describe("useRpcEvents awaiting-model marker", () => {
 			emitBatch([{ type: "agent_end", messages: [], isTerminal: false }]);
 		});
 		expect(useSessionStore.getState().awaitingModelSince).toBeNull();
+	});
+
+	it("keeps a long quota wait visible after its notification expires", async () => {
+		const now = Date.now();
+		const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+		try {
+			const { emitBatch } = installMockOmp();
+			await mount(
+				<>
+					<RpcEventsProbe />
+					<TurnStatusRow />
+				</>,
+			);
+			const delayMs = 2 * 24 * 60 * 60 * 1000;
+			await act(async () => {
+				emitBatch([
+					{
+						type: "auto_retry_start",
+						attempt: 1,
+						maxAttempts: 3,
+						delayMs,
+						errorMessage: "Weekly quota exhausted",
+					},
+				]);
+			});
+			expect(document.body.textContent).toContain(formatClock(now + delayMs));
+			expect(document.body.textContent).not.toContain("172800s");
+			const notification = useToastStore.getState().toasts.find(item => item.message.includes("Weekly quota"));
+			expect(notification?.expiresAt).toBeLessThan(now + 60_000);
+			await act(async () => {
+				clock.mockReturnValue(now + 60_000);
+				useToastStore.getState().pruneExpired();
+				clock.mockReturnValue(now + 61_000);
+				useToastStore.getState().pruneExpired();
+			});
+			expect(useToastStore.getState().toasts.some(item => item.id === notification?.id)).toBe(false);
+			expect(useSessionStore.getState().retryInfo?.delayMs).toBe(delayMs);
+			expect(document.body.textContent).toContain("Weekly quota exhausted");
+		} finally {
+			clock.mockRestore();
+		}
 	});
 
 	it("drives the compaction row state across the maintenance window", async () => {
@@ -671,6 +764,28 @@ describe("useRpcEvents non-transcript frames", () => {
 });
 
 describe("useRpcEvents mode-state sync", () => {
+	it("keeps live goal and loop updates when older hydration replies arrive later", async () => {
+		const { omp, emitBatch } = installMockOmp();
+		await mount(<RpcEventsProbe />);
+		await flush();
+		const goal = Promise.withResolvers<RpcResponse>();
+		const loop = Promise.withResolvers<RpcResponse>();
+		omp.rpc.getGoal.mockReturnValueOnce(goal.promise);
+		omp.rpc.getLoopMode.mockReturnValueOnce(loop.promise);
+		const hydration = hydrateSession();
+		await act(async () =>
+			emitBatch([
+				{ type: "goal_updated", goal: { objective: "new objective", status: "active" } },
+				{ type: "loop_mode_update", state: { enabled: true, state: "waiting", prompt: "new loop" } },
+			]),
+		);
+		goal.resolve(success({ enabled: false }));
+		loop.resolve(success({ enabled: false, state: "off" }));
+		await act(async () => hydration);
+		expect(useSessionStore.getState().goal?.objective).toBe("new objective");
+		expect(useSessionStore.getState().loopMode).toMatchObject({ enabled: true, prompt: "new loop" });
+	});
+
 	it("hydrates loop, vibe, and project-scoped display settings into the active tab", async () => {
 		const { omp } = installMockOmp();
 		// Loop/vibe aren't on the get_state wire — hydration must pull the
@@ -845,6 +960,17 @@ describe("TurnStatusRow", () => {
 });
 
 describe("hydrateSession streaming reconcile (F-HYDRATE)", () => {
+	it("retains completed subtask history when switching back to the same session", async () => {
+		installMockOmp();
+		await hydrateSession();
+		useSubagentsStore.getState().applyFrame({
+			type: "subagent_lifecycle",
+			payload: { id: "finished", index: 1, agent: "scout", agentSource: "bundled", status: "completed" },
+		});
+		await hydrateSession();
+		expect(useSubagentsStore.getState().subagents.get("finished")?.status).toBe("completed");
+	});
+
 	it("discards an older hydration when a newer session finishes first", async () => {
 		const { omp } = installMockOmp();
 		const oldState = Promise.withResolvers<RpcResponse>();
@@ -1042,6 +1168,58 @@ describe("useRpcEvents tab-scoped routing guards", () => {
 		ensureTabRuntime("t-dead");
 		setFocusedSessionRuntime("t-live");
 	}
+
+	it("refreshes automatic compaction without letting its delayed snapshot erase resumed work", async () => {
+		const { emitTabBatch, commandForTab } = installTabRoutedMockOmp();
+		seedTwoTabs();
+		await mount(<RpcEventsProbe />);
+		const transcript = Promise.withResolvers<RpcResponse>();
+		const original = commandForTab.getMockImplementation()!;
+		commandForTab.mockImplementation((tabId, command) =>
+			command.type === "get_transcript" ? transcript.promise : original(tabId, command),
+		);
+		const shell: AgentMessage = { role: "assistant", content: [], timestamp: 100 };
+		await act(async () => {
+			emitTabBatch(
+				[
+					{ type: "auto_compaction_start", reason: "threshold", action: "compact" },
+					{ type: "auto_compaction_end", action: "compact", result: {}, aborted: false, willRetry: false },
+					{ type: "agent_start" },
+					{ type: "message_start", message: shell },
+					{
+						type: "message_update",
+						message: shell,
+						assistantMessageEvent: {
+							type: "text_delta",
+							contentIndex: 0,
+							delta: "Resumed reply",
+							partial: shell,
+						},
+					},
+					{
+						type: "tool_execution_start",
+						toolCallId: "resumed-tool",
+						toolName: "read",
+						args: { path: "src/current.ts" },
+					},
+				],
+				"t-live",
+			);
+		});
+		const compacted: AgentMessage = {
+			role: "compactionSummary",
+			summary: "Compacted history",
+			content: "",
+			entryId: "compacted",
+			timestamp: 50,
+		};
+		transcript.resolve(success({ messages: [compacted] }));
+		await flush();
+		expect(useMessagesStore.getState().messages).toEqual([compacted]);
+		expect(useMessagesStore.getState().streamingText).toBe("Resumed reply");
+		expect(useSessionStore.getState()).toMatchObject({ isStreaming: true, isCompacting: false });
+		expect(useToolsStore.getState().activeTools.get("resumed-tool")?.status).toBe("running");
+	});
 
 	it("drops in-flight event batches for a closed tab instead of polluting the focused pane", async () => {
 		const { emitTabBatch, notify } = installTabRoutedMockOmp();

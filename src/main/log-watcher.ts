@@ -8,8 +8,9 @@
  */
 import { createReadStream, type FSWatcher, type Stats, watch } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import type { LogBatch } from "../shared/ipc-types";
+import { agentDir } from "./agent-paths";
 
 const RING_BUFFER_SIZE = 1000;
 const FLUSH_INTERVAL_MS = 150;
@@ -19,6 +20,8 @@ interface WatchedFile {
 	path: string;
 	offset: number;
 	watcher: FSWatcher | null;
+	reading: boolean;
+	partial: string;
 }
 
 export class LogWatcher {
@@ -26,6 +29,7 @@ export class LogWatcher {
 	#files = new Map<string, WatchedFile>();
 	#buffer: string[] = [];
 	#pending: string[] = [];
+	#sequence = 0;
 	#flushTimer: NodeJS.Timeout | null = null;
 	#pollTimer: NodeJS.Timeout | null = null;
 	#dirWatcher: FSWatcher | null = null;
@@ -34,12 +38,14 @@ export class LogWatcher {
 	onLines: ((lines: string[]) => void) | null = null;
 
 	constructor(logsDir?: string) {
-		this.#logsDir = logsDir ?? join(homedir(), ".omp", "logs");
+		this.#logsDir = logsDir ?? join(agentDir(), "..", "logs");
 	}
 
-	start(): void {
+	async start(): Promise<void> {
+		if (this.#running) return;
 		this.#running = true;
-		void this.#discoverFiles();
+		await this.#discoverFiles();
+		if (!this.#running) return;
 		this.#watchDirectory();
 		// Safety net only — fs.watch drives the hot path.
 		this.#pollTimer = setInterval(() => this.#poll(), FALLBACK_POLL_MS);
@@ -67,6 +73,10 @@ export class LogWatcher {
 
 	getBuffer(): string[] {
 		return [...this.#buffer];
+	}
+
+	getSnapshot(): LogBatch {
+		return { lines: this.getBuffer(), nextSequence: this.#sequence };
 	}
 
 	async #discoverFiles(): Promise<void> {
@@ -113,10 +123,13 @@ export class LogWatcher {
 			return;
 		}
 
+		if (!this.#running || this.#files.has(filePath)) return;
 		const watched: WatchedFile = {
 			path: filePath,
 			offset: fileStat.size, // Start from end (only new content)
 			watcher: null,
+			reading: false,
+			partial: "",
 		};
 
 		try {
@@ -146,52 +159,33 @@ export class LogWatcher {
 		}
 	}
 
-	#readNewContent(file: WatchedFile): void {
-		stat(file.path)
-			.then(fileStat => {
-				if (fileStat.size <= file.offset) {
-					// File truncated or unchanged
-					if (fileStat.size < file.offset) {
-						file.offset = 0;
-					}
-					return;
-				}
-
-				const stream = createReadStream(file.path, {
-					start: file.offset,
-					encoding: "utf-8",
-				});
-
-				let partial = "";
-				stream.on("data", (chunk: string | Buffer) => {
-					partial += typeof chunk === "string" ? chunk : chunk.toString("utf-8");
-					const lines = partial.split("\n");
-					// Last element may be incomplete
-					partial = lines.pop() ?? "";
-					for (const line of lines) {
-						if (line.trim()) {
-							this.#pushLine(line);
-						}
-					}
-				});
-
-				stream.on("end", () => {
-					if (partial.trim()) {
-						this.#pushLine(partial);
-					}
-					file.offset = fileStat.size;
-				});
-
-				stream.on("error", () => {
-					// Ignore read errors
-				});
-			})
-			.catch(() => {
-				// File may have been deleted
-			});
+	async #readNewContent(file: WatchedFile): Promise<void> {
+		if (file.reading || !this.#running) return;
+		file.reading = true;
+		try {
+			const fileStat = await stat(file.path);
+			if (fileStat.size < file.offset) {
+				file.offset = 0;
+				file.partial = "";
+			}
+			if (fileStat.size === file.offset) return;
+			const stream = createReadStream(file.path, { start: file.offset, end: fileStat.size - 1, encoding: "utf-8" });
+			let text = file.partial;
+			for await (const chunk of stream) text += chunk;
+			if (!this.#running) return;
+			const lines = text.split("\n");
+			file.partial = lines.pop() ?? "";
+			file.offset = fileStat.size;
+			for (const line of lines) if (line.trim()) this.#pushLine(line);
+		} catch {
+			// A rotated or temporarily unreadable file is retried by the poll.
+		} finally {
+			file.reading = false;
+		}
 	}
 
 	#pushLine(line: string): void {
+		this.#sequence++;
 		this.#buffer.push(line);
 		if (this.#buffer.length > RING_BUFFER_SIZE) {
 			this.#buffer.shift();

@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../../lib/tab-rpc";
 /**
  * Plugin detail drawer: a drill-in overlay covering the inventory window body
  * with the selected plugin's configuration.
@@ -290,6 +291,7 @@ export function PluginDetailDrawer({
 	/** Reload the plugins list (enabled state is visible there). */
 	onChanged: () => Promise<void>;
 }) {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const pluginId = plugin.id ?? plugin.name;
 	const [detail, setDetail] = useState<RpcPluginDetail | null>(null);
@@ -321,7 +323,7 @@ export function PluginDetailDrawer({
 	const load = useCallback(async (): Promise<void> => {
 		setLoadError(null);
 		try {
-			const res = await window.omp.rpc.getPluginDetail(pluginId);
+			const res = await tabRpc.getPluginDetail(pluginId);
 			if (res.success) {
 				setDetail(res.data as RpcPluginDetail);
 			} else {
@@ -332,7 +334,7 @@ export function PluginDetailDrawer({
 		} finally {
 			setLoading(false);
 		}
-	}, [pluginId]);
+	}, [pluginId, tabRpc.getPluginDetail]);
 
 	useEffect(() => {
 		void load();
@@ -369,7 +371,7 @@ export function PluginDetailDrawer({
 		}
 		setEnabledBusy(true);
 		try {
-			const res = await window.omp.rpc.setPluginEnabled(pluginId, next, plugin.scope);
+			const res = await tabRpc.setPluginEnabled(pluginId, next, plugin.scope);
 			if (!res.success) {
 				if (isPluginActivationOriginActive(origin)) {
 					toast({ variant: "error", title: t("invPanel.pluginToggleFailed"), message: res.error });
@@ -414,7 +416,7 @@ export function PluginDetailDrawer({
 		setFeaturesBusy(true);
 		setFeaturesError(null);
 		try {
-			const res = await window.omp.rpc.setPluginFeatures(pluginId, featuresDraft);
+			const res = await tabRpc.setPluginFeatures(pluginId, featuresDraft);
 			const failure = mutationError(res, t("pluginDetail.unknownError"));
 			if (failure !== null) {
 				if (isPluginActivationOriginActive(origin)) setFeaturesError(failure);
@@ -498,7 +500,7 @@ export function PluginDetailDrawer({
 				continue;
 			}
 			try {
-				const res = await window.omp.rpc.setPluginSetting(pluginId, field.key, assembled.value);
+				const res = await tabRpc.setPluginSetting(pluginId, field.key, assembled.value);
 				const failure = mutationError(res, t("pluginDetail.unknownError"));
 				if (failure !== null) {
 					// Server-side validation — keep the user's input in place.
@@ -532,7 +534,7 @@ export function PluginDetailDrawer({
 	const resetField = async (field: SettingField): Promise<void> => {
 		setResetBusy(true);
 		try {
-			const res = await window.omp.rpc.deletePluginSetting(pluginId, field.key);
+			const res = await tabRpc.deletePluginSetting(pluginId, field.key);
 			const failure = mutationError(res, t("pluginDetail.unknownError"));
 			if (failure !== null) {
 				setFieldErrors(prev => ({ ...prev, [field.key]: failure }));

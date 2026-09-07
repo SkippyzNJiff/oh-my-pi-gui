@@ -1,5 +1,6 @@
 import { createStore } from "zustand/vanilla";
 import type { AgentMessage, AgentSessionEvent, MessagesPage } from "../../shared/rpc-types";
+import { messageIdentity, sameMessageContent } from "../lib/message-identity";
 import { createScopedStoreHook } from "./session-runtime-context";
 
 /**
@@ -78,13 +79,17 @@ function isOptimisticUser(message: AgentMessage): boolean {
 function appendLiveMessages(messages: AgentMessage[], delivered: AgentMessage[]): AgentMessage[] {
 	let next = messages;
 	for (const message of delivered) {
-		const optimisticIndex = message.role === "user" ? next.findIndex(isOptimisticUser) : -1;
+		const optimisticIndex =
+			message.role === "user" && !message.steering
+				? next.findIndex(entry => isOptimisticUser(entry) && !entry.optimisticDelivered)
+				: -1;
 		if (optimisticIndex >= 0) {
 			const optimistic = next[optimisticIndex];
 			next = [...next];
 			next[optimisticIndex] = {
 				...message,
 				optimistic: true,
+				optimisticDelivered: true,
 				optimisticAfterEntryId: optimistic?.optimisticAfterEntryId,
 			};
 			continue;
@@ -94,7 +99,7 @@ function appendLiveMessages(messages: AgentMessage[], delivered: AgentMessage[])
 	return next;
 }
 
-/** True once fetched history contains the first persisted user after this local echo's anchor. */
+/** Match the delivered prompt after its anchor, without consuming an unrelated queued prompt. */
 function optimisticUserWasCommitted(message: AgentMessage, fetched: AgentMessage[]): boolean {
 	if (!isOptimisticUser(message) || message.optimisticAfterEntryId === undefined) return false;
 	const anchorIndex =
@@ -102,7 +107,9 @@ function optimisticUserWasCommitted(message: AgentMessage, fetched: AgentMessage
 			? -1
 			: fetched.findIndex(entry => entry.entryId === message.optimisticAfterEntryId);
 	if (message.optimisticAfterEntryId !== null && anchorIndex < 0) return false;
-	return fetched.slice(anchorIndex + 1).some(entry => entry.role === "user" && entry.entryId !== undefined);
+	return fetched
+		.slice(anchorIndex + 1)
+		.some(entry => entry.entryId !== undefined && sameMessageContent(message, entry));
 }
 
 function upsertCommittedMessages(current: AgentMessage[], committed: AgentMessage[]): AgentMessage[] {
@@ -151,92 +158,69 @@ export const createMessagesStore = () =>
 	createStore<MessagesStore>()((set, get) => ({
 		...initialState,
 		applyEvents: events => {
-			let textAccum = "";
-			let thinkAccum = "";
-			const newMessages: AgentMessage[] = [];
-			let runMessages: AgentMessage[] | null = null;
-			let streamingStart: AgentMessage | null = null;
-			let streamingEnd = false;
-
+			const state = get();
+			let { messages, liveMessages, streamingMessage, streamingText, streamingThinking } = state;
 			for (const event of events) {
 				switch (event.type) {
-					case "message_start": {
-						// The composer already paints an idle user prompt locally. User
-						// messages do not stream deltas, so a second live row would flash.
-						if (event.message.role === "user" && get().liveMessages.some(isOptimisticUser)) break;
-						streamingStart = event.message;
-						textAccum = "";
-						thinkAccum = "";
+					case "message_start":
+						// Only assistant messages stream. Other deliveries are atomic.
+						if (event.message.role !== "assistant") break;
+						streamingMessage = event.message;
+						streamingText = "";
+						streamingThinking = "";
 						break;
-					}
 					case "message_update": {
-						const { assistantMessageEvent } = event;
-						if (assistantMessageEvent.type === "text_delta") {
-							textAccum += assistantMessageEvent.delta;
-						} else if (assistantMessageEvent.type === "thinking_delta") {
-							thinkAccum += assistantMessageEvent.delta;
+						const update = event.assistantMessageEvent;
+						if (update.type === "text_delta") streamingText += update.delta;
+						else if (update.type === "thinking_delta") streamingThinking += update.delta;
+						break;
+					}
+					case "message_end":
+						liveMessages = appendLiveMessages(liveMessages, [event.message]);
+						if (event.message.role === "assistant") {
+							streamingMessage = null;
+							streamingText = "";
+							streamingThinking = "";
 						}
 						break;
-					}
-					case "message_end": {
-						newMessages.push(event.message);
-						streamingEnd = true;
-						break;
-					}
-					case "agent_end": {
-						// Only this persisted, entry-id-bearing frame owns committed history.
+					case "agent_end":
 						if (event.messages) {
-							runMessages = event.messages;
+							messages = upsertCommittedMessages(messages, event.messages);
+							if (event.messages.some(message => message.entryId)) {
+								// A prompt queued locally after this run ended is not part of its commit.
+								liveMessages = liveMessages.filter(
+									message =>
+										isOptimisticUser(message) &&
+										!message.optimisticDelivered &&
+										!optimisticUserWasCommitted(message, messages),
+								);
+							}
 						}
-						break;
-					}
-					default:
+						streamingMessage = null;
+						streamingText = "";
+						streamingThinking = "";
 						break;
 				}
 			}
-
-			// Single set() call per batch — one React re-render
-			const state = get();
-			const patch: Partial<MessagesStore> = {};
-
-			if (streamingStart) {
-				patch.streamingMessage = streamingStart;
-				patch.streamingText = "";
-				patch.streamingThinking = "";
-			}
-			if (textAccum) {
-				patch.streamingText = `${streamingStart ? "" : state.streamingText}${textAccum}`;
-			}
-			if (thinkAccum) {
-				patch.streamingThinking = `${streamingStart ? "" : state.streamingThinking}${thinkAccum}`;
-			}
-
-			let liveMessages = state.liveMessages;
-			if (newMessages.length > 0) {
-				liveMessages = appendLiveMessages(liveMessages, newMessages);
-			}
-			let messages = state.messages;
-			if (runMessages) {
-				messages = upsertCommittedMessages(messages, runMessages);
-				if (runMessages.some(message => message.entryId)) liveMessages = [];
-			}
-			if (liveMessages !== state.liveMessages) patch.liveMessages = liveMessages;
-			if (messages !== state.messages) {
-				patch.messages = messages;
-				patch.totalMessages = messages.length;
-				const appended = messages.slice(state.messages.length);
-				if (appended.length > 0) patch.lastAppended = appended;
-			}
-
-			if (streamingEnd || runMessages) {
-				patch.streamingMessage = null;
-				patch.streamingText = "";
-				patch.streamingThinking = "";
-			}
-
-			if (Object.keys(patch).length > 0) {
-				set(patch);
-			}
+			if (
+				messages === state.messages &&
+				liveMessages === state.liveMessages &&
+				streamingMessage === state.streamingMessage &&
+				streamingText === state.streamingText &&
+				streamingThinking === state.streamingThinking
+			)
+				return;
+			// Preserve wire order above; publish only once per presentation frame.
+			const appended = messages.slice(state.messages.length);
+			set({
+				messages,
+				liveMessages,
+				streamingMessage,
+				streamingText,
+				streamingThinking,
+				...(messages !== state.messages ? { totalMessages: messages.length } : {}),
+				...(appended.length > 0 ? { lastAppended: appended } : {}),
+			});
 		},
 		loadPage: page =>
 			set({
@@ -264,19 +248,37 @@ export const createMessagesStore = () =>
 		appendLiveMessage: message => set(s => ({ liveMessages: [...s.liveMessages, message] })),
 		removeLiveMessage: message => set(s => ({ liveMessages: s.liveMessages.filter(entry => entry !== message) })),
 		clearStreaming: () => set({ streamingMessage: null, streamingText: "", streamingThinking: "" }),
-		clearDeliveredLiveMessages: () => set(s => ({ liveMessages: s.liveMessages.filter(isOptimisticUser) })),
+		clearDeliveredLiveMessages: () =>
+			set(s => ({
+				liveMessages: s.liveMessages.filter(message => isOptimisticUser(message) && !message.optimisticDelivered),
+			})),
 		reconcileFetched: fetched => {
 			const state = get();
-			const committedEcho = state.liveMessages.some(message => optimisticUserWasCommitted(message, fetched));
+			const committedByIdentity = new Map<string, AgentMessage[]>();
+			for (const message of fetched) {
+				const identity = messageIdentity(message);
+				if (!message.entryId || !identity) continue;
+				const matches = committedByIdentity.get(identity);
+				if (matches) matches.push(message);
+				else committedByIdentity.set(identity, [message]);
+			}
+			const liveMessages = state.liveMessages.filter(message => {
+				const identity = messageIdentity(message);
+				const matches = identity ? committedByIdentity.get(identity) : undefined;
+				const index = matches?.findIndex(entry => sameMessageContent(message, entry)) ?? -1;
+				if (index >= 0) {
+					matches?.splice(index, 1);
+					return false;
+				}
+				return !optimisticUserWasCommitted(message, fetched);
+			});
 			const messagesUnchanged =
 				fetched.length === state.messages.length &&
 				fetched.every((message, index) => message === state.messages[index]);
-			if (messagesUnchanged && !committedEcho) return;
+			if (messagesUnchanged && liveMessages.length === state.liveMessages.length) return;
 			set({
 				messages: fetched,
-				liveMessages: committedEcho
-					? state.liveMessages.filter(message => !optimisticUserWasCommitted(message, fetched))
-					: state.liveMessages,
+				liveMessages: liveMessages.length === state.liveMessages.length ? state.liveMessages : liveMessages,
 				totalMessages: fetched.length,
 			});
 		},

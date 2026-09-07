@@ -5,6 +5,7 @@ import { useActiveTabRouteReady } from "../../hooks/use-active-tab-route";
 import { shortenPath } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { MarkdownRenderer } from "../../lib/markdown";
+import { useTabRpc } from "../../lib/tab-rpc";
 import { useSessionStore } from "../../stores/session";
 import { useTabsStore } from "../../stores/tabs";
 import { toast } from "../../stores/toast";
@@ -85,6 +86,7 @@ function SkillBadge({ children, accent = false }: { children: string; accent?: b
 }
 
 export function SkillsSettingsPage({ query }: { query: string }) {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const sidecarReady = useSessionStore(state => state.status === "ready");
 	const cwd = useSessionStore(state => state.cwd);
@@ -113,7 +115,7 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 			setLoading(true);
 			setError(null);
 			try {
-				const response = await window.omp.rpc.getSkills();
+				const response = await tabRpc.getSkills();
 				if (request !== listRequest.current) return;
 				if (!response.success) throw new Error(response.error);
 				const next = ((response.data as RpcSkillsResult | undefined)?.skills ?? []).sort((a, b) =>
@@ -130,7 +132,7 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 				if (request === listRequest.current) setLoading(false);
 			}
 		},
-		[routeReady, sidecarReady],
+		[routeReady, sidecarReady, tabRpc.getSkills],
 	);
 
 	useEffect(() => {
@@ -158,7 +160,7 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 		const request = ++detailRequest.current;
 		const requestRoute = routeKey;
 		setDetailLoading(true);
-		void window.omp.rpc
+		void tabRpc
 			.getSkillDetail(selectedName)
 			.then(response => {
 				if (request !== detailRequest.current || requestRoute !== routeRef.current) return;
@@ -173,7 +175,7 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 			.finally(() => {
 				if (request === detailRequest.current && requestRoute === routeRef.current) setDetailLoading(false);
 			});
-	}, [routeKey, routeReady, selectedName, sidecarReady]);
+	}, [routeKey, routeReady, selectedName, sidecarReady, tabRpc.getSkillDetail]);
 
 	const visible = useMemo(() => filterSkills(skills, query, filter), [filter, query, skills]);
 	const selected = skills.find(skill => skill.name === selectedName) ?? null;
@@ -186,7 +188,7 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 		setBusyName(skill.name);
 		setSkills(current => current.map(item => (item.name === skill.name ? { ...item, enabled } : item)));
 		try {
-			const response = await window.omp.rpc.setSkillEnabled(skill.name, enabled);
+			const response = await tabRpc.setSkillEnabled(skill.name, enabled);
 			if (!response.success) throw new Error(response.error);
 			if (mutationRoute !== routeRef.current) return;
 			await loadSkills(skill.name);
@@ -206,7 +208,7 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 		const mutationRoute = routeKey;
 		setBusyName(editor.name || "new");
 		try {
-			const response = await window.omp.rpc.manageSkill({
+			const response = await tabRpc.manageSkill({
 				action: editor.mode,
 				name: editor.name,
 				description: editor.description,
@@ -230,7 +232,7 @@ export function SkillsSettingsPage({ query }: { query: string }) {
 		const mutationRoute = routeKey;
 		setBusyName(selected.name);
 		try {
-			const response = await window.omp.rpc.manageSkill({ action: "delete", name: selected.name });
+			const response = await tabRpc.manageSkill({ action: "delete", name: selected.name });
 			if (!response.success) throw new Error(response.error);
 			if (mutationRoute !== routeRef.current) return;
 			setDeleteArmed(false);

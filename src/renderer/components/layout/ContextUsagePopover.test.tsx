@@ -70,6 +70,18 @@ afterEach(async () => {
 });
 
 describe("ContextUsagePopover", () => {
+	it("shows an unknown capacity instead of a zero-percent claim when Core has no model window", async () => {
+		useSessionStore.setState({
+			contextUsage: { contextWindow: 0, percent: 0, tokens: 16000 },
+			sessionId: "unknown-window",
+			status: "ready",
+		});
+		await mount();
+		expect(container.textContent).toBe("—");
+		expect(container.querySelector("button")).toBeNull();
+		expect(getContextReport).not.toHaveBeenCalled();
+	});
+
 	it("keeps context usage to one control and reveals the native three-category breakdown", async () => {
 		useSessionStore.setState({
 			contextUsage: { contextWindow: 1_000_000, percent: 16.19, tokens: 161_900 },

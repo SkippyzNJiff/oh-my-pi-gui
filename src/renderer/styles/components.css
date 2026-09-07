@@ -42,7 +42,7 @@
 	min-height: 1.5em;
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
-	font-size: 14.5px;
+	font-size: calc(var(--gui-font-size, 15px) * 14.5 / 15);
 	line-height: 1.7;
 }
 
@@ -167,7 +167,7 @@
  * Markdown body typography — strong hierarchy, readable measure
  * ------------------------------------------------------------------------- */
 .markdown-body {
-	font-size: 14.5px;
+	font-size: calc(var(--gui-font-size, 15px) * 14.5 / 15);
 	line-height: 1.7;
 	color: var(--omp-text);
 	word-break: break-word;
@@ -275,7 +275,7 @@
 .markdown-body table {
 	border-collapse: collapse;
 	margin: 0.9em 0;
-	font-size: 13px;
+	font-size: calc(var(--gui-font-size, 15px) * 13 / 15);
 	width: auto;
 	max-width: 100%;
 	display: block;
@@ -291,7 +291,7 @@
 	background: transparent;
 	font-weight: 600;
 	color: var(--omp-text-secondary);
-	font-size: 11px;
+	font-size: calc(var(--gui-font-size, 15px) * 11 / 15);
 	text-transform: uppercase;
 	letter-spacing: 0.04em;
 }
@@ -599,7 +599,7 @@
 	gap: 12px;
 	margin-bottom: 7px;
 	color: var(--omp-dim);
-	font-size: 11px;
+	font-size: calc(var(--gui-font-size, 15px) * 11 / 15);
 	font-weight: 650;
 	letter-spacing: 0.02em;
 }
@@ -614,7 +614,7 @@
 	margin: 0;
 	overflow: hidden;
 	color: var(--omp-text);
-	font-size: 14px;
+	font-size: calc(var(--gui-font-size, 15px) * 14 / 15);
 	font-weight: 580;
 	line-height: 1.55;
 	-webkit-box-orient: vertical;
@@ -625,7 +625,7 @@
 	display: block;
 	margin-top: 8px;
 	color: var(--omp-muted);
-	font-size: 11px;
+	font-size: calc(var(--gui-font-size, 15px) * 11 / 15);
 }
 
 .omp-transcript-editorial .omp-transcript-row {
@@ -704,7 +704,7 @@
 
 .omp-transcript-editorial .omp-user-bubble-author {
 	padding-top: 2px;
-	font-size: 12px;
+	font-size: calc(var(--gui-font-size, 15px) * 12 / 15);
 	font-weight: 650;
 	color: var(--omp-text);
 }
@@ -807,7 +807,7 @@
 .omp-transcript-editorial .omp-tool-header {
 	min-height: 30px;
 	padding: 4px 0;
-	font-size: 12px;
+	font-size: calc(var(--gui-font-size, 15px) * 12 / 15);
 }
 
 .omp-transcript-editorial .omp-tool-header:hover {
@@ -816,13 +816,13 @@
 
 .omp-transcript-editorial .omp-tool-name {
 	min-width: 42px;
-	font-size: 12px;
+	font-size: calc(var(--gui-font-size, 15px) * 12 / 15);
 	font-weight: 700;
 	letter-spacing: 0;
 }
 
 .omp-transcript-editorial .omp-tool-summary {
-	font-size: 11.5px;
+	font-size: calc(var(--gui-font-size, 15px) * 11.5 / 15);
 	color: var(--omp-muted);
 }
 
@@ -832,7 +832,7 @@
 	background: transparent;
 	padding: 0;
 	text-align: right;
-	font-size: 10.5px;
+	font-size: calc(var(--gui-font-size, 15px) * 10.5 / 15);
 	color: var(--omp-muted);
 }
 
@@ -913,7 +913,7 @@
 .omp-transcript-editorial .omp-thinking-header {
 	min-height: 30px;
 	padding: 5px 0;
-	font-size: 11.5px;
+	font-size: calc(var(--gui-font-size, 15px) * 11.5 / 15);
 	letter-spacing: 0.01em;
 }
 
@@ -926,7 +926,7 @@
 	margin-left: 4px;
 	border-left: 0;
 	padding: 6px 0 10px 20px;
-	font-size: 12px;
+	font-size: calc(var(--gui-font-size, 15px) * 12 / 15);
 	line-height: 1.55;
 }
 
@@ -956,7 +956,7 @@
 .omp-transcript-editorial .omp-assistant-turn .omp-streaming-tail,
 .omp-transcript-editorial .omp-assistant-turn--compact > .min-w-0 > .markdown-body,
 .omp-transcript-editorial .omp-streaming-turn > .markdown-body {
-	font-size: 15px;
+	font-size: calc(var(--gui-font-size, 15px) * 15 / 15);
 	line-height: 1.65;
 	color: var(--omp-text);
 }
@@ -1003,7 +1003,7 @@
 	border-radius: 8px;
 	background: transparent;
 	padding: 9px 14px;
-	font-size: 12px;
+	font-size: calc(var(--gui-font-size, 15px) * 12 / 15);
 }
 
 .omp-transcript-editorial .omp-queued-turn {

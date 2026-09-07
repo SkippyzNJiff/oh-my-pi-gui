@@ -1,8 +1,11 @@
+import { X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { IpcBenchmarkModelReport, IpcBenchmarkProfile, IpcBenchmarkRunResult } from "../../../shared/ipc-types";
+import { formatUsd } from "../../lib/chart";
 import { useT } from "../../lib/i18n";
 import { useModelStore } from "../../stores/model";
 import { Button, Input, Modal } from "../common";
+import { ModelValueSelect } from "../settings/ModelValueSelect";
 
 function formatMetric(value: number, suffix = ""): string {
 	return Number.isFinite(value) ? `${value.toFixed(value >= 100 ? 0 : 1)}${suffix}` : "—";
@@ -20,6 +23,7 @@ export function BenchmarkDialog({ open, onClose }: { open: boolean; onClose: () 
 	const [runs, setRuns] = useState(3);
 	const [parallel, setParallel] = useState(2);
 	const [running, setRunning] = useState(false);
+	const [error, setError] = useState<string | null>(null);
 	const [result, setResult] = useState<IpcBenchmarkRunResult | null>(null);
 
 	useEffect(() => {
@@ -28,20 +32,43 @@ export function BenchmarkDialog({ open, onClose }: { open: boolean; onClose: () 
 	}, [activeModel, models, open]);
 
 	const close = () => {
-		if (running) void window.omp.bench.abort();
-		onClose();
+		if (!running) onClose();
+	};
+	const selectors = [
+		...new Set(
+			models
+				.split(/[\s,]+/)
+				.map(value => value.trim())
+				.filter(Boolean),
+		),
+	];
+	const valid =
+		selectors.length > 0 &&
+		selectors.length <= 8 &&
+		selectors.every(value => value.length <= 200 && !value.startsWith("-")) &&
+		Number.isInteger(runs) &&
+		runs >= 1 &&
+		runs <= 20 &&
+		Number.isInteger(parallel) &&
+		parallel >= 1 &&
+		parallel <= 8;
+	const abort = async () => {
+		try {
+			await window.omp.bench.abort();
+		} catch (cause) {
+			setError(String(cause));
+		}
 	};
 	const run = async () => {
-		const selectors = models
-			.split(/[\s,]+/)
-			.map(value => value.trim())
-			.filter(Boolean);
+		if (running || !valid) return;
 		setRunning(true);
-		setResult(null);
+		setError(null);
 		try {
-			setResult(await window.omp.bench.run({ models: selectors, profile, runs, parallel }));
-		} catch (error) {
-			setResult({ success: false, error: error instanceof Error ? error.message : String(error) });
+			const next = await window.omp.bench.run({ models: selectors, profile, runs, parallel });
+			if (next.success) setResult(next);
+			else setError(next.error);
+		} catch (cause) {
+			setError(String(cause));
 		} finally {
 			setRunning(false);
 		}
@@ -52,13 +79,33 @@ export function BenchmarkDialog({ open, onClose }: { open: boolean; onClose: () 
 			<div className="space-y-4">
 				<p className="text-sm text-(--omp-muted)">{t("benchmark.description")}</p>
 				<div className="grid grid-cols-[minmax(0,1fr)_150px_90px_90px] gap-3 max-md:grid-cols-2">
-					<Input
-						disabled={running}
-						label={t("benchmark.models")}
-						onChange={event => setModels(event.target.value)}
-						placeholder="anthropic/opus, openai/gpt-5.6"
-						value={models}
-					/>
+					<div className="space-y-2">
+						<span className="text-omp-md">{t("benchmark.models")}</span>
+						<ModelValueSelect
+							kind="model"
+							value=""
+							placeholder={t("benchmark.addModel")}
+							disabled={running || selectors.length >= 8}
+							onCommit={value => {
+								if (value) setModels([...new Set([...selectors, value])].join(", "));
+							}}
+						/>
+						<div className="flex flex-wrap gap-1">
+							{selectors.map(selector => (
+								<button
+									type="button"
+									disabled={running}
+									className="flex max-w-full items-center gap-1 rounded border border-(--omp-border-muted) px-2 py-1 text-omp-xs"
+									key={selector}
+									onClick={() => setModels(selectors.filter(value => value !== selector).join(", "))}
+									aria-label={t("benchmark.removeModel", { model: selector })}
+								>
+									<span className="truncate">{selector}</span>
+									<X size={12} />
+								</button>
+							))}
+						</div>
+					</div>
 					<label className="block">
 						<span className="mb-1.5 block text-omp-md font-medium text-(--omp-text-secondary)">
 							{t("benchmark.profile")}
@@ -95,20 +142,25 @@ export function BenchmarkDialog({ open, onClose }: { open: boolean; onClose: () 
 						value={parallel}
 					/>
 				</div>
+				<p className="text-omp-sm text-(--omp-muted)">
+					{t("benchmark.requestScale", {
+						count: selectors.length * (Number.isInteger(runs) && runs > 0 ? runs : 0),
+					})}
+				</p>
 				<div className="flex justify-end gap-2">
 					{running && (
-						<Button onClick={() => void window.omp.bench.abort()} variant="danger">
+						<Button onClick={() => void abort()} variant="danger">
 							{t("common.cancel")}
 						</Button>
 					)}
-					<Button disabled={!models.trim()} loading={running} onClick={() => void run()} variant="primary">
+					<Button disabled={!valid || running} loading={running} onClick={() => void run()} variant="primary">
 						{t("benchmark.run")}
 					</Button>
 				</div>
 
-				{result && !result.success && (
+				{error && (
 					<div className="rounded-lg border border-(--omp-error)/40 bg-(--omp-error-dim) p-3 text-sm text-(--omp-error)">
-						{result.error}
+						{error}
 					</div>
 				)}
 				{result?.success && (
@@ -128,7 +180,14 @@ export function BenchmarkDialog({ open, onClose }: { open: boolean; onClose: () 
 									const succeeded = report.results.filter(item => item.ok).length;
 									return (
 										<tr key={report.selector} title={report.stats ? undefined : resultError(report)}>
-											<td className="px-3 py-2 font-mono text-(--omp-text)">{report.model}</td>
+											<td className="px-3 py-2 font-mono text-(--omp-text)">
+												{report.model}
+												{report.results.some(item => !item.ok) && (
+													<p className="mt-1 max-w-64 whitespace-pre-wrap break-words text-(--omp-error)">
+														{resultError(report)}
+													</p>
+												)}
+											</td>
 											<td className="px-3 py-2">{`${succeeded}/${report.results.length}`}</td>
 											<td className="px-3 py-2">
 												{report.stats ? formatMetric(report.stats.ttftMs.p50, " ms") : "—"}
@@ -142,9 +201,7 @@ export function BenchmarkDialog({ open, onClose }: { open: boolean; onClose: () 
 											<td className="px-3 py-2">
 												{report.stats ? formatMetric(report.stats.tokensPerSecond.p50, " tok/s") : "—"}
 											</td>
-											<td className="px-3 py-2">
-												{report.stats ? `$${report.stats.cost.toFixed(4)}` : "—"}
-											</td>
+											<td className="px-3 py-2">{report.stats ? formatUsd(report.stats.cost) : "—"}</td>
 										</tr>
 									);
 								})}

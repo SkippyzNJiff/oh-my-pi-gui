@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { UpdateStatus } from "../../../shared/ipc-types";
 import type { RpcOmpUpdateResult } from "../../../shared/rpc-types";
 import { useT } from "../../lib/i18n";
+import { useTabRpc } from "../../lib/tab-rpc";
 import { useUpdaterStore } from "../../stores/updater";
 import { Button, Spinner } from "../common";
 
@@ -31,97 +32,8 @@ export function updateOverviewState(
 	return "healthy";
 }
 
-export function UpdateSummaryStrip() {
-	const t = useT();
-	const status = useUpdaterStore(state => state.status);
-	const setStatus = useUpdaterStore(state => state.setStatus);
-	const [guiVersion, setGuiVersion] = useState<string>();
-	const [core, setCore] = useState<RpcOmpUpdateResult>();
-	const [checking, setChecking] = useState(false);
-	const [coreError, setCoreError] = useState<string>();
-	const check = useCallback(async () => {
-		setChecking(true);
-		setCoreError(undefined);
-		const [appResult, coreResult] = await Promise.allSettled([
-			window.omp.updater.check(),
-			window.omp.rpc.getOmpUpdate(),
-		]);
-		setStatus(
-			appResult.status === "fulfilled"
-				? appResult.value
-				: {
-						state: "error",
-						message: appResult.reason instanceof Error ? appResult.reason.message : String(appResult.reason),
-					},
-		);
-		if (coreResult.status === "fulfilled" && coreResult.value.success) {
-			setCore(coreResult.value.data as RpcOmpUpdateResult);
-		} else
-			setCoreError(
-				coreResult.status === "rejected"
-					? coreResult.reason instanceof Error
-						? coreResult.reason.message
-						: String(coreResult.reason)
-					: coreResult.value.success
-						? t("updates.core.checkFailed")
-						: coreResult.value.error,
-			);
-		setChecking(false);
-	}, [setStatus, t]);
-	useEffect(() => {
-		void window.omp.updater.version().then(setGuiVersion);
-		void check();
-	}, [check]);
-	return (
-		<section className="mt-4 border-t border-(--omp-border-muted) pt-3">
-			<div className="mb-2 flex items-center justify-between gap-3">
-				<h3 className="text-omp-sm font-semibold text-(--omp-text)">{t("updates.summary.title")}</h3>
-				<div className="flex items-center gap-3">
-					<span className="text-omp-xs text-(--omp-dim)">{t("updates.summary.delivery")}</span>
-					<Button
-						className="border-(--omp-accent) text-(--omp-accent)"
-						disabled={checking}
-						icon={checking ? <Spinner size="sm" /> : <RefreshCw size={12} />}
-						onClick={check}
-						size="sm"
-					>
-						{t("updates.checkAll")}
-					</Button>
-				</div>
-			</div>
-			<div className="overflow-hidden rounded-lg border border-(--omp-border-muted)">
-				<div className="grid grid-cols-[minmax(0,1fr)_70px_70px_70px_minmax(0,1.4fr)] items-center gap-3 border-b border-(--omp-border-muted) px-3 py-1.5 text-omp-xxs uppercase tracking-wider text-(--omp-dim)">
-					<span />
-					<span>{t("updates.current")}</span>
-					<span>{t("updates.latest")}</span>
-					<span>{t("updates.channel")}</span>
-					<span>{t("updates.what")}</span>
-				</div>
-				<div className="grid grid-cols-[minmax(0,1fr)_70px_70px_70px_minmax(0,1.4fr)] items-center gap-3 border-b border-(--omp-border-muted) px-3 py-2 text-omp-xs">
-					<span className="font-medium text-(--omp-text)">{t("updates.gui.name")}</span>
-					<span className="font-mono text-(--omp-muted)">{guiVersion ?? "—"}</span>
-					<span className="font-mono text-(--omp-muted)">{guiVersion ? appLatest(status) : "—"}</span>
-					<span className="text-(--omp-success)">{t("updates.channel.stable")}</span>
-					<span className="text-(--omp-dim)">{t("updates.gui.what")}</span>
-				</div>
-				<div className="grid grid-cols-[minmax(0,1fr)_70px_70px_70px_minmax(0,1.4fr)] items-center gap-3 px-3 py-2 text-omp-xs">
-					<span className="font-medium text-(--omp-text)">{t("updates.core.name")}</span>
-					<span className="font-mono text-(--omp-muted)">{core?.currentVersion ?? "—"}</span>
-					<span className="font-mono text-(--omp-muted)">{core?.latestVersion ?? "—"}</span>
-					<span className="text-(--omp-warning)">{t("updates.channel.bundled")}</span>
-					<span className="text-(--omp-dim)">{t("updates.core.what")}</span>
-				</div>
-			</div>
-			{(status.state === "error" || coreError) && (
-				<p className="mt-2 text-omp-xs text-(--omp-error)">
-					{[status.state === "error" ? status.message : undefined, coreError].filter(Boolean).join(" · ")}
-				</p>
-			)}
-		</section>
-	);
-}
-
 export function UpdatesSettingsPage() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const status = useUpdaterStore(state => state.status);
 	const setStatus = useUpdaterStore(state => state.setStatus);
@@ -133,10 +45,7 @@ export function UpdatesSettingsPage() {
 	const check = useCallback(async () => {
 		setChecking(true);
 		setCoreError(undefined);
-		const [appResult, coreResult] = await Promise.allSettled([
-			window.omp.updater.check(),
-			window.omp.rpc.getOmpUpdate(),
-		]);
+		const [appResult, coreResult] = await Promise.allSettled([window.omp.updater.check(), tabRpc.getOmpUpdate()]);
 		setStatus(
 			appResult.status === "fulfilled"
 				? appResult.value
@@ -157,7 +66,7 @@ export function UpdatesSettingsPage() {
 			);
 		}
 		setChecking(false);
-	}, [setStatus, t]);
+	}, [setStatus, t, tabRpc.getOmpUpdate]);
 
 	useEffect(() => {
 		void window.omp.updater.version().then(setGuiVersion);

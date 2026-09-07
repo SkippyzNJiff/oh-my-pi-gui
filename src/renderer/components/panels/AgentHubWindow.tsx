@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../lib/tab-rpc";
 /**
  * Agent Hub window: TUI parity for the Agent Control Center (agent-dashboard.ts)
  * and the multi-agent hub table (agent-hub.ts).
@@ -299,6 +300,7 @@ type DefinitionSourceFilter = "all" | RpcAgentDefinitionInfo["source"];
 const DEFINITION_SOURCE_FILTERS: readonly DefinitionSourceFilter[] = ["all", "project", "user", "bundled"];
 
 function DefinitionsTab({ rpc }: { rpc: AgentSettingsRpc }) {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const subagents = useSubagentsStore(s => s.subagents);
 	const [query, setQuery] = useState("");
@@ -356,11 +358,9 @@ function DefinitionsTab({ rpc }: { rpc: AgentSettingsRpc }) {
 			if (disabled) next.add(name);
 			else next.delete(name);
 			const disabledAgents = [...next].sort((a, b) => a.localeCompare(b));
-			void rpc.mutate({ ...state, disabledAgents }, () =>
-				window.omp.rpc.setSetting("task.disabledAgents", disabledAgents),
-			);
+			void rpc.mutate({ ...state, disabledAgents }, () => tabRpc.setSetting("task.disabledAgents", disabledAgents));
 		},
-		[rpc],
+		[rpc, tabRpc.setSetting],
 	);
 
 	const saveModel = useCallback(
@@ -373,10 +373,10 @@ function DefinitionsTab({ rpc }: { rpc: AgentSettingsRpc }) {
 			else delete modelOverrides[name];
 			setEditingName(null);
 			void rpc.mutate({ ...state, modelOverrides }, () =>
-				window.omp.rpc.setSetting("task.agentModelOverrides", modelOverrides),
+				tabRpc.setSetting("task.agentModelOverrides", modelOverrides),
 			);
 		},
-		[rpc],
+		[rpc, tabRpc.setSetting],
 	);
 
 	const cyclePrewalk = useCallback(
@@ -389,10 +389,10 @@ function DefinitionsTab({ rpc }: { rpc: AgentSettingsRpc }) {
 			if (next) prewalkOverrides[name] = next;
 			else delete prewalkOverrides[name];
 			void rpc.mutate({ ...state, prewalkOverrides }, () =>
-				window.omp.rpc.setSetting("task.agentPrewalk", prewalkOverrides),
+				tabRpc.setSetting("task.agentPrewalk", prewalkOverrides),
 			);
 		},
-		[rpc],
+		[rpc, tabRpc.setSetting],
 	);
 
 	const loadedState = rpc.state;
@@ -673,6 +673,7 @@ function AgentTranscriptDrawer({ agent, onClose }: { agent: SubagentSnapshot; on
 }
 
 function HubTab() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const subagents = useSubagentsStore(s => s.subagents);
 	const [viewingId, setViewingId] = useState<string | null>(null);
@@ -765,7 +766,7 @@ function HubTab() {
 		async (id: string) => {
 			setRowAction({ id, state: "working" });
 			try {
-				const res = await window.omp.rpc.abortSubagent(id);
+				const res = await tabRpc.abortSubagent(id);
 				if (!res.success) {
 					toast({ variant: "error", title: t("agentHub.hub.abortAgentFailed"), message: res.error });
 					return;
@@ -786,14 +787,14 @@ function HubTab() {
 				setRowAction(null);
 			}
 		},
-		[t, subagentReason, refreshSubagents],
+		[t, subagentReason, refreshSubagents, tabRpc.abortSubagent],
 	);
 
 	const reviveAgent = useCallback(
 		async (id: string) => {
 			setRowAction({ id, state: "working" });
 			try {
-				const res = await window.omp.rpc.reviveSubagent(id);
+				const res = await tabRpc.reviveSubagent(id);
 				if (!res.success) {
 					toast({ variant: "error", title: t("agentHub.hub.reviveFailed"), message: res.error });
 					return;
@@ -814,7 +815,7 @@ function HubTab() {
 				setRowAction(null);
 			}
 		},
-		[t, subagentReason, refreshSubagents],
+		[t, subagentReason, refreshSubagents, tabRpc.reviveSubagent],
 	);
 
 	return (

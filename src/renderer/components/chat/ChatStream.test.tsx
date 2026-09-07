@@ -163,7 +163,7 @@ describe("full transcript rows", () => {
 		expect(reply.message.content).toEqual([{ type: "text", text: "Shipped." }]);
 	});
 
-	it("clears a stale error box after the user reactivates the conversation", () => {
+	it("preserves an earlier failure after the user starts another turn", () => {
 		const rows = buildHistoryRows(
 			[
 				{ ...assistant([{ type: "text", text: "Partial reply" }]), errorMessage: "network disconnected" },
@@ -175,7 +175,7 @@ describe("full transcript rows", () => {
 		expect(rows).toHaveLength(2);
 		const failed = rows[0];
 		if (failed?.kind !== "message") throw new Error("partial reply row missing");
-		expect(failed.message.errorMessage).toBeUndefined();
+		expect(failed.message.errorMessage).toBe("network disconnected");
 		expect(failed.message.content).toEqual([{ type: "text", text: "Partial reply" }]);
 	});
 
@@ -265,18 +265,40 @@ describe("virtual transcript identity", () => {
 		expect(isTranscriptAtLiveEdge({ scrollHeight: 1000, scrollTop: 799, clientHeight: 200 })).toBe(false);
 	});
 
-	it("keeps the live assistant row identity when message_end finalizes it", () => {
+	it("keeps an empty wire message anchored when a tool call finalizes it", () => {
 		const message: AgentMessage = {
-			id: "assistant-live",
 			role: "assistant",
-			content: [{ type: "text", text: "Finalized answer" }],
+			content: [],
 			timestamp: at,
 		};
 
 		const liveKey = buildTranscriptRowKeys([{ kind: "streaming", message }]);
-		const finalizedKey = buildHistoryRowKeys(buildHistoryRows([message], "full"));
+		const finalized: AgentMessage = {
+			...message,
+			entryId: "persisted-tool",
+			content: [{ type: "toolCall", id: "call-finalized", name: "read", arguments: { path: "src/a.ts" } }],
+		};
+		const finalizedKey = buildHistoryRowKeys(buildHistoryRows([finalized], "full"));
 
 		expect(liveKey).toEqual(finalizedKey);
+	});
+
+	it("keeps an expanded live phase separate when compact history absorbs it", () => {
+		const first: AgentMessage = {
+			role: "assistant",
+			timestamp: 1,
+			content: [{ type: "thinking", thinking: "First phase" }],
+		};
+		const next: AgentMessage = {
+			role: "assistant",
+			timestamp: 2,
+			content: [{ type: "thinking", thinking: "Next phase" }],
+		};
+		const [expandedKey] = buildTranscriptRowKeys([{ kind: "streaming", message: next }]);
+		expect(buildHistoryRows([first, next], "compact")).toHaveLength(1);
+		const rows = buildHistoryRows([first, next], "compact", new Set([expandedKey]));
+		expect(buildHistoryRowKeys(rows)).toContain(expandedKey);
+		expect(rows).toHaveLength(2);
 	});
 
 	it("anchors compact finalization to the first row produced from the live assistant", () => {

@@ -125,6 +125,9 @@ export function PanelContainer() {
 						return (
 							<button
 								key={id}
+								aria-label={t(labelKey)}
+								title={t(labelKey)}
+								aria-pressed={active}
 								type="button"
 								onClick={() => setPanelTab(id)}
 								className={cx(

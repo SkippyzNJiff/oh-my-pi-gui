@@ -14,7 +14,6 @@
  * hand-written config never loses data to a GUI edit.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
 import {
@@ -28,6 +27,7 @@ import {
 	type CustomProviderModelThinking,
 	type CustomProviderView,
 } from "../shared/ipc-types";
+import { agentDir } from "./agent-paths";
 
 export type { CustomProviderInput, CustomProviderModelInput, CustomProviderView };
 
@@ -72,12 +72,6 @@ const THINKING_MODES: ReadonlySet<string> = new Set([
 	"anthropic-adaptive",
 	"anthropic-budget-effort",
 ]);
-
-function agentDir(): string {
-	return process.env.PI_CODING_AGENT_DIR && process.env.PI_CODING_AGENT_DIR.length > 0
-		? process.env.PI_CODING_AGENT_DIR
-		: join(homedir(), ".omp", "agent");
-}
 
 /** Absolute path to the agent's models file (`models.yml` preferred, `models.yaml` fallback). */
 export function modelsPath(): string {

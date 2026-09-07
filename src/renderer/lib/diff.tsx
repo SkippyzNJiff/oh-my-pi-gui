@@ -379,7 +379,8 @@ interface DiffViewProps {
  */
 export function DiffView({ diff, filePath, className }: DiffViewProps) {
 	const t = useT();
-	const rows = useMemo(() => parseDiffRows(diff), [diff]);
+	const allRows = useMemo(() => parseDiffRows(diff), [diff]);
+	const rows = useMemo(() => allRows.slice(0, MAX_RENDER_ROWS), [allRows]);
 	const intra = useMemo(() => computeIntraLine(rows), [rows]);
 	const lang = languageFromPath(filePath);
 
@@ -400,8 +401,8 @@ export function DiffView({ diff, filePath, className }: DiffViewProps) {
 		[rows, hljs, lang],
 	);
 
-	const omitted = Math.max(0, rows.length - MAX_RENDER_ROWS);
-	const viewRows = useMemo(() => buildViewRows(rows, rows.length - omitted), [rows, omitted]);
+	const omitted = Math.max(0, allRows.length - MAX_RENDER_ROWS);
+	const viewRows = useMemo(() => buildViewRows(rows, rows.length), [rows]);
 	const gutterWidth = useMemo(() => {
 		let width = 0;
 		for (const row of rows) {

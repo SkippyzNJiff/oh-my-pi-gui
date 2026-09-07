@@ -19,6 +19,7 @@ import {
 	SchemaTabContent,
 	SettingsWindow,
 } from "./SettingsWindow";
+import { buildSettingsNavGroups } from "./settings-window-model";
 
 function entry(partial: Partial<SettingEntry> & { path: string }): SettingEntry {
 	return { type: "boolean", value: false, default: false, ...partial };
@@ -124,10 +125,10 @@ describe("groupSchemaEntries", () => {
 
 describe("GUI settings visibility", () => {
 	const sharedEntry = entry({
-		path: "colorBlindMode",
+		path: "compaction.enabled",
 		tab: "appearance",
 		group: "Theme",
-		label: "Color Blind Mode",
+		label: "Auto Compaction",
 	});
 	const terminalEntry = entry({
 		path: "statusLine.separator",
@@ -140,6 +141,26 @@ describe("GUI settings visibility", () => {
 	it("rejects settings whose only consumer is TUI chrome", () => {
 		expect(isSettingVisibleInGui(sharedEntry, {})).toBe(true);
 		expect(isSettingVisibleInGui(terminalEntry, {})).toBe(false);
+		const unsupported = [
+			"tui.resizeScrollback",
+			"statusLine.preset",
+			"display.showTurnTime",
+			"theme.dark",
+			"theme.light",
+			"tui.tight",
+			"colorBlindMode",
+			"display.showTokenUsage",
+			"terminal.showProgress",
+			"spelling.typoDetection",
+			"spelling.autocomplete",
+			"spelling.autocorrect",
+		].map(path => entry({ path, tab: "terminal-display" }));
+		expect(unsupported.filter(item => isSettingVisibleInGui(item, {}))).toEqual([]);
+		const groups = buildSettingsNavGroups({
+			tabs: [{ id: "terminal-display", label: "Terminal display" }],
+			entries: unsupported,
+		});
+		expect(groups.flatMap(group => group.items).some(item => item.id === "terminal-display")).toBe(false);
 	});
 
 	it("omits TUI-only rows and groups from a schema tab", () => {
@@ -154,7 +175,7 @@ describe("GUI settings visibility", () => {
 				/>
 			</I18nProvider>,
 		);
-		expect(html).toContain("Color Blind Mode");
+		expect(html).toContain("Auto Compaction");
 		expect(html).not.toContain("Status Line Separator");
 		expect(html).not.toContain(">Status Line</h3>");
 	});
@@ -225,11 +246,11 @@ describe("GUI settings visibility", () => {
 describe("SchemaTabContent zh translations", () => {
 	const zhEntries: SettingEntry[] = [
 		entry({
-			path: "theme.dark",
+			path: "compaction.enabled",
 			tab: "appearance",
 			group: "Theme",
-			label: "Dark Theme",
-			description: "Theme palette used for dark appearance in both the TUI and GUI",
+			label: "Auto Compaction",
+			description: "Compact when context grows",
 		}),
 		entry({
 			path: "zz.mystery",
@@ -260,12 +281,12 @@ describe("SchemaTabContent zh translations", () => {
 		try {
 			const html = renderTab();
 			expect(html).toContain(">主题</h3>"); // translated group title
-			expect(html).toContain("深色主题"); // translated label
-			expect(html).toContain("TUI 与 GUI 使用深色外观时的主题配色"); // translated description
+			expect(html).toContain("自动压缩"); // translated label
+			expect(html).toContain("上下文过大时自动压缩"); // translated description
 			expect(html).toContain(">Undeclared</h3>"); // group without a translation stays English
 			expect(html).toContain("Mystery Setting"); // setting without a translation stays English
 			expect(html).toContain("An English-only setting");
-			expect(html).not.toContain("Dark Theme");
+			expect(html).not.toContain("Auto Compaction");
 		} finally {
 			if (original) Object.defineProperty(globalThis, "navigator", original);
 		}
@@ -274,8 +295,8 @@ describe("SchemaTabContent zh translations", () => {
 	it("renders the schema's English text when lang is en", () => {
 		const html = renderTab();
 		expect(html).toContain(">Theme</h3>");
-		expect(html).toContain("Dark Theme");
-		expect(html).toContain("Theme palette used for dark appearance in both the TUI and GUI");
+		expect(html).toContain("Auto Compaction");
+		expect(html).toContain("Compact when context grows");
 	});
 });
 

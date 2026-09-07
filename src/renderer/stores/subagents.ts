@@ -59,8 +59,9 @@ function mergeFetchedSnapshot(fresh: SubagentNode, prev: SubagentNode): Subagent
 	};
 }
 
-export const createSubagentsStore = (command: TabCommand = activeTabCommand) =>
-	createStore<SubagentsStore>()((set, get) => ({
+export const createSubagentsStore = (command: TabCommand = activeTabCommand) => {
+	let refreshVersion = 0;
+	return createStore<SubagentsStore>()((set, get) => ({
 		subagents: new Map(),
 		applyFrame: frame => {
 			// Copy-on-first-write: frames that match no known subagent leave the
@@ -130,6 +131,7 @@ export const createSubagentsStore = (command: TabCommand = activeTabCommand) =>
 			if (subagents) set({ subagents });
 		},
 		setSnapshots: snapshots => {
+			refreshVersion++;
 			const subagents = new Map<string, SubagentNode>();
 			for (const snap of snapshots) {
 				const normalized = normalizeSnapshot(snap);
@@ -138,12 +140,14 @@ export const createSubagentsStore = (command: TabCommand = activeTabCommand) =>
 			set({ subagents });
 		},
 		refresh: async options => {
+			const version = ++refreshVersion;
+			const before = get().subagents;
 			try {
 				const res = await command({ type: "get_subagents" });
 				// Post-await guard: the poll may have been sent for a tab/session
 				// that is no longer foreground — its snapshots must not merge into
 				// the new session's store.
-				if (options?.expect && !options.expect()) return;
+				if (version !== refreshVersion || (options?.expect && !options.expect())) return;
 				if (!res.success) return;
 				const data = res.data as { subagents?: SubagentNode[] } | undefined;
 				if (!data?.subagents) return;
@@ -154,20 +158,32 @@ export const createSubagentsStore = (command: TabCommand = activeTabCommand) =>
 					const normalized = normalizeSnapshot(snap);
 					fetched.add(normalized.id);
 					const prev = current.get(normalized.id);
-					subagents.set(normalized.id, prev ? mergeFetchedSnapshot(normalized, prev) : normalized);
+					subagents.set(
+						normalized.id,
+						prev && prev !== before.get(normalized.id)
+							? prev
+							: prev
+								? mergeFetchedSnapshot(normalized, prev)
+								: normalized,
+					);
 				}
 				// Terminal rows the server has forgotten survive the merge — see the
 				// refresh docstring (RPC registry deletes completed/failed agents).
 				for (const [id, node] of current) {
-					if (!fetched.has(id) && !LIVE_STATUSES[node.status]) subagents.set(id, node);
+					if (!fetched.has(id) && (!LIVE_STATUSES[node.status] || node !== before.get(id)))
+						subagents.set(id, node);
 				}
 				set({ subagents });
 			} catch {
 				// Best-effort poll: frames + hydration remain authoritative.
 			}
 		},
-		reset: () => set({ subagents: new Map() }),
+		reset: () => {
+			refreshVersion++;
+			set({ subagents: new Map() });
+		},
 	}));
+};
 
 const defaultSubagentsStore = createSubagentsStore();
 export const useSubagentsStore = createScopedStoreHook("subagents", defaultSubagentsStore);

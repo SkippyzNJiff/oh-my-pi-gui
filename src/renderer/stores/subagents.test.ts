@@ -5,7 +5,7 @@
  * agents from the UI mid-poll. Live rows absent from the fetch are released.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SubagentSnapshot } from "../../shared/rpc-types";
+import type { RpcResponse, SubagentSnapshot } from "../../shared/rpc-types";
 import { useSubagentsStore } from "./subagents";
 
 const getSubagents = vi.fn();
@@ -25,6 +25,60 @@ afterEach(() => {
 });
 
 describe("subagents store refresh", () => {
+	it("keeps completion and new workers received while an older roster is in flight", async () => {
+		useSubagentsStore.getState().setSnapshots([snap({ id: "done", status: "running" })]);
+		const pending = Promise.withResolvers<RpcResponse>();
+		getSubagents.mockReturnValueOnce(pending.promise);
+		const refreshing = useSubagentsStore.getState().refresh();
+		for (const [id, status] of [
+			["done", "completed"],
+			["new", "started"],
+		] as const) {
+			useSubagentsStore.getState().applyFrame({
+				type: "subagent_lifecycle",
+				payload: { id, index: 1, agent: "scout", agentSource: "bundled", status },
+			});
+		}
+		pending.resolve({
+			type: "response",
+			command: "get_subagents",
+			success: true,
+			data: {
+				subagents: [snap({ id: "done", status: "running" })],
+			},
+		});
+		await refreshing;
+		expect(useSubagentsStore.getState().subagents.get("done")?.status).toBe("completed");
+		expect(useSubagentsStore.getState().subagents.get("new")?.status).toBe("running");
+	});
+
+	it("rejects out-of-order rosters and a poll arriving after a session reset", async () => {
+		const older = Promise.withResolvers<RpcResponse>();
+		getSubagents.mockReturnValueOnce(older.promise).mockResolvedValueOnce(ok([snap({ id: "a1", status: "parked" })]));
+		const first = useSubagentsStore.getState().refresh();
+		await useSubagentsStore.getState().refresh();
+		older.resolve({
+			type: "response",
+			command: "get_subagents",
+			success: true,
+			data: { subagents: [snap({ status: "running" })] },
+		});
+		await first;
+		expect(useSubagentsStore.getState().subagents.get("a1")?.status).toBe("parked");
+		const retired = Promise.withResolvers<RpcResponse>();
+		getSubagents.mockReturnValueOnce(retired.promise);
+		const resetting = useSubagentsStore.getState().refresh();
+		useSubagentsStore.getState().reset();
+		retired.resolve({
+			type: "response",
+			command: "get_subagents",
+			success: true,
+			data: { subagents: [snap({ status: "running" })] },
+		});
+		await resetting;
+		expect([...useSubagentsStore.getState().subagents.values()]).toEqual([]);
+	});
+
 	it("maps a claimed-running row without a live turn to a cancellable stale status", () => {
 		useSubagentsStore.getState().setSnapshots([snap({ id: "zombie", status: "running", live: false })]);
 		expect(useSubagentsStore.getState().subagents.get("zombie")).toMatchObject({

@@ -10,7 +10,6 @@ import { useMessagesStore } from "../stores/messages";
 import { useSessionStore } from "../stores/session";
 import { useTabsStore } from "../stores/tabs";
 import { toast } from "../stores/toast";
-import { useUiStore } from "../stores/ui";
 import { translate } from "./i18n";
 import type { TabRpc } from "./tab-rpc";
 
@@ -115,7 +114,7 @@ export async function forkSessionFromEntryInNewTab(
 	rpc: Pick<TabRpc, "forkFrom"> = window.omp.rpc,
 ): Promise<"opened" | "saved"> {
 	const tabs = useTabsStore.getState();
-	if (!sourceTabId || tabs.activeTabId !== sourceTabId || useUiStore.getState().switchPending !== null) {
+	if (!sourceTabId || tabs.activeTabId !== sourceTabId || useSessionStore.getState().switchPending !== null) {
 		throw new Error("The active session changed while preparing the branch");
 	}
 	const sourceTab = tabs.tabs.find(tab => tab.id === sourceTabId);
@@ -124,7 +123,7 @@ export async function forkSessionFromEntryInNewTab(
 	if (!response.success) throw new Error(response.error);
 	const data = response.data as { sessionPath?: string } | undefined;
 	if (!data?.sessionPath) throw new Error("fork_from did not return a session path");
-	if (useTabsStore.getState().activeTabId !== sourceTabId || useUiStore.getState().switchPending !== null) {
+	if (useTabsStore.getState().activeTabId !== sourceTabId || useSessionStore.getState().switchPending !== null) {
 		return "saved";
 	}
 	const tabId = await useTabsStore.getState().openTab({
@@ -141,7 +140,7 @@ export async function forkSessionFromMessageInNewTab(
 	rpc: Pick<TabRpc, "forkFrom" | "getSessionTree"> = window.omp.rpc,
 	sourceTabId = useTabsStore.getState().activeTabId,
 ): Promise<"opened" | "saved"> {
-	if (!sourceTabId || useUiStore.getState().switchPending !== null) {
+	if (!sourceTabId || useSessionStore.getState().switchPending !== null) {
 		throw new Error("The active session changed while preparing the branch");
 	}
 	let entryId = message.entryId;

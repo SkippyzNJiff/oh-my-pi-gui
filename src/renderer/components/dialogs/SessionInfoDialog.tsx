@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../lib/tab-rpc";
 /**
  * Session info panel: native rendering of rpc.getSessionStats() — identity,
  * message/tool counts, token breakdown, premium requests, cost, and context
@@ -40,6 +41,7 @@ function formatCredit(value: number): string {
 }
 
 export function SessionInfoDialog() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const open = useUiStore(state => state.sessionInfoOpen);
 	const close = useUiStore(state => state.closeSessionInfo);
@@ -54,7 +56,7 @@ export function SessionInfoDialog() {
 		setError(null);
 		setStats(null);
 		let cancelled = false;
-		void window.omp.rpc
+		void tabRpc
 			.getSessionStats()
 			.then(response => {
 				if (cancelled) return;
@@ -70,7 +72,7 @@ export function SessionInfoDialog() {
 		return () => {
 			cancelled = true;
 		};
-	}, [open]);
+	}, [open, tabRpc.getSessionStats]);
 
 	return (
 		<Modal open={open} onClose={close} title={t("sessionInfo.title")} size="md">
@@ -84,6 +86,21 @@ export function SessionInfoDialog() {
 					</div>
 				) : (
 					<>
+						{stats.history && (
+							<Section
+								title={t("sessionInfo.history")}
+								rows={[
+									{ label: t("sessionInfo.total"), value: formatTokens(stats.history.totalTokens) },
+									{ label: t("sessionInfo.cost"), value: formatCost(stats.history.cost) },
+									{ label: t("sessionInfo.premiumRequests"), value: String(stats.history.premiumRequests) },
+									{
+										label: t("sessionInfo.sampledAt"),
+										value: new Date(stats.history.sampledAt).toLocaleTimeString(),
+									},
+								]}
+							/>
+						)}
+						<p className="text-omp-xs text-(--omp-dim)">{t("sessionInfo.scope")}</p>
 						<Section
 							title={t("sessionInfo.section.session")}
 							rows={[

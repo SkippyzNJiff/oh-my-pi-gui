@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../lib/tab-rpc";
 /**
  * Structured plan-approval dialog. The agent submits a plan by writing to
  * `xd://propose` while plan mode is active; the sidecar emits a
@@ -76,6 +77,7 @@ function approveOptionsOf(options: string[]): PlanApprovalOption[] {
 }
 
 export function PlanApprovalDialog() {
+	const tabRpc = useTabRpc();
 	// Self-contained: mounting this component also subscribes to plan_proposal events.
 	usePlanApproval();
 	const t = useT();
@@ -107,11 +109,11 @@ export function PlanApprovalDialog() {
 			const response =
 				kind === "approve"
 					? option === "save"
-						? await window.omp.rpc.planApproval(true, option, undefined, savePath ?? undefined)
-						: await window.omp.rpc.planApproval(true, option)
+						? await tabRpc.planApproval(true, option, undefined, savePath ?? undefined)
+						: await tabRpc.planApproval(true, option)
 					: kind === "refine"
-						? await window.omp.rpc.planApproval(false, undefined, trimmed)
-						: await window.omp.rpc.planApproval(false);
+						? await tabRpc.planApproval(false, undefined, trimmed)
+						: await tabRpc.planApproval(false);
 			if (!response.success) {
 				settleTabPlanApproval(originTabId, originSessionId, target, { submitting: null });
 				toast({ variant: "error", title: t("planApproval.failed"), message: response.error });

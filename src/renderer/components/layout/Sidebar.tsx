@@ -38,6 +38,7 @@ import { dropSessionNow } from "../../hooks/use-session-switch";
 import { basename, cx } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { sessionDisplayTitle } from "../../lib/session-title";
+import { useTabRpc } from "../../lib/tab-rpc";
 import { tabSignalPresentation } from "../../lib/tab-signal";
 import { useSessionStore } from "../../stores/session";
 import { useSidebarPrefs } from "../../stores/sidebar-prefs";
@@ -94,11 +95,12 @@ function SidebarRowTitle({ className, title }: { className?: string; title: stri
  * adjacent quick-chat action creates a chat.
  */
 export function Sidebar() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const [mode, setMode] = useState<SidebarMode>("code");
 	const [navigationExpanded, setNavigationExpanded] = useState(true);
 	const [defaultWorkspace, setDefaultWorkspace] = useState<string | null>(null);
-	const switchPendingTo = useUiStore(s => s.switchPending?.toId ?? null);
+	const switchPendingTo = useSessionStore(s => s.switchPending?.toId ?? null);
 	// Resizable left rail (mirrors PanelContainer's right-rail drag, but the
 	// handle sits on the right edge and dragging right grows the sidebar).
 	const SIDEBAR_MIN = 180;
@@ -1138,7 +1140,7 @@ export function Sidebar() {
 										const pinned = !pinnedSessions.includes(sessionMenu.session.path);
 										useSidebarPrefs.getState().toggleSessionPin(sessionMenu.session.path);
 										setSessionMenu(null);
-										void window.omp.rpc.setSessionPinned(sessionMenu.session.id, pinned).then(response => {
+										void tabRpc.setSessionPinned(sessionMenu.session.id, pinned).then(response => {
 											if (!response.success) {
 												toast({ variant: "warning", message: t("sidebar.pinSyncFailed") });
 											}

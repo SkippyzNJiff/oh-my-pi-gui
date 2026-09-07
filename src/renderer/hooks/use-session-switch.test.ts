@@ -319,7 +319,7 @@ describe("switchSessionNow F-OWN owner guard", () => {
 		await transcriptStarted.promise;
 
 		expect(useMessagesStore.getState().messages).toHaveLength(1);
-		expect(useUiStore.getState().switchPending).toEqual({
+		expect(useSessionStore.getState().switchPending).toEqual({
 			fromId: useSessionStore.getState().sessionId,
 			toId: "/sessions/x.jsonl",
 		});
@@ -327,7 +327,7 @@ describe("switchSessionNow F-OWN owner guard", () => {
 		transcript.resolve(ok({ messages: [] }));
 		await expect(switching).resolves.toBe(true);
 		expect(useMessagesStore.getState().messages).toEqual([]);
-		expect(useUiStore.getState().switchPending).toBeNull();
+		expect(useSessionStore.getState().switchPending).toBeNull();
 	});
 
 	it("routes a raced session_owned_elsewhere refusal to the payload owner", async () => {
@@ -391,7 +391,7 @@ describe("switchSessionNow F-OWN owner guard", () => {
 		await switchSessionNow(session("/sessions/x.jsonl"));
 
 		expect(useMessagesStore.getState().messages).toEqual([kept]);
-		expect(useUiStore.getState().switchPending).toBeNull();
+		expect(useSessionStore.getState().switchPending).toBeNull();
 	});
 
 	it("surfaces a cross-kind switch as an error toast without switching (session_kind_mismatch)", async () => {

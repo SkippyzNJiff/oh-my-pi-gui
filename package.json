@@ -1,6 +1,6 @@
 {
   "name": "@oh-my-pi/omp-gui",
-	"version": "0.9.4",
+	"version": "0.9.5",
   "private": true,
   "type": "module",
   "description": "Desktop GUI for the omp coding agent",
@@ -21,6 +21,7 @@
     "build:omp:x64": "bun scripts/build-bundled-omp.ts --target bun-darwin-x64",
     "check": "node scripts/lint-surfaces.mjs && biome check . && tsc --noEmit",
     "check:types": "tsc --noEmit",
+    "check:protocol": "bun scripts/check-protocol.ts",
     "lint": "biome lint .",
     "fix": "biome check --write --unsafe .",
     "fmt": "biome format --write .",

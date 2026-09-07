@@ -1,6 +1,8 @@
 import { createStore } from "zustand/vanilla";
-import type { RpcSessionState } from "../../shared/rpc-types";
+import type { RpcSessionState, SettingProvenance } from "../../shared/rpc-types";
+import { translate } from "../lib/i18n";
 import { activeTabCommand, createScopedStoreHook, type TabCommand } from "./session-runtime-context";
+import { toast } from "./toast";
 
 export type ApprovalMode = "always-ask" | "write" | "yolo";
 const APPROVAL_MODES = new Set<string>(["always-ask", "write", "yolo"]);
@@ -35,16 +37,12 @@ export interface SettingsStore {
 	speechEnabled: boolean;
 	/** Agent `stt.enabled` setting: microphone input in the composer. */
 	sttEnabled: boolean;
-	/** Agent `tui.tight` setting: compact UI density. */
-	tuiTight: boolean;
-	/** Agent `colorBlindMode` setting: color-blind-safe palette. */
-	colorBlindMode: boolean;
 	/** Agent `paste.largeMenuThreshold` setting: line count at which a paste offers the menu (0 = never). */
 	pasteMenuThreshold: number;
 	/** Agent `emojiAutocomplete` setting: `:name:`/emoticon completion and expansion in the composer. */
 	emojiAutocomplete: boolean;
 	setFromState: (state: RpcSessionState) => void;
-	setApprovalMode: (mode: ApprovalMode) => void;
+	setApprovalMode: (mode: ApprovalMode) => Promise<void>;
 	/** Re-read the live display settings via get_settings. */
 	syncDisplaySettings: () => Promise<void>;
 	/** Re-read the live tools.approvalMode into the store (config_update / TUI edits). */
@@ -80,8 +78,6 @@ const initialState = {
 	showProgress: false,
 	speechEnabled: false,
 	sttEnabled: false,
-	tuiTight: false,
-	colorBlindMode: false,
 	// Schema default (settings-schema.ts paste.largeMenuThreshold): menu at 100 lines.
 	pasteMenuThreshold: 100,
 	// Schema default (settings-schema.ts emojiAutocomplete): on.
@@ -95,13 +91,22 @@ async function syncApprovalMode(
 	isCurrent: () => boolean,
 ): Promise<void> {
 	try {
-		// Migrate the legacy launch pref once, then config.yml is the source of truth.
-		const pref = await window.omp.prefs.get("approvalMode");
-		if (typeof pref === "string" && APPROVAL_MODES.has(pref)) {
-			await command({ type: "set_setting", path: "tools.approvalMode", value: pref });
-			await window.omp.prefs.set("approvalMode", null);
+		let res = await command({ type: "get_settings", paths: ["tools.approvalMode"] });
+		if (!isCurrent() || !res.success) return;
+		const provenance = (res.data as { provenance?: Record<string, SettingProvenance> } | undefined)?.provenance?.[
+			"tools.approvalMode"
+		];
+		// Only migrate when the core proves that no global, project, or runtime override exists.
+		if (provenance?.layers.length === 0) {
+			const pref = await window.omp.prefs.get("approvalMode");
+			if (!isCurrent()) return;
+			if (typeof pref === "string" && APPROVAL_MODES.has(pref)) {
+				const migrated = await command({ type: "set_setting", path: "tools.approvalMode", value: pref });
+				if (!migrated.success) return;
+				await window.omp.prefs.set("approvalMode", null);
+				res = await command({ type: "get_settings", paths: ["tools.approvalMode"] });
+			}
 		}
-		const res = await command({ type: "get_settings", paths: ["tools.approvalMode"] });
 		if (!isCurrent()) return;
 		if (res.success) {
 			const value = (res.data as { values?: Record<string, unknown> } | undefined)?.values?.["tools.approvalMode"];
@@ -125,8 +130,6 @@ const DISPLAY_BOOL_MAP: Record<
 	| "showProgress"
 	| "speechEnabled"
 	| "sttEnabled"
-	| "tuiTight"
-	| "colorBlindMode"
 	| "emojiAutocomplete"
 > = {
 	hideThinkingBlock: "hideThinkingBlock",
@@ -139,8 +142,6 @@ const DISPLAY_BOOL_MAP: Record<
 	"terminal.showProgress": "showProgress",
 	"speech.enabled": "speechEnabled",
 	"stt.enabled": "sttEnabled",
-	"tui.tight": "tuiTight",
-	colorBlindMode: "colorBlindMode",
 	emojiAutocomplete: "emojiAutocomplete",
 };
 const DISPLAY_SYNC_KEYS = Object.keys(DISPLAY_BOOL_MAP);
@@ -207,14 +208,29 @@ export const createSettingsStore = (command: TabCommand = activeTabCommand) => {
 				void syncApproval();
 				void syncDisplay();
 			},
-			setApprovalMode: mode => {
-				set({ approvalMode: mode });
-				void command({ type: "set_setting", path: "tools.approvalMode", value: mode });
+			setApprovalMode: async mode => {
+				const version = ++approvalSyncVersion;
+				try {
+					const res = await command({ type: "set_setting", path: "tools.approvalMode", value: mode });
+					if (version !== approvalSyncVersion) return;
+					if (!res.success) throw new Error(res.error);
+					const data = res.data as { value?: unknown; provenance?: SettingProvenance } | undefined;
+					if (data?.provenance && typeof data.value === "string" && APPROVAL_MODES.has(data.value))
+						set({ approvalMode: data.value as ApprovalMode });
+					else await syncApproval();
+				} catch (error) {
+					if (version === approvalSyncVersion)
+						toast({ variant: "error", title: translate("settings.saveFailed"), message: String(error) });
+				}
 			},
 			syncDisplaySettings: syncDisplay,
 			syncApproval,
 			update: partial => set(partial),
-			reset: () => set(initialState),
+			reset: () => {
+				approvalSyncVersion++;
+				displaySyncVersion++;
+				set(initialState);
+			},
 		};
 	});
 };

@@ -3,6 +3,7 @@
  * Type-safe contract for the contextBridge API.
  */
 
+import type { LaunchProfile } from "./launch-profile";
 import type {
 	AgentSessionEvent,
 	AvailableCommand,
@@ -96,6 +97,7 @@ export const IPC_COMMANDS = {
 	RUNTIME_ERROR_REPORT: "runtime:error-report",
 	/** Absolute path to the main-process crash log */
 	RUNTIME_LOG_PATH: "runtime:log-path",
+	LOG_SNAPSHOT: "log:snapshot",
 	/** Send an RPC command, get response */
 	RPC_COMMAND: "rpc:command",
 	/** Send an RPC command to a specific tab's sidecar (IpcRpcCommandForTabPayload). */
@@ -137,6 +139,7 @@ export const IPC_COMMANDS = {
 	PREFS_GET: "prefs:get",
 	/** Set GUI preferences */
 	PREFS_SET: "prefs:set",
+	PREFS_UPDATE_LAUNCH_PROFILE: "prefs:update-launch-profile",
 	/** Restart sidecar */
 	SIDECAR_RESTART: "sidecar:restart",
 	/** Get sidecar status */
@@ -555,6 +558,11 @@ export interface IpcPrefsSetPayload {
 	value: unknown;
 }
 
+export interface IpcUpdateLaunchProfilePayload {
+	cwd: string;
+	patch: Partial<LaunchProfile>;
+}
+
 // ============================================================================
 // Workspace Filesystem Types
 // ============================================================================
@@ -820,11 +828,17 @@ export interface SessionInfo {
 // Preload API Shape (what window.omp exposes)
 // ============================================================================
 
+export interface LogBatch {
+	lines: string[];
+	nextSequence: number;
+}
+
 export interface OmpApi {
 	runtime: {
 		/** Best-effort fire-and-forget reporting so fatal render paths never wait on IPC. */
 		report(error: RuntimeErrorReport): void;
 		logPath(): Promise<string>;
+		logSnapshot(): Promise<LogBatch>;
 	};
 	rpc: {
 		command(cmd: RpcCommand, timeoutMs?: number): Promise<RpcResponse>;
@@ -887,6 +901,8 @@ export interface OmpApi {
 		removeDirectory(path: string): Promise<RpcResponse>;
 		moveSession(path: string): Promise<RpcResponse>;
 		getGitStatus(): Promise<RpcResponse>;
+		getGitChanges(): Promise<RpcResponse>;
+		getGitDiff(path: string): Promise<RpcResponse>;
 		worktreeCreate(name: string, options?: { baseCwd?: string; baseRef?: "HEAD" | "default" }): Promise<RpcResponse>;
 		worktreeRemove(path: string, force?: boolean): Promise<RpcResponse>;
 		prRepo(): Promise<RpcResponse>;
@@ -982,7 +998,8 @@ export interface OmpApi {
 		sshTest(host: RpcSshHostInput & { name: string }): Promise<RpcResponse>;
 		getOmpUpdate(): Promise<RpcResponse>;
 		getContextReport(): Promise<RpcResponse>;
-		shareSession(): Promise<RpcResponse>;
+		previewShareSession(): Promise<RpcResponse>;
+		shareSession(snapshotId?: string): Promise<RpcResponse>;
 		getJobs(): Promise<RpcResponse>;
 		getSessionTree(): Promise<RpcResponse>;
 		getThemes(): Promise<RpcResponse>;
@@ -1062,6 +1079,7 @@ export interface OmpApi {
 		onTabSessionInfoUpdate(callback: (frame: SessionInfoUpdateFrame, tabId: string) => void): () => void;
 		onTabExtensionError(callback: (frame: ExtensionErrorFrame, tabId: string) => void): () => void;
 		onSessionsChanged(callback: () => void): () => void;
+		onLogBatch(callback: (batch: LogBatch) => void): () => void;
 		onLogLines(callback: (lines: string[]) => void): () => void;
 		onMenuAction(callback: (action: MenuAction, payload?: MenuActionPayload) => void): () => void;
 		onDeepLink(callback: (link: DeepLinkPayload) => void): () => void;
@@ -1135,6 +1153,7 @@ export interface OmpApi {
 	prefs: {
 		get(key?: string): Promise<unknown>;
 		set(key: string, value: unknown): Promise<void>;
+		updateLaunchProfile(cwd: string, patch: Partial<LaunchProfile>): Promise<LaunchProfile>;
 	};
 	sidecar: {
 		restart(payload?: IpcSidecarRestartPayload): Promise<void>;

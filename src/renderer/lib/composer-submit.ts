@@ -19,6 +19,9 @@ export type ComposerSendMode = "prompt" | "steer" | "followUp";
 
 /** Builtin slash commands that replace the session server-side. */
 const SESSION_REPLACING_COMMANDS: Record<string, true> = { new: true, clear: true };
+// The desktop requires a visible preview/start step even when Core exposes a
+// directly executable text command, or command discovery has not completed.
+const GUI_CONFIRMATION_COMMANDS = new Set(["share", "live", "btw"]);
 
 export type ComposerSubmit =
 	/** Session-replacing command while busy — draft stays, warning toasted. */
@@ -58,12 +61,13 @@ function runGuiAffordance(affordance: CommandAffordance, args?: string): boolean
 function findGuiOnlyBuiltin(message: string, commands: AvailableCommand[]): AvailableCommand | undefined {
 	const name = /^\/([a-z0-9-]+)/i.exec(message)?.[1]?.toLowerCase();
 	if (!name) return undefined;
-	return commands.find(
-		command =>
-			command.source === "builtin" &&
-			command.textModeExecutable === false &&
-			(command.name.toLowerCase() === name || command.aliases?.some(alias => alias.toLowerCase() === name)),
+	const command = commands.find(
+		command => command.name.toLowerCase() === name || command.aliases?.some(alias => alias.toLowerCase() === name),
 	);
+	if (GUI_CONFIRMATION_COMMANDS.has(name) && (!command || command.source === "builtin")) {
+		return command ?? { name, source: "builtin", description: name, textModeExecutable: false };
+	}
+	return command?.source === "builtin" && command.textModeExecutable === false ? command : undefined;
 }
 
 export function isGuiOnlyBuiltinCommand(message: string, commands: AvailableCommand[]): boolean {

@@ -3,13 +3,12 @@
  * fetches /api/request/:id on row click.
  */
 
-import { ChevronLeft, ChevronRight, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { useStats } from "../../hooks/use-stats";
 import { compact, formatMs, formatUsd } from "../../lib/chart";
 import { useT } from "../../lib/i18n";
-import { Badge, Button, Spinner } from "../common";
-import { isTopmostDialog, registerDialogLayer } from "../common/dialog-layer";
+import { Badge, Button, Modal, Spinner } from "../common";
 import type { StatsRange } from "./StatsDashboard";
 import { RouteFrame, SectionTitle, type StatColumn, StatTable } from "./shared";
 
@@ -38,6 +37,13 @@ interface RequestRow {
 	};
 }
 
+interface RequestPage {
+	rows: RequestRow[];
+	total: number;
+	nextCursor: string | null;
+	snapshotAt: number;
+}
+
 interface RequestDetail extends RequestRow {
 	messages: unknown[];
 	output: unknown;
@@ -48,22 +54,6 @@ function DetailDrawer({ row, onClose }: { row: RequestRow; onClose: () => void }
 	const [detail, setDetail] = useState<RequestDetail | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
-	const drawerRef = useRef<HTMLDivElement>(null);
-
-	useEffect(() => {
-		const unregisterLayer = registerDialogLayer(drawerRef.current);
-		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.key !== "Escape" || !isTopmostDialog(drawerRef.current)) return;
-			event.preventDefault();
-			event.stopImmediatePropagation();
-			onClose();
-		};
-		document.addEventListener("keydown", onKeyDown, true);
-		return () => {
-			document.removeEventListener("keydown", onKeyDown, true);
-			unregisterLayer();
-		};
-	}, [onClose]);
 
 	useEffect(() => {
 		if (row.id === undefined) {
@@ -77,6 +67,7 @@ function DetailDrawer({ row, onClose }: { row: RequestRow; onClose: () => void }
 		window.omp.stats
 			.fetch(`/api/request/${row.id}`)
 			.then(result => {
+				if (result && typeof result === "object" && "error" in result) throw new Error(String(result.error));
 				if (!cancelled) setDetail(result as RequestDetail);
 			})
 			.catch((err: unknown) => {
@@ -91,107 +82,73 @@ function DetailDrawer({ row, onClose }: { row: RequestRow; onClose: () => void }
 	}, [row.id]);
 
 	return (
-		<div
-			className="fixed inset-0 z-[60] flex justify-end bg-[var(--omp-overlay-bg)]"
-			onMouseDown={event => {
-				if (event.target === event.currentTarget) onClose();
-			}}
-			role="presentation"
+		<Modal
+			open
+			onClose={onClose}
+			size="lg"
+			title={`${row.model} · ${new Date(row.timestamp).toLocaleString()}`}
+			bodyClassName="p-0"
+			panelClassName="ml-auto mr-0"
 		>
-			<div
-				aria-label={`${row.model} ${new Date(row.timestamp).toLocaleString()}`}
-				aria-modal="true"
-				className="omp-detail-drawer flex h-full flex-col border-l border-(--omp-border-muted) bg-(--omp-modal-bg) shadow-(--omp-shadow-lg)"
-				ref={drawerRef}
-				role="dialog"
-				tabIndex={-1}
-			>
-				<div className="flex items-center justify-between gap-2 border-b border-(--omp-border-muted) px-4 py-2.5">
-					<span className="min-w-0 truncate font-mono text-xs font-semibold text-(--omp-text)">
-						{row.model}
-						<span className="ml-2 font-normal text-(--omp-dim)">{new Date(row.timestamp).toLocaleString()}</span>
-					</span>
-					<button
-						aria-label={t("stats.requests.closeDetails")}
-						autoFocus
-						className="rounded p-1 text-(--omp-muted) transition-colors hover:bg-(--omp-bg-tertiary) hover:text-(--omp-text)"
-						onClick={onClose}
-						type="button"
-					>
-						<X size={14} />
-					</button>
-				</div>
-				<div className="min-h-0 flex-1 overflow-y-auto p-4">
-					<div className="mb-3 grid grid-cols-2 gap-2 text-omp-sm">
-						{[
-							[t("stats.col.provider"), row.provider],
-							[t("stats.requests.detail.api"), row.api],
-							[t("stats.requests.detail.stopReason"), row.stopReason],
-							[t("stats.col.duration"), formatMs(row.duration)],
-							[t("stats.col.ttft"), formatMs(row.ttft)],
-							[t("stats.col.cost"), formatUsd(row.usage?.cost?.total ?? 0)],
-							[t("stats.requests.detail.input"), compact(row.usage?.input ?? 0)],
-							[t("stats.requests.detail.output"), compact(row.usage?.output ?? 0)],
-							[t("stats.requests.detail.cacheRead"), compact(row.usage?.cacheRead ?? 0)],
-							[t("stats.requests.detail.cacheWrite"), compact(row.usage?.cacheWrite ?? 0)],
-						].map(([label, value]) => (
-							<div className="rounded-md border border-(--omp-border-muted) px-2.5 py-1.5" key={label}>
-								<div className="text-omp-xxs font-semibold tracking-widest text-(--omp-dim) uppercase">
-									{label}
-								</div>
-								<div className="mt-0.5 truncate font-mono text-(--omp-text)">{value}</div>
+			<div className="min-h-0 flex-1 overflow-y-auto p-4">
+				<div className="mb-3 grid grid-cols-2 gap-2 text-omp-sm">
+					{[
+						[t("stats.col.provider"), row.provider],
+						[t("stats.requests.detail.api"), row.api],
+						[t("stats.requests.detail.stopReason"), row.stopReason],
+						[t("stats.col.duration"), formatMs(row.duration)],
+						[t("stats.col.ttft"), formatMs(row.ttft)],
+						[t("stats.col.cost"), formatUsd(row.usage?.cost?.total ?? 0)],
+						[t("stats.requests.detail.input"), compact(row.usage?.input ?? 0)],
+						[t("stats.requests.detail.output"), compact(row.usage?.output ?? 0)],
+						[t("stats.requests.detail.cacheRead"), compact(row.usage?.cacheRead ?? 0)],
+						[t("stats.requests.detail.cacheWrite"), compact(row.usage?.cacheWrite ?? 0)],
+					].map(([label, value]) => (
+						<div className="rounded-md border border-(--omp-border-muted) px-2.5 py-1.5" key={label}>
+							<div className="text-omp-xxs font-semibold tracking-widest text-(--omp-dim) uppercase">
+								{label}
 							</div>
-						))}
-					</div>
-					{row.errorMessage && (
-						<div className="mb-3 rounded-md border border-[color-mix(in_srgb,var(--omp-error)_40%,transparent)] bg-transparent px-3 py-2 font-mono text-omp-xs break-words text-(--omp-error)">
-							{row.errorMessage}
+							<div className="mt-0.5 truncate font-mono text-(--omp-text)">{value}</div>
 						</div>
-					)}
-					<SectionTitle>{t("stats.requests.payload")}</SectionTitle>
-					{loading ? (
-						<div className="flex items-center gap-2 py-4">
-							<Spinner size="sm" />
-							<span className="text-omp-sm text-(--omp-dim)">{t("stats.requests.loadingDetail")}</span>
-						</div>
-					) : error ? (
-						<div className="text-omp-sm text-(--omp-error)">{error}</div>
-					) : (
-						<pre className="max-h-[45vh] overflow-auto rounded-md border border-(--omp-border-muted) bg-(--omp-code-bg) p-3 font-mono text-omp-xs leading-[1.5] break-words whitespace-pre-wrap text-(--omp-muted)">
-							{JSON.stringify({ messages: detail?.messages, output: detail?.output }, null, 2)?.slice(
-								0,
-								40_000,
-							) ?? t("stats.requests.emptyPayload")}
-						</pre>
-					)}
+					))}
 				</div>
+				{row.errorMessage && (
+					<div className="mb-3 rounded-md border border-[color-mix(in_srgb,var(--omp-error)_40%,transparent)] bg-transparent px-3 py-2 font-mono text-omp-xs break-words text-(--omp-error)">
+						{row.errorMessage}
+					</div>
+				)}
+				<SectionTitle>{t("stats.requests.payload")}</SectionTitle>
+				{loading ? (
+					<div className="flex items-center gap-2 py-4">
+						<Spinner size="sm" />
+						<span className="text-omp-sm text-(--omp-dim)">{t("stats.requests.loadingDetail")}</span>
+					</div>
+				) : error ? (
+					<div className="text-omp-sm text-(--omp-error)">{error}</div>
+				) : (
+					<pre className="max-h-[45vh] overflow-auto rounded-md border border-(--omp-border-muted) bg-(--omp-code-bg) p-3 font-mono text-omp-xs leading-[1.5] break-words whitespace-pre-wrap text-(--omp-muted)">
+						{JSON.stringify({ messages: detail?.messages, output: detail?.output }, null, 2)?.slice(0, 40_000) ??
+							t("stats.requests.emptyPayload")}
+					</pre>
+				)}
 			</div>
-		</div>
+		</Modal>
 	);
 }
 
 export function RequestsRoute({ range, refreshKey }: { range: StatsRange; refreshKey: number }) {
 	const t = useT();
-	const params = useMemo(() => ({ range, limit: "200" }), [range]);
-	const { data, isLoading, error, refetch } = useStats("/api/stats/recent", params);
-	const [page, setPage] = useState(0);
+	const [cursors, setCursors] = useState<(string | null)[]>([null]);
+	const page = cursors.length - 1;
+	const cursor = cursors[page];
+	const params = useMemo(() => ({ range, limit: String(PAGE_SIZE), ...(cursor ? { cursor } : {}) }), [range, cursor]);
+	const { data, isLoading, error, refetch } = useStats<RequestPage>("/api/stats/requests", params);
 	const [selected, setSelected] = useState<RequestRow | null>(null);
-
 	useEffect(() => {
 		if (refreshKey > 0) refetch();
 	}, [refreshKey, refetch]);
-
-	useEffect(() => {
-		setPage(0);
-	}, []);
-
-	const rows = useMemo(() => {
-		const list = Array.isArray(data) ? (data as RequestRow[]) : [];
-		return [...list].sort((a, b) => b.timestamp - a.timestamp);
-	}, [data]);
-
-	const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-	const pageRows = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+	const rows = data?.rows ?? [];
+	const pages = Math.max(1, Math.ceil((data?.total ?? 0) / PAGE_SIZE));
 
 	const columns: StatColumn<RequestRow>[] = useMemo(
 		() => [
@@ -254,21 +211,24 @@ export function RequestsRoute({ range, refreshKey }: { range: StatsRange; refres
 	);
 
 	return (
-		<RouteFrame empty={rows.length === 0} error={error} loading={isLoading} onRetry={refetch}>
-			<SectionTitle>{t("stats.requests.sectionTitle", { count: rows.length })}</SectionTitle>
+		<RouteFrame hasData={data !== null} empty={rows.length === 0} error={error} loading={isLoading} onRetry={refetch}>
+			<SectionTitle>{t("stats.requests.sectionTitle", { count: data?.total ?? 0 })}</SectionTitle>
 			<StatTable
 				columns={columns}
 				keyFor={row => `${row.id ?? row.entryId}-${row.timestamp}`}
 				onRowClick={setSelected}
-				rows={pageRows}
+				rows={rows}
 			/>
 			<div className="mt-2 flex items-center justify-between">
 				<span className="text-omp-xs text-(--omp-dim)">{t("stats.requests.rowHint")}</span>
 				<div className="flex items-center gap-1.5">
 					<Button
-						disabled={page === 0}
+						disabled={page === 0 || isLoading}
 						icon={<ChevronLeft size={11} />}
-						onClick={() => setPage(p => Math.max(0, p - 1))}
+						onClick={() => {
+							setSelected(null);
+							setCursors(previous => previous.slice(0, -1));
+						}}
 						size="sm"
 						variant="ghost"
 					>
@@ -278,8 +238,13 @@ export function RequestsRoute({ range, refreshKey }: { range: StatsRange; refres
 						{page + 1} / {pages}
 					</span>
 					<Button
-						disabled={page >= pages - 1}
-						onClick={() => setPage(p => Math.min(pages - 1, p + 1))}
+						disabled={!data?.nextCursor || isLoading}
+						onClick={() => {
+							if (data?.nextCursor) {
+								setSelected(null);
+								setCursors(previous => [...previous, data.nextCursor]);
+							}
+						}}
 						size="sm"
 						trailingIcon={<ChevronRight size={11} />}
 						variant="ghost"

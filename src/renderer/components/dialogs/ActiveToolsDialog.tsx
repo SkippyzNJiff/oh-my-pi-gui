@@ -2,6 +2,7 @@ import { Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { RpcActiveTool, RpcActiveToolsResult, RpcToolSource } from "../../../shared/rpc-types";
 import { useT } from "../../lib/i18n";
+import { useTabRpc } from "../../lib/tab-rpc";
 import { useUiStore } from "../../stores/ui";
 import { Badge, Input, Modal, Spinner } from "../common";
 
@@ -13,6 +14,7 @@ const SOURCE_ORDER: RpcToolSource[] = ["builtin", "mcp", "extension", "plugin"];
  * path, plugins) with a search filter over names and descriptions.
  */
 export function ActiveToolsDialog() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const open = useUiStore(state => state.activeToolsOpen);
 	const close = useUiStore(state => state.closeActiveTools);
@@ -28,7 +30,7 @@ export function ActiveToolsDialog() {
 		setQuery("");
 		setError(null);
 		setLoading(true);
-		void window.omp.rpc
+		void tabRpc
 			.getActiveTools()
 			.then(response => {
 				if (cancelled) return;
@@ -44,7 +46,7 @@ export function ActiveToolsDialog() {
 		return () => {
 			cancelled = true;
 		};
-	}, [open]);
+	}, [open, tabRpc.getActiveTools]);
 
 	const groups = useMemo(() => {
 		const q = query.trim().toLowerCase();

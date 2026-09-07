@@ -149,6 +149,13 @@ describe("panels under running state", () => {
 			]) as never,
 		});
 		await mount(<DiffPanel />);
+		await act(async () => {
+			const edits = Array.from(document.querySelectorAll("button")).find(
+				button => button.textContent === "Edit results",
+			);
+			if (!edits) throw new Error("Edit results tab missing");
+			edits.dispatchEvent(new Event("click", { bubbles: true }));
+		});
 		expect(document.body.textContent).toContain("src/a.ts");
 	});
 

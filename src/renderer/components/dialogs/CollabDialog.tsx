@@ -1,9 +1,12 @@
 import { Copy, ExternalLink, LogOut, Radio, Users } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RpcCollabState } from "../../../shared/rpc-types";
-import { hydrateSession } from "../../hooks/use-rpc-events";
+import { hydrateSession, hydrateTabSession } from "../../hooks/use-rpc-events";
 import { copyText } from "../../lib/format";
 import { useT } from "../../lib/i18n";
+import { useTabRpc } from "../../lib/tab-rpc";
+import { type SessionStore, useSessionStore } from "../../stores/session";
+import { sessionRuntimeStore, useRuntimeTabId } from "../../stores/session-runtime-context";
 import { toast } from "../../stores/toast";
 import { useUiStore } from "../../stores/ui";
 import { Button, Input, Modal, Spinner } from "../common";
@@ -11,6 +14,12 @@ import { Button, Input, Modal, Spinner } from "../common";
 const EMPTY: RpcCollabState = { role: null, readOnly: false, participants: [] };
 
 export function CollabDialog() {
+	const tabRpc = useTabRpc();
+	const originTabId = useRuntimeTabId();
+	const sessionStore = originTabId ? sessionRuntimeStore<SessionStore>(originTabId, "session")! : useSessionStore;
+	const generation = useRef(0);
+	const mutation = useRef(0);
+	const busyRef = useRef(false);
 	const t = useT();
 	const open = useUiStore(state => state.collabOpen);
 	const initialJoinLink = useUiStore(state => state.collabJoinLink);
@@ -20,70 +29,115 @@ export function CollabDialog() {
 	const [joinLink, setJoinLink] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const autoJoined = useRef<string | null>(null);
+	const confirm = useCallback(
+		(value: RpcCollabState) => {
+			setState(value);
+			sessionStore.setState({ collab: value });
+		},
+		[sessionStore],
+	);
 
-	const refresh = useCallback(async () => {
-		const response = await window.omp.rpc.getCollabState();
-		if (response.success) setState(response.data as RpcCollabState);
-	}, []);
-
-	const join = useCallback(async (link: string) => {
-		const trimmed = link.trim();
-		if (!trimmed) return;
-		setBusy(true);
-		setError(null);
-		try {
-			const response = await window.omp.rpc.collabJoin(trimmed);
-			if (!response.success) throw new Error(response.error);
-			setState(response.data as RpcCollabState);
-			await hydrateSession();
-		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setBusy(false);
-		}
-	}, []);
+	const join = useCallback(
+		async (link: string) => {
+			const trimmed = link.trim();
+			if (!trimmed) return;
+			const version = generation.current;
+			mutation.current++;
+			busyRef.current = true;
+			setBusy(true);
+			setError(null);
+			try {
+				const response = await tabRpc.collabJoin(trimmed);
+				if (generation.current !== version) return;
+				if (!response.success) throw new Error(response.error);
+				confirm(response.data as RpcCollabState);
+				if (originTabId) await hydrateTabSession(originTabId);
+				else await hydrateSession();
+			} catch (cause) {
+				if (generation.current === version) setError(cause instanceof Error ? cause.message : String(cause));
+			} finally {
+				if (generation.current === version) {
+					busyRef.current = false;
+					setBusy(false);
+				}
+			}
+		},
+		[tabRpc.collabJoin, originTabId, confirm],
+	);
 
 	useEffect(() => {
-		if (!open) {
-			autoJoined.current = null;
-			return;
-		}
+		if (!open) return;
+		setJoinLink(initialJoinLink ?? "");
+		setState(EMPTY);
+		busyRef.current = false;
+		setBusy(false);
+		setError(null);
+		const version = ++generation.current;
+		let pending = false;
+		const refresh = async () => {
+			if (pending || busyRef.current || document.visibilityState === "hidden") return;
+			const revision = mutation.current;
+			pending = true;
+			try {
+				const response = await tabRpc.getCollabState();
+				if (generation.current !== version || revision !== mutation.current) return;
+				if (!response.success) throw new Error(response.error);
+				confirm(response.data as RpcCollabState);
+				setError(null);
+			} catch (cause) {
+				if (generation.current === version) setError(String(cause));
+			} finally {
+				pending = false;
+			}
+		};
 		void refresh();
-		const timer = window.setInterval(() => void refresh(), 1_000);
-		if (initialJoinLink && autoJoined.current !== initialJoinLink) {
-			autoJoined.current = initialJoinLink;
-			setJoinLink(initialJoinLink);
-			void join(initialJoinLink);
-		}
-		return () => window.clearInterval(timer);
-	}, [open, initialJoinLink, join, refresh]);
+		const timer = window.setInterval(() => void refresh(), 2000);
+		return () => {
+			generation.current++;
+			window.clearInterval(timer);
+		};
+	}, [open, initialJoinLink, tabRpc, confirm]);
 
 	const host = async () => {
+		const version = generation.current;
+		mutation.current++;
+		busyRef.current = true;
 		setBusy(true);
 		setError(null);
 		try {
-			const response = await window.omp.rpc.collabStart(relay.trim() || undefined);
+			const response = await tabRpc.collabStart(relay.trim() || undefined);
+			if (generation.current !== version) return;
 			if (!response.success) throw new Error(response.error);
-			setState(response.data as RpcCollabState);
+			confirm(response.data as RpcCollabState);
 		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : String(cause));
+			if (generation.current === version) setError(cause instanceof Error ? cause.message : String(cause));
 		} finally {
-			setBusy(false);
+			if (generation.current === version) {
+				busyRef.current = false;
+				setBusy(false);
+			}
 		}
 	};
 
 	const leave = async () => {
+		const version = generation.current;
+		mutation.current++;
+		busyRef.current = true;
 		setBusy(true);
 		try {
-			const response = await window.omp.rpc.collabLeave();
+			const response = await tabRpc.collabLeave();
+			if (generation.current !== version) return;
 			if (!response.success) throw new Error(response.error);
-			setState(response.data as RpcCollabState);
-			await hydrateSession();
+			confirm(response.data as RpcCollabState);
+			if (originTabId) await hydrateTabSession(originTabId);
+			else await hydrateSession();
 		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : String(cause));
+			if (generation.current === version) setError(cause instanceof Error ? cause.message : String(cause));
 		} finally {
-			setBusy(false);
+			if (generation.current === version) {
+				busyRef.current = false;
+				setBusy(false);
+			}
 		}
 	};
 
@@ -93,7 +147,14 @@ export function CollabDialog() {
 	};
 
 	return (
-		<Modal onClose={close} open={open} size="lg" title={t("collab.title")}>
+		<Modal
+			onClose={() => {
+				if (!busy) close();
+			}}
+			open={open}
+			size="lg"
+			title={t("collab.title")}
+		>
 			{state.role ? (
 				<div className="space-y-4">
 					<div className="flex items-center justify-between rounded-lg border border-(--omp-border-muted) bg-transparent p-3">

@@ -98,6 +98,33 @@ afterEach(async () => {
 	document.title = "";
 });
 
+describe("ExtensionDialog select", () => {
+	it("shows positional descriptions without including them in the returned choice", async () => {
+		await mount();
+		await act(async () => {
+			useExtensionUiStore.getState().pushRequest({
+				type: "extension_ui_request",
+				id: "select-details",
+				method: "select",
+				title: "Choose a connection",
+				options: ["API key", "Subscription"],
+				optionDetails: [{}, { description: "Sign in with your existing subscription" }],
+			});
+		});
+		const apiKey = buttonWithText("API key");
+		const subscription = buttonWithText("Subscription");
+		if (!apiKey || !subscription) throw new Error("missing connection choices");
+		expect(apiKey.textContent).not.toContain("existing subscription");
+		expect(subscription.textContent).toContain("Sign in with your existing subscription");
+		await click(subscription);
+		expect(respondExtensionUi).toHaveBeenCalledWith({
+			type: "extension_ui_response",
+			id: "select-details",
+			value: "Subscription",
+		});
+	});
+});
+
 describe("ExtensionDialog askDialog", () => {
 	it("returns the wire submit discriminator and renders the selected option preview", async () => {
 		await mount();

@@ -36,7 +36,7 @@ function RootErrorFallback({ error }: { error: Error }) {
 				<button
 					type="button"
 					onClick={() => window.location.reload()}
-					className="omp-pressable mt-5 rounded-lg bg-[var(--omp-accent)] px-4 py-2 text-xs font-semibold text-white hover:bg-[var(--omp-accent-bright)]"
+					className="omp-pressable mt-5 rounded-lg bg-(--omp-btn-primary-bg) px-4 py-2 text-xs font-semibold text-(--omp-btn-primary-text) hover:brightness-110"
 				>
 					{translate("appError.reload")}
 				</button>

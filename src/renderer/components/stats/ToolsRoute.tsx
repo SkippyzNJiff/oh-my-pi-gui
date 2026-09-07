@@ -34,13 +34,13 @@ interface ToolsData {
 export function ToolsRoute({ range, refreshKey }: { range: StatsRange; refreshKey: number }) {
 	const t = useT();
 	const params = useMemo(() => ({ range }), [range]);
-	const { data, isLoading, error, refetch } = useStats("/api/stats/tools", params);
+	const { data, isLoading, error, refetch } = useStats<ToolsData>("/api/stats/tools", params);
 
 	useEffect(() => {
 		if (refreshKey > 0) refetch();
 	}, [refreshKey, refetch]);
 
-	const stats = (data ?? null) as ToolsData | null;
+	const stats = data;
 
 	const columns: StatColumn<ToolRow>[] = useMemo(
 		() => [
@@ -122,7 +122,13 @@ export function ToolsRoute({ range, refreshKey }: { range: StatsRange; refreshKe
 	}, []);
 
 	return (
-		<RouteFrame empty={byTool.length === 0} error={error} loading={isLoading} onRetry={refetch}>
+		<RouteFrame
+			hasData={data !== null}
+			empty={byTool.length === 0}
+			error={error}
+			loading={isLoading}
+			onRetry={refetch}
+		>
 			<SectionTitle>{t("stats.tools.callVolume")}</SectionTitle>
 			<ChartBox height={Math.max(180, byTool.slice(0, 12).length * 26)}>
 				<Bar data={barChart} options={barOptions} />

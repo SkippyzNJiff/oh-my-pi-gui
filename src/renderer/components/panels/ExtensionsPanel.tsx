@@ -1,3 +1,4 @@
+import { type TabRpc as SessionRpc, useTabRpc as useSessionRpc } from "../../lib/tab-rpc";
 /**
  * Shared management surfaces for hooks, MCP servers, and custom slash
  * commands. Settings hosts the first-class pages; the compact Extensions
@@ -64,11 +65,11 @@ interface TabRpc<T> {
 	refresh: () => Promise<void>;
 }
 
-const fetchHooks = (): Promise<RpcResponse> => window.omp.rpc.getHooks();
+const fetchHooks = (rpc: SessionRpc): Promise<RpcResponse> => rpc.getHooks();
 const pickHooks = (data: unknown): RpcHookInfo[] => (data as RpcHooksResult | undefined)?.hooks ?? [];
-const fetchMcpServers = (): Promise<RpcResponse> => window.omp.rpc.getMcpServers();
+const fetchMcpServers = (rpc: SessionRpc): Promise<RpcResponse> => rpc.getMcpServers();
 const pickMcpServers = (data: unknown): RpcMcpServerInfo[] => (data as RpcMcpServersResult | undefined)?.servers ?? [];
-const fetchCommands = (): Promise<RpcResponse> => window.omp.rpc.getAvailableCommands();
+const fetchCommands = (rpc: SessionRpc): Promise<RpcResponse> => rpc.getAvailableCommands();
 const pickCommands = (data: unknown): AvailableCommand[] =>
 	((data as { commands?: AvailableCommand[] } | undefined)?.commands ?? []).filter(isCustomCommand);
 
@@ -79,9 +80,10 @@ const pickCommands = (data: unknown): AvailableCommand[] =>
 function useTabRpc<T>(
 	open: boolean,
 	active: boolean,
-	fetcher: () => Promise<RpcResponse>,
+	fetcher: (rpc: SessionRpc) => Promise<RpcResponse>,
 	pick: (data: unknown) => T,
 ): TabRpc<T> {
+	const client = useSessionRpc();
 	const t = useT();
 	const sidecarReady = useSessionStore(s => s.status) === "ready";
 	const cwd = useSessionStore(s => s.cwd);
@@ -105,7 +107,7 @@ function useTabRpc<T>(
 		setLoading(true);
 		setError(null);
 		try {
-			const res = await fetcher();
+			const res = await fetcher(client);
 			if (request !== requestRef.current || requestRoute !== routeRef.current) return;
 			if (res.success) setData(pick(res.data));
 			else setError(res.error);
@@ -114,7 +116,7 @@ function useTabRpc<T>(
 		} finally {
 			if (request === requestRef.current && requestRoute === routeRef.current) setLoading(false);
 		}
-	}, [sidecarReady, routeReady, routeKey, fetcher, pick, t]);
+	}, [sidecarReady, routeReady, routeKey, fetcher, client, pick, t]);
 
 	useEffect(() => {
 		routeRef.current = routeKey;
@@ -468,6 +470,7 @@ function HooksTab({
 	showSearch?: boolean;
 	embedded?: boolean;
 }) {
+	const tabRpc = useSessionRpc();
 	const t = useT();
 	const mutation = useRowMutation(rpc.refresh);
 	const { groups, visibleCount } = useMemo(() => {
@@ -510,7 +513,7 @@ function HooksTab({
 										void mutation.run(
 											hook.id,
 											!enabled,
-											() => window.omp.rpc.setHookEnabled(hook.id, !enabled),
+											() => tabRpc.setHookEnabled(hook.id, !enabled),
 											t("extPanel.hookToggleFailed"),
 										)
 									}
@@ -547,6 +550,7 @@ function McpTab({
 	showSearch?: boolean;
 	embedded?: boolean;
 }) {
+	const tabRpc = useSessionRpc();
 	const t = useT();
 	const mutation = useRowMutation(rpc.refresh);
 	const [menuFor, setMenuFor] = useState<string | null>(null);
@@ -608,7 +612,7 @@ function McpTab({
 		setTests(prev => ({ ...prev, [server.name]: { testing: true, view: null } }));
 		let view: McpTestView;
 		try {
-			const res = await window.omp.rpc.mcpTest({ name: server.name });
+			const res = await tabRpc.mcpTest({ name: server.name });
 			view = res.success ? summarizeMcpTestData(res.data) : { kind: "error", error: res.error };
 		} catch (cause) {
 			view = { kind: "error", error: cause instanceof Error ? cause.message : String(cause) };
@@ -621,7 +625,7 @@ function McpTab({
 		try {
 			// Long-timeout call; the extension_ui open_url/input dialogs render the
 			// OAuth flow while this is in flight.
-			const res = await window.omp.rpc.mcpReauth(server.name);
+			const res = await tabRpc.mcpReauth(server.name);
 			const cancelling = reauthPhaseRef.current[server.name] === "cancelling";
 			if (!res.success) {
 				if (cancelling) return;
@@ -658,7 +662,7 @@ function McpTab({
 			if (reauthPhaseRef.current[server.name] === "cancelling") setReauthPhase(server.name, "running");
 		};
 		try {
-			const res = await window.omp.rpc.mcpReauthCancel(server.name);
+			const res = await tabRpc.mcpReauthCancel(server.name);
 			// On success the pending mcpReauth settles and runReauth clears the phase.
 			if (!res.success) {
 				toast({ variant: "error", title: t("mcp.reauth.cancelFailed"), message: res.error });
@@ -695,12 +699,7 @@ function McpTab({
 			return;
 		}
 		const next = action === "reconnect" ? null : action === "enable";
-		void mutation.run(
-			server.name,
-			next,
-			() => window.omp.rpc.mcpAction(server.name, action),
-			t("extPanel.mcpActionFailed"),
-		);
+		void mutation.run(server.name, next, () => tabRpc.mcpAction(server.name, action), t("extPanel.mcpActionFailed"));
 	};
 
 	const handleConfirmRemove = (server: RpcMcpServerInfo): void => {
@@ -716,7 +715,7 @@ function McpTab({
 		void mutation.run(
 			server.name,
 			null,
-			() => window.omp.rpc.mcpAction(server.name, "remove", server.scope),
+			() => tabRpc.mcpAction(server.name, "remove", server.scope),
 			t("extPanel.mcpActionFailed"),
 		);
 	};

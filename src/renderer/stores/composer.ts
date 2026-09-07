@@ -18,6 +18,10 @@ export interface ComposerImage {
 
 export interface ComposerStore {
 	draft: string;
+	sending: boolean;
+	submissionUncertain: boolean;
+	setSending: (value: boolean) => void;
+	setSubmissionUncertain: (value: boolean) => void;
 	images: ComposerImage[];
 	/** Replace the draft, or compute the next value from the current one
 	 * (React setState parity — InputArea's updater-form call sites unchanged). */
@@ -29,10 +33,14 @@ export interface ComposerStore {
 export const createComposerStore = () =>
 	createStore<ComposerStore>()(set => ({
 		draft: "",
+		sending: false,
+		submissionUncertain: false,
+		setSending: sending => set({ sending }),
+		setSubmissionUncertain: submissionUncertain => set({ submissionUncertain }),
 		images: [],
 		setDraft: next => set(state => ({ draft: typeof next === "function" ? next(state.draft) : next })),
 		setImages: next => set(state => ({ images: typeof next === "function" ? next(state.images) : next })),
-		reset: () => set({ draft: "", images: [] }),
+		reset: () => set({ draft: "", images: [], sending: false, submissionUncertain: false }),
 	}));
 
 const defaultComposerStore = createComposerStore();

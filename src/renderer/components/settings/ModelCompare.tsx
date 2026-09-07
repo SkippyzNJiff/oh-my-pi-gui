@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../lib/tab-rpc";
 /**
  * Model comparison window: sortable/filterable matrix of every available model
  * across providers — auth status, context window, cost per 1M tokens, provider
@@ -248,6 +249,7 @@ export interface ModelCompareProps {
 }
 
 export function ModelCompare({ open, onClose }: ModelCompareProps) {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const sidecarReady = useSessionStore(s => s.status) === "ready";
 	const current = useModelStore(s => s.model);
@@ -276,11 +278,11 @@ export function ModelCompare({ open, onClose }: ModelCompareProps) {
 			return;
 		}
 		const [modelsR, providersR, rolesR, metaR, usageR] = await Promise.allSettled([
-			window.omp.rpc.getAvailableModels(),
-			window.omp.rpc.getProviders(),
-			window.omp.rpc.getModelRoles(),
-			window.omp.rpc.getModelRoleMetadata(),
-			window.omp.rpc.getUsage(),
+			tabRpc.getAvailableModels(),
+			tabRpc.getProviders(),
+			tabRpc.getModelRoles(),
+			tabRpc.getModelRoleMetadata(),
+			tabRpc.getUsage(),
 		]);
 		const failed: string[] = [];
 
@@ -327,7 +329,15 @@ export function ModelCompare({ open, onClose }: ModelCompareProps) {
 
 		setFailedSections(failed);
 		setLoading(false);
-	}, [sidecarReady, t]);
+	}, [
+		sidecarReady,
+		t,
+		tabRpc.getModelRoles,
+		tabRpc.getUsage,
+		tabRpc.getProviders,
+		tabRpc.getModelRoleMetadata,
+		tabRpc.getAvailableModels,
+	]);
 
 	useEffect(() => {
 		if (open) void load();
@@ -336,12 +346,12 @@ export function ModelCompare({ open, onClose }: ModelCompareProps) {
 	const reloadRoles = useCallback(async () => {
 		if (!sidecarReady) return;
 		try {
-			const res = await window.omp.rpc.getModelRoles();
+			const res = await tabRpc.getModelRoles();
 			if (res.success) setRoles((res.data as ModelRolesResult | undefined)?.roles ?? []);
 		} catch {
 			/* keep stale role list; the next full load retries */
 		}
-	}, [sidecarReady]);
+	}, [sidecarReady, tabRpc.getModelRoles]);
 
 	const metaById = useMemo(() => new Map((roleMeta ?? []).map(m => [m.id, m])), [roleMeta]);
 
@@ -392,7 +402,7 @@ export function ModelCompare({ open, onClose }: ModelCompareProps) {
 			if (busyKey !== null || isCurrent(row)) return;
 			setBusyKey(row.key);
 			try {
-				const res = await window.omp.rpc.setModel(row.provider, row.id);
+				const res = await tabRpc.setModel(row.provider, row.id);
 				if (res.success) {
 					toast({ variant: "success", message: t("modelCompare.setSuccess", { model: row.key }) });
 				} else {
@@ -404,7 +414,7 @@ export function ModelCompare({ open, onClose }: ModelCompareProps) {
 				setBusyKey(null);
 			}
 		},
-		[busyKey, isCurrent, t],
+		[busyKey, isCurrent, t, tabRpc.setModel],
 	);
 
 	const assignRole = useCallback(
@@ -414,8 +424,8 @@ export function ModelCompare({ open, onClose }: ModelCompareProps) {
 			setBusyKey(row.key);
 			try {
 				const res = roleId
-					? await window.omp.rpc.setModelRole(roleId, row.key)
-					: await window.omp.rpc.setModelRole(currentRoleId, null);
+					? await tabRpc.setModelRole(roleId, row.key)
+					: await tabRpc.setModelRole(currentRoleId, null);
 				if (res.success) {
 					toast({
 						variant: "success",
@@ -433,7 +443,7 @@ export function ModelCompare({ open, onClose }: ModelCompareProps) {
 				setBusyKey(null);
 			}
 		},
-		[busyKey, reloadRoles, t],
+		[busyKey, reloadRoles, t, tabRpc.setModelRole],
 	);
 
 	/** Roles offered in the per-row picker: non-hidden, plus any hidden role already on this row (so it can be cleared). */

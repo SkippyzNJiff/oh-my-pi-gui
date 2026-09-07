@@ -41,8 +41,8 @@ export function clearInlineThemeTokens(): void {
 	const style = document.documentElement.style;
 	const toRemove: string[] = [];
 	for (let i = 0; i < style.length; i++) {
-		const prop = style.item(i);
-		if (prop.startsWith("--omp-")) toRemove.push(prop);
+		const prop = style[i];
+		if (prop?.startsWith("--omp-")) toRemove.push(prop);
 	}
 	for (const prop of toRemove) style.removeProperty(prop);
 }
@@ -90,12 +90,11 @@ export function applyTheme(mode: ThemeMode): void {
 }
 
 /**
- * Applies the user's font size to the body (default 13px). Components size
- * in px, so this scales prose and inherited text; em-based markdown sizes
- * follow automatically.
+ * Scale the reading and UI typography together; spacing remains a separate preference.
  */
 export function applyFontSize(size: number): void {
 	document.body.style.fontSize = `${size}px`;
+	document.documentElement.style.setProperty("--gui-font-size", `${size}px`);
 }
 
 /**

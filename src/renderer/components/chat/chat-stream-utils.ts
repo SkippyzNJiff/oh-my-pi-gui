@@ -5,6 +5,7 @@
  */
 
 import type { AgentMessage, MessageContent, RpcQueuedMessage } from "../../../shared/rpc-types";
+import { messageIdentity } from "../../lib/message-identity";
 import { isRenderableMessageText, messageText, splitReaction } from "../../lib/messages";
 import type { ReadGroupEntry, ReadGroupUsage } from "../../lib/read-group";
 import type { QueueLane } from "../../stores/queue";
@@ -60,7 +61,8 @@ export type Row =
 	| { kind: "expander"; count: number }
 	| { kind: "queued"; item: RpcQueuedMessage; lane: QueueLane };
 function messageKey(message: AgentMessage): string {
-	if (typeof message.id === "string" && message.id.length > 0) return message.id;
+	const identity = messageIdentity(message);
+	if (identity) return identity;
 	const firstTool = messageContent(message).find(block => block.type === "toolCall");
 	if (firstTool?.type === "toolCall") return toolEntryKey(firstTool);
 	return `${message.role}-${String(message.timestamp ?? "untimed")}`;
@@ -271,11 +273,14 @@ function summarizeProcess(messages: AgentMessage[]): ProcessMeta {
  * A final assistant message containing both thinking and text is split: only
  * the thinking fragment joins the process row.
  */
-export function buildHistoryRows(messages: AgentMessage[], detail: TranscriptDetail): HistoryRow[] {
+export function buildHistoryRows(
+	messages: AgentMessage[],
+	detail: TranscriptDetail,
+	preservedProcessStarts?: ReadonlySet<string>,
+): HistoryRow[] {
 	const rows: HistoryRow[] = [];
 	let processMessages: AgentMessage[] = [];
 	let reactionTargetIndex: number | undefined;
-	const lastUserIndex = messages.findLastIndex(message => message.role === "user");
 	const flushProcess = () => {
 		if (processMessages.length === 0) return;
 		rows.push({ kind: "process", messages: processMessages, ...summarizeProcess(processMessages) });
@@ -285,10 +290,9 @@ export function buildHistoryRows(messages: AgentMessage[], detail: TranscriptDet
 	for (let index = 0; index < messages.length; index++) {
 		const incoming = messages[index];
 		if (!incoming) continue;
-		// A later user turn reactivates the conversation. Keep any partial reply,
-		// but drop the stale interruption/network error chrome from older turns.
-		let message =
-			index < lastUserIndex && incoming.errorMessage ? { ...incoming, errorMessage: undefined } : incoming;
+		// Keep an explicitly opened live phase in place when it finalizes.
+		if (preservedProcessStarts?.has(`message-${messageKey(incoming)}`)) flushProcess();
+		let message = incoming;
 		if (message.role === "assistant") {
 			if (reactionTargetIndex !== undefined) {
 				const split = splitMessageReaction(message);

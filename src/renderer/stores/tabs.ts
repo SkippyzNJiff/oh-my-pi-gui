@@ -16,7 +16,7 @@
  * window.omp.tabs.* and window.omp.events.onTabStatus.
  */
 import { useEffect } from "react";
-import { create } from "zustand";
+import { create, type StoreApi } from "zustand";
 import type {
 	IpcSpawnTabResult,
 	IpcTabStatusPayload,
@@ -47,7 +47,7 @@ import {
 	setFocusedSessionRuntime,
 	useRuntimeTabId,
 } from "./session-runtime-context";
-import { ensureTabRuntime } from "./tab-runtime";
+import { ensureTabRuntime, replaceTabRuntime } from "./tab-runtime";
 import { toast } from "./toast";
 import { useUiStore } from "./ui";
 
@@ -261,7 +261,7 @@ export const useTabsStore = create<TabsStore>()((set, get) => ({
 						info.sessionPath !== undefined &&
 						existing.sessionPath !== info.sessionPath);
 				if (sessionChanged) {
-					deleteSessionRuntime(info.tabId);
+					replaceTabRuntime(info.tabId);
 				}
 				ensureTabRuntime(info.tabId);
 				return {
@@ -589,9 +589,13 @@ export const useTabsStore = create<TabsStore>()((set, get) => ({
 	},
 
 	applyTabStatus: payload => {
+		if (isTabClosed(payload.tabId)) return;
 		const state = get();
 		const active = state.activeTabId === payload.tabId;
 		const previous = state.tabs.find(tab => tab.id === payload.tabId);
+		if (payload.status === "starting" || payload.status === "restarting") {
+			ensureTabRuntime(payload.tabId).recovering = true;
+		}
 		const sessionChanged =
 			(previous?.sessionId !== undefined &&
 				payload.sessionId !== undefined &&
@@ -604,8 +608,7 @@ export const useTabsStore = create<TabsStore>()((set, get) => ({
 		// the fresh runtime — otherwise static store access falls through to the
 		// module-level default stores until the next switch/reconcile.
 		if (sessionChanged) {
-			deleteSessionRuntime(payload.tabId);
-			ensureTabRuntime(payload.tabId);
+			replaceTabRuntime(payload.tabId);
 			if (active) setFocusedSessionRuntime(payload.tabId);
 		}
 		set(current => {
@@ -640,6 +643,9 @@ export const useTabsStore = create<TabsStore>()((set, get) => ({
 			return { tabs };
 		});
 		const session = sessionRuntimeStore<SessionStore>(payload.tabId, "session");
+		if (sessionChanged && (payload.status === "ready" || payload.status === "running")) {
+			void hydrateTabSession(payload.tabId);
+		}
 		if (session) {
 			session.getState().setStatus(payload.status === "running" ? "ready" : payload.status, payload.cwd);
 			session.setState({
@@ -684,6 +690,7 @@ export function restoreTabComposer(
 	sessionId: string,
 	draft: string,
 	images: ComposerImage[],
+	originComposer?: StoreApi<ComposerStore>,
 ): void {
 	if (!tabId) return;
 	const prependDraft = (current: string): string => (current ? `${draft}\n${current}` : draft);
@@ -697,7 +704,7 @@ export function restoreTabComposer(
 		}));
 		return;
 	}
-	if (session.getState().sessionId !== sessionId) return;
+	if (originComposer ? composer !== originComposer : session.getState().sessionId !== sessionId) return;
 	composer.setState(current => ({
 		draft: prependDraft(current.draft),
 		images: [...images, ...current.images],
@@ -774,8 +781,8 @@ export function useSessionTabs(): void {
 						const tab = state.tabs.find(entry => entry.id === tabId);
 						const session = sessionRuntimeStore<SessionStore>(tabId, "session");
 						if (!tab || !session || (tab.status !== "ready" && tab.status !== "running")) continue;
-						if (session.getState().sessionId) continue;
 						session.getState().setStatus("ready", tab.cwd);
+						if (session.getState().sessionId) continue;
 						void hydrateTabSession(tabId);
 					}
 				}, 0);

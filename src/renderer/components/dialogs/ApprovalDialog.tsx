@@ -13,7 +13,6 @@ import { useT } from "../../lib/i18n";
 import { Badge, type BadgeVariant, Button, Modal } from "../common";
 
 const APPROVAL_TITLE_PREFIX = "Allow tool: ";
-const PREVIEW_MAX_CHARS = 2000;
 
 type ApprovalSelect = Extract<ExtensionUIRequest, { method: "select" }>;
 
@@ -77,11 +76,7 @@ export function ApprovalDialog({
 		const first = lines[0] ?? "";
 		const name = first.startsWith(APPROVAL_TITLE_PREFIX) ? first.slice(APPROVAL_TITLE_PREFIX.length).trim() : first;
 		const rest = lines.slice(1).join("\n").trim();
-		const truncated =
-			rest.length > PREVIEW_MAX_CHARS
-				? `${rest.slice(0, PREVIEW_MAX_CHARS)}\n${t("approval.elided", { count: rest.length - PREVIEW_MAX_CHARS })}`
-				: rest;
-		return { toolName: name || t("approval.unknownTool"), body: truncated };
+		return { toolName: name || t("approval.unknownTool"), body: rest };
 	}, [request.title, t]);
 
 	const tier = tierFor(toolName);
@@ -114,15 +109,14 @@ export function ApprovalDialog({
 						<Button onClick={deny} size="md" variant="danger">
 							{t("approval.deny")}
 						</Button>
-						<button
-							autoFocus
-							className="inline-flex h-7 items-center gap-1.5 rounded-md border border-transparent bg-(--omp-success) px-4 text-xs font-medium text-black whitespace-nowrap transition-all hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--omp-border-accent) active:brightness-95"
+						<Button
+							variant="primary"
+							size="md"
+							icon={<ShieldCheck size={13} />}
 							onClick={() => onRespond({ value: "Approve" })}
-							type="button"
 						>
-							<ShieldCheck size={13} />
 							{t("approval.approve")}
-						</button>
+						</Button>
 					</div>
 				</div>
 			</div>

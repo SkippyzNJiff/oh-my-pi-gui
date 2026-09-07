@@ -325,6 +325,30 @@ describe("tabs store boot reconciliation", () => {
 		expect(sessionRuntime("t0")).not.toBe(oldRuntime);
 		expect(useTabsStore.getState().tabs[0]).toMatchObject({ sessionId: "s-new", title: undefined });
 	});
+
+	it("retains unsent input when restarting an unpersisted session changes its identity", () => {
+		seedTabs();
+		useTabsStore
+			.getState()
+			.applyTabStatus({ kind: "agent", tabId: "t0", cwd: "/alpha", status: "ready", sessionId: "before-restart" });
+		useComposerStore.getState().setDraft("unsent recovery draft");
+		useComposerStore.getState().setSubmissionUncertain(true);
+		useTabsStore.getState().applyTabStatus({
+			kind: "agent",
+			tabId: "t0",
+			cwd: "/alpha",
+			status: "starting",
+			sessionId: "before-restart",
+		});
+		useTabsStore
+			.getState()
+			.applyTabStatus({ kind: "agent", tabId: "t0", cwd: "/alpha", status: "ready", sessionId: "after-restart" });
+		expect(useComposerStore.getState()).toMatchObject({
+			draft: "unsent recovery draft",
+			sending: false,
+			submissionUncertain: true,
+		});
+	});
 });
 
 describe("tabs store switch", () => {
@@ -864,6 +888,20 @@ describe("useSessionTabs hook", () => {
 		expect(useTabsStore.getState().activeTabId).toBe("t1");
 		expect(useSessionStore.getState()).toMatchObject({ sessionId: "restored", cwd: "/beta", status: "ready" });
 		expect(omp.rpc.getTranscript).toHaveBeenCalled();
+	});
+
+	it("restores ready controls when metadata arrives before the boot status snapshot", async () => {
+		ensureTabRuntime("t0");
+		setFocusedSessionRuntime("t0");
+		useSessionStore.setState({ sessionId: "restored", cwd: "/alpha", status: "starting" });
+		omp.tabs.list.mockResolvedValue([{ ...tabInfo("t0", "/alpha"), active: true }]);
+		await mount();
+		await act(async () => {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			setTimeout(resolve, 0);
+			await promise;
+		});
+		expect(useSessionStore.getState()).toMatchObject({ sessionId: "restored", status: "ready" });
 	});
 
 	it("hydrates an active fresh tab when ready only arrives on the light channel", async () => {

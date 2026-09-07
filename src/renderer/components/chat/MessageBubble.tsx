@@ -9,10 +9,10 @@ import { MarkdownRenderer } from "../../lib/markdown";
 import { forkSessionFromMessageInNewTab, isRenderableMessageText } from "../../lib/messages";
 import { PREVIEW_SCROLL_LG } from "../../lib/preview";
 import { useTabRpc } from "../../lib/tab-rpc";
+import { useSessionStore } from "../../stores/session";
 import { useRuntimeTabId } from "../../stores/session-runtime-context";
 import { toast } from "../../stores/toast";
 import { toolEntryKey } from "../../stores/tools";
-import { useUiStore } from "../../stores/ui";
 import { editArgumentSummary } from "../tools/edit-args";
 import { type RunningIndicator, ToolCard } from "../tools/ToolCard";
 import { CustomMessageCard, isCustomMessageCardType } from "./CustomMessageCard";
@@ -183,6 +183,7 @@ function ExecutionBubble({ message }: { message: AgentMessage }) {
 
 function ContextBubble({ message }: { message: AgentMessage }) {
 	const t = useT();
+	const [expanded, setExpanded] = useState(false);
 	const isFiles = message.role === "fileMention";
 	const compactionMethodKey = message.method ? COMPACTION_METHOD_KEYS[message.method] : undefined;
 	const compactionMethod = message.method
@@ -238,7 +239,24 @@ function ContextBubble({ message }: { message: AgentMessage }) {
 						))}
 					</div>
 				) : (
-					<MarkdownRenderer content={message.summary ?? ""} />
+					<>
+						{message.shortSummary && <MarkdownRenderer content={message.shortSummary} />}
+						{typeof message.warning === "string" && (
+							<p role="status" className="text-omp-md text-(--omp-warning)">
+								{message.warning}
+							</p>
+						)}
+						<details onToggle={event => setExpanded(event.currentTarget.open)}>
+							<summary className="cursor-pointer py-2 text-omp-md text-(--omp-muted)">
+								{t("chat.context.details")}
+							</summary>
+							{expanded && (
+								<div className={PREVIEW_SCROLL_LG}>
+									<MarkdownRenderer content={message.summary ?? ""} />
+								</div>
+							)}
+						</details>
+					</>
 				)}
 			</div>
 		</div>
@@ -261,7 +279,7 @@ export const MessageBubble = memo(function MessageBubble({
 	const tabId = useRuntimeTabId();
 	const [copied, setCopied] = useState(false);
 	const [branching, setBranching] = useState(false);
-	const switchPending = useUiStore(state => state.switchPending !== null);
+	const switchPending = useSessionStore(state => state.switchPending !== null);
 	if (message.role === "bashExecution" || message.role === "pythonExecution") {
 		return <ExecutionBubble message={message} />;
 	}

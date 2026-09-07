@@ -1,5 +1,17 @@
 /** Simplified Chinese text for backend-provided settings enum labels and descriptions. */
 export const ZH_SCHEMA_OPTION_TEXT: Readonly<Record<string, string>> = {
+	Stable: "稳定版",
+	Canary: "预览版",
+	Mechanical: "规则检测",
+	"Short (5m)": "短期（5 分钟）",
+	"Long (1h)": "长期（1 小时）",
+	"Provider default — Anthropic uses 5m entries kept warm by idle keep-alive refreshes; PI_CACHE_RETENTION still applies":
+		"使用提供商默认值；Anthropic 使用 5 分钟缓存，空闲时续期；仍遵循 PI_CACHE_RETENTION。",
+	"Cheapest cache writes; Anthropic keeps the entry warm with bounded keep-alive refreshes while idle":
+		"缓存写入成本最低；Anthropic 在空闲时进行有限次数的续期。",
+	"1h TTL where the provider supports it; pricier writes, no keep-alive refresh requests":
+		"支持时保留 1 小时；写入费用更高，不发送缓存续期请求。",
+	"Disable prompt caching and cache-affinity routing": "关闭提示词缓存及缓存亲和路由。",
 	Off: "关闭",
 	"Do not prevent any sleep": "不阻止任何休眠",
 	"Prevent Idle Sleep": "阻止空闲休眠",

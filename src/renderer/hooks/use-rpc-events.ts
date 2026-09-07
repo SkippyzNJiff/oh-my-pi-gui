@@ -1,7 +1,19 @@
+import {
+	applySessionState,
+	hydrateLegacySession,
+	hydrateSession,
+	hydrateTabSession,
+	refreshSessionState,
+	syncGoal,
+	syncLoopMode,
+	syncVibeMode,
+} from "./session-hydration";
+
+export * from "./session-hydration";
+
 import { useEffect } from "react";
 import type { IpcSidecarStatusPayload } from "../../shared/ipc-types";
 import {
-	type AgentMessage,
 	type AgentSessionEvent,
 	BLOCKING_UI_METHODS,
 	type CommandOutputFrame,
@@ -10,24 +22,20 @@ import {
 	isThinkingLevel,
 	type ModelCatalogUpdateFrame,
 	type PromptResultFrame,
-	type RpcGoalState,
-	type RpcLoopModeState,
-	type RpcResponse,
 	type RpcSessionState,
-	type RpcVibeModeState,
 	type SessionInfoUpdateFrame,
 	type SubagentFrame,
-	type SubagentSnapshot,
 	type TodoPhase,
 } from "../../shared/rpc-types";
+import { formatClock } from "../lib/format";
 import { translate } from "../lib/i18n";
 import { normalizeLoopUpdate } from "../lib/loop-mode";
 import { acceptsActiveTabEvents } from "../lib/tab-routing";
 import { useExtensionUiStore } from "../stores/extension-ui";
-import { type MessagesStore, mergeFetchedTranscript, useMessagesStore } from "../stores/messages";
+import { useMessagesStore } from "../stores/messages";
 import { useModelStore } from "../stores/model";
 import { usePlanApprovalStore } from "../stores/plan-approval";
-import { type QueueStore, useQueueStore } from "../stores/queue";
+import { useQueueStore } from "../stores/queue";
 import { type SessionStore, useSessionStore } from "../stores/session";
 import {
 	activeTabCommand,
@@ -36,13 +44,12 @@ import {
 	type TabCommand,
 	withSessionRuntime,
 } from "../stores/session-runtime-context";
-import { type SettingsStore, useSettingsStore } from "../stores/settings";
-import { type SubagentsStore, useSubagentsStore } from "../stores/subagents";
-import { ensureTabRuntime } from "../stores/tab-runtime";
+import { useSettingsStore } from "../stores/settings";
+import { useSubagentsStore } from "../stores/subagents";
 import { isTabClosed, useTabsStore } from "../stores/tabs";
 import { useToastStore } from "../stores/toast";
 import { useTodoStore } from "../stores/todo";
-import { type ToolsStore, useToolsStore } from "../stores/tools";
+import { useToolsStore } from "../stores/tools";
 import { useUiStore } from "../stores/ui";
 
 /**
@@ -210,46 +217,6 @@ function toastOnAgentError(tabId: string, event: Extract<AgentSessionEvent, { ty
 	useToastStore.getState().push({ variant: "error", title: translate("events.turnFailed"), message: detail });
 }
 
-/** Apply a get_state snapshot to every state-derived store. */
-function applySessionState(state: RpcSessionState, fallbackName?: string): void {
-	useModelStore.getState().setFromState(state);
-	useSessionStore.getState().setFromState(state);
-	if (!state.sessionName && fallbackName) {
-		useSessionStore.setState({ sessionName: fallbackName });
-	}
-	useSettingsStore.getState().setFromState(state);
-	useTodoStore.getState().setPhases(state.todoPhases);
-}
-
-/**
- * Light re-sync of session state (no transcript/subagent fetch). Used for
- * model_changed: a model switch does not rewrite history, so refetching the
- * transcript mid-run would only race the live stream. Also fired on
- * agent_start: server-side plan-mode exits (plan_approval accept) emit no
- * event, so turn start is the sync point that keeps planModeEnabled honest.
- */
-async function refreshSessionState(tabId = useTabsStore.getState().activeTabId): Promise<void> {
-	if (!tabId) return;
-	// Closed tabs keep their tombstone: never resurrect a runtime for them.
-	// Live tabs may legitimately lack one yet (boot race) — create on demand.
-	const runtime = isTabClosed(tabId) ? sessionRuntime(tabId) : ensureTabRuntime(tabId);
-	if (!runtime) return;
-	const sessionId = sessionRuntimeStore<SessionStore>(tabId, "session")?.getState().sessionId;
-	try {
-		const res = await runtime.command({ type: "get_state" });
-		if (
-			sessionRuntime(tabId) === runtime &&
-			sessionRuntimeStore<SessionStore>(tabId, "session")?.getState().sessionId === sessionId &&
-			res.success &&
-			res.data != null
-		) {
-			withSessionRuntime(tabId, () => applySessionState(res.data as RpcSessionState));
-		}
-	} catch {
-		// Transient — the next heartbeat or hydration retries.
-	}
-}
-
 /** Goal statuses past which no live goal remains — the composer chip must clear. */
 const TERMINAL_GOAL_STATUSES: Record<string, true> = { dropped: true, complete: true };
 
@@ -283,223 +250,6 @@ function goalPatchFromEvent(
 	return { goal: { objective: goalInfo.objective }, goalState: { status } };
 }
 
-type HydrationGuard = () => boolean;
-
-/** Fetch the live goal state (get_goal) into the session store; clears when no goal is active. */
-async function syncGoal(tabId: string, command: TabCommand, isCurrent: HydrationGuard): Promise<void> {
-	try {
-		const res = await command({ type: "get_goal" });
-		if (!isCurrent() || !res.success) return;
-		// get_goal wire payload is RpcGoalState; `data` crosses the bridge as unknown.
-		const data = res.data as RpcGoalState | undefined;
-		withSessionRuntime(tabId, () => {
-			if (data?.enabled !== true) {
-				useSessionStore.setState({ goal: null, goalState: null });
-				return;
-			}
-			useSessionStore.setState({
-				goal: typeof data.objective === "string" ? { objective: data.objective } : null,
-				goalState: { status: data.status },
-			});
-		});
-	} catch {
-		// Transient — the next goal_updated event or hydration retries.
-	}
-}
-
-/** Fetch the live loop-mode state (get_loop_mode) into the session store; null on failure. */
-async function syncLoopMode(tabId: string, command: TabCommand, isCurrent: HydrationGuard): Promise<void> {
-	try {
-		const res = await command({ type: "get_loop_mode" });
-		if (!isCurrent() || !res.success) return;
-		// get_loop_mode wire payload is RpcLoopModeState; `data` crosses the bridge as unknown.
-		withSessionRuntime(tabId, () => {
-			useSessionStore.setState({ loopMode: (res.data as RpcLoopModeState | undefined) ?? null });
-		});
-	} catch {
-		// Transient — the next loop_mode_update event or hydration retries.
-	}
-}
-
-/** Fetch the live vibe-mode state (get_vibe_mode) into the session store; no event exists. */
-async function syncVibeMode(tabId: string, command: TabCommand, isCurrent: HydrationGuard): Promise<void> {
-	try {
-		const res = await command({ type: "get_vibe_mode" });
-		if (!isCurrent() || !res.success) return;
-		const data = res.data as RpcVibeModeState | undefined;
-		withSessionRuntime(tabId, () => {
-			useSessionStore.setState({ vibeModeEnabled: data?.enabled === true });
-		});
-	} catch {
-		// Transient — the next hydration retries.
-	}
-}
-
-const hydrationVersions = new Map<string, number>();
-let legacyHydrationVersion = 0;
-
-async function hydrateLegacySession(fallbackName?: string, initialState?: RpcResponse): Promise<void> {
-	const version = ++legacyHydrationVersion;
-	const isCurrent = () => version === legacyHydrationVersion;
-	const beforeMessages = useMessagesStore.getState().messages;
-	const beforeLiveMessages = useMessagesStore.getState().liveMessages;
-	const core = Promise.allSettled([
-		initialState ? Promise.resolve(initialState) : activeTabCommand({ type: "get_state" }),
-		activeTabCommand({ type: "get_transcript" }),
-	]);
-	const subagents = activeTabCommand({ type: "get_subagents" });
-	const secondary = Promise.allSettled([
-		syncGoal("", activeTabCommand, isCurrent),
-		syncLoopMode("", activeTabCommand, isCurrent),
-		syncVibeMode("", activeTabCommand, isCurrent),
-		useQueueStore.getState().refresh(),
-		useSettingsStore.getState().syncDisplaySettings(),
-		useSettingsStore.getState().syncApproval(),
-	]);
-	const [stateResult, messagesResult] = await core;
-	if (!isCurrent()) return;
-	const stateIsIdle =
-		stateResult.status === "fulfilled" &&
-		stateResult.value.success &&
-		stateResult.value.data != null &&
-		!(stateResult.value.data as RpcSessionState).isStreaming;
-	if (stateResult.status === "fulfilled" && stateResult.value.success && stateResult.value.data != null) {
-		const wire = stateResult.value.data as RpcSessionState;
-		applySessionState(wire, fallbackName);
-		if (wire.isStreaming && useSessionStore.getState().awaitingModelSince === null) {
-			useSessionStore.setState({ awaitingModelSince: Date.now() });
-		}
-		if (!wire.isStreaming) useMessagesStore.getState().clearStreaming();
-		void activeTabCommand({ type: "set_subagent_subscription", level: "events" });
-	}
-	if (messagesResult.status === "fulfilled" && messagesResult.value.success) {
-		const fetched = (messagesResult.value.data as { messages?: AgentMessage[] } | undefined)?.messages ?? [];
-		const current = useMessagesStore.getState().messages;
-		useMessagesStore.getState().reconcileFetched(mergeFetchedTranscript(fetched, beforeMessages, current));
-		if (stateIsIdle && useMessagesStore.getState().liveMessages === beforeLiveMessages) {
-			useMessagesStore.getState().clearDeliveredLiveMessages();
-		}
-		useToolsStore.getState().hydrateMessages(useMessagesStore.getState().messages);
-	}
-	const settledSubagents = await subagents;
-	if (isCurrent() && settledSubagents.success) {
-		useSubagentsStore
-			.getState()
-			.setSnapshots((settledSubagents.data as { subagents?: SubagentSnapshot[] } | undefined)?.subagents ?? []);
-	}
-	await secondary;
-}
-
-/** Reload every renderer store that belongs to the active sidecar session. */
-export async function hydrateSession(fallbackName?: string): Promise<void> {
-	const tabId = useTabsStore.getState().activeTabId;
-	if (!tabId || !sessionRuntime(tabId)) return hydrateLegacySession(fallbackName);
-	return hydrateTabSession(tabId, fallbackName);
-}
-
-/** Reload every renderer store belonging to one visible tab. */
-export async function hydrateTabSession(tabId: string, fallbackName?: string): Promise<void> {
-	if (isTabClosed(tabId)) return;
-	const runtime = ensureTabRuntime(tabId);
-	const version = (hydrationVersions.get(tabId) ?? 0) + 1;
-	hydrationVersions.set(tabId, version);
-	const isCurrent = (): boolean => hydrationVersions.get(tabId) === version && sessionRuntime(tabId) === runtime;
-	// Capture before the fetch: committed agent_end rows arriving while the
-	// transcript RPC is in flight must survive the merge below.
-	const initialMessagesStore = sessionRuntimeStore<MessagesStore>(tabId, "messages")?.getState();
-	const beforeMessages = initialMessagesStore?.messages ?? [];
-	const beforeLiveMessages = initialMessagesStore?.liveMessages ?? [];
-
-	const coreResult = Promise.allSettled([
-		runtime.command({ type: "get_state" }),
-		runtime.command({ type: "get_transcript" }),
-	]);
-	const subagentsResult = Promise.allSettled([runtime.command({ type: "get_subagents" })]);
-	const queue = sessionRuntimeStore<QueueStore>(tabId, "queue")?.getState();
-	const settings = sessionRuntimeStore<SettingsStore>(tabId, "settings")?.getState();
-	const secondaryResult = Promise.allSettled([
-		// Goal state isn't on the get_state wire — fetch alongside so the
-		// composer chip reflects an active goal after boot/session switches,
-		// not only on goal_updated events.
-		syncGoal(tabId, runtime.command, isCurrent),
-		// Loop and vibe mode likewise: loop_mode_update frames keep loop fresh
-		// afterwards; vibe emits nothing, so the Modes window mirrors toggles.
-		syncLoopMode(tabId, runtime.command, isCurrent),
-		syncVibeMode(tabId, runtime.command, isCurrent),
-		// Queue snapshot: queue_update frames keep it fresh afterwards;
-		// get_queue is only the hydrate fallback (boot/reconnect/session
-		// switch all land here). refresh() swallows its own failures.
-		queue?.refresh(),
-		// Project-scoped agent settings can differ between tab workspaces. The
-		// settings store is per-tab (each runtime owns one bound to its own
-		// command channel), so re-read this tab's sidecar on every hydrate; both
-		// methods already reject stale out-of-order replies.
-		settings?.syncDisplaySettings(),
-		settings?.syncApproval(),
-	]);
-	const [stateResult, messagesResult] = await coreResult;
-	if (!isCurrent()) return;
-	const stateIsIdle =
-		stateResult.status === "fulfilled" &&
-		stateResult.value.success &&
-		stateResult.value.data != null &&
-		!(stateResult.value.data as RpcSessionState).isStreaming;
-
-	if (stateResult.status === "fulfilled" && stateResult.value.success && stateResult.value.data != null) {
-		const wire = stateResult.value.data as RpcSessionState;
-		withSessionRuntime(tabId, () => applySessionState(wire, fallbackName));
-		// Mid-run attach (launch/reconnect/session switch while the agent is
-		// streaming) missed the agent_start that arms the status row — re-arm
-		// it like the TUI's ensureLoadingAnimation on guest attach, unless a
-		// live marker already carries a more accurate start time. When content
-		// is actively streaming the row stays hidden behind StreamingRows.
-		const session = sessionRuntimeStore<SessionStore>(tabId, "session");
-		const messages = sessionRuntimeStore<MessagesStore>(tabId, "messages");
-		if (wire.isStreaming && session?.getState().awaitingModelSince === null) {
-			session.setState({ awaitingModelSince: Date.now() });
-		}
-		if (!wire.isStreaming) {
-			// Zombie settle: the run finished while this tab sat in the
-			// background, so its message_end/agent_end never forwarded and the
-			// restored bundle still paints partial assistant content. Clear only
-			// those stream buffers here; the transcript merge below separately
-			// removes delivered live rows while preserving an unsent local prompt.
-			messages?.getState().clearStreaming();
-		}
-		// Per-tab subagent subscription (F-HYDRATE), re-asserted on every
-		// successful hydrate: the runtime's command channel routes to THIS tab's
-		// sidecar. Tabs that report ready while active also subscribe via the
-		// status handlers — this covers tabs that booted or settled in the
-		// background, whose frames would otherwise stay silent on return.
-		// Idempotent server-side.
-		void runtime.command({ type: "set_subagent_subscription", level: "events" });
-	}
-
-	if (messagesResult.status === "fulfilled" && messagesResult.value.success) {
-		const data = messagesResult.value.data as { messages?: AgentMessage[] } | undefined;
-		const fetched = data?.messages ?? [];
-		const messages = sessionRuntimeStore<MessagesStore>(tabId, "messages");
-		const tools = sessionRuntimeStore<ToolsStore>(tabId, "tools");
-		const current = messages?.getState().messages ?? [];
-		messages?.getState().reconcileFetched(mergeFetchedTranscript(fetched, beforeMessages, current));
-		if (stateIsIdle && messages?.getState().liveMessages === beforeLiveMessages) {
-			messages.getState().clearDeliveredLiveMessages();
-		}
-		tools?.getState().hydrateMessages(messages?.getState().messages ?? []);
-	}
-
-	// Subagents and secondary chips do not hold the transcript hostage. Their
-	// requests still begin in parallel, but the core session can paint first.
-	const [settledSubagents] = await subagentsResult;
-	if (isCurrent() && settledSubagents.status === "fulfilled" && settledSubagents.value.success) {
-		const data = settledSubagents.value.data as { subagents?: SubagentSnapshot[] } | undefined;
-		sessionRuntimeStore<SubagentsStore>(tabId, "subagents")
-			?.getState()
-			.setSnapshots(data?.subagents ?? []);
-	}
-	await secondaryResult;
-}
-
 /**
  * Subscribes to batched RPC events from the sidecar and dispatches
  * them to the appropriate stores. Call once in App.tsx.
@@ -508,6 +258,8 @@ export async function hydrateTabSession(tabId: string, fallbackName?: string): P
 export function useRpcEvents(): void {
 	useEffect(() => {
 		const focusedTabId = () => useTabsStore.getState().activeTabId ?? "";
+		let disposed = false;
+		let statusVersion = 0;
 		const unsubscribe =
 			typeof window.omp.events.onTabBatch === "function"
 				? window.omp.events.onTabBatch(reduceEvents)
@@ -517,14 +269,20 @@ export function useRpcEvents(): void {
 		function reduceEvents(events: AgentSessionEvent[], tabId: string): void {
 			// Incoming session events belong to the target sidecar. Drop them
 			// during an in-place session switch, but never suppress the other pane.
-			if (useUiStore.getState().switchPending && useTabsStore.getState().activeTabId === tabId) return;
+			if (sessionRuntimeStore<SessionStore>(tabId, "session")?.getState().switchPending) return;
 			if (closedTabFrame(tabId)) return;
 			withSessionRuntime(tabId, () => {
 				useMessagesStore.getState().applyEvents(events);
 				useToolsStore.getState().applyEvents(events);
 
 				for (const event of events) {
+					useSessionStore.setState(state => ({ eventVersion: state.eventVersion + 1 }));
 					switch (event.type) {
+						case "collab_state":
+							useSessionStore.setState({ collab: event.state });
+							if (event.restored) void hydrateTabSession(tabId);
+							else void refreshSessionState(tabId);
+							break;
 						case "agent_start": {
 							useSessionStore.setState({ isStreaming: true, awaitingModelSince: Date.now() });
 							// Server-side mode changes (plan_approval accept exits plan
@@ -585,6 +343,9 @@ export function useRpcEvents(): void {
 						}
 						case "auto_compaction_end": {
 							useSessionStore.setState({ isCompacting: false, compactionInfo: null });
+							if (!event.aborted) {
+								void (tabId && sessionRuntime(tabId) ? hydrateTabSession(tabId) : hydrateSession());
+							}
 							if (event.aborted) {
 								useToastStore
 									.getState()
@@ -609,13 +370,16 @@ export function useRpcEvents(): void {
 							});
 							useToastStore.getState().push({
 								variant: "warning",
-								message: translate("events.retryScheduled", {
-									attempt: event.attempt,
-									max: event.maxAttempts,
-									seconds: Math.round(event.delayMs / 1000),
-									error: event.errorMessage,
-								}),
-								durationMs: event.delayMs + 2000,
+								message: translate(
+									event.delayMs >= 60_000 ? "events.retryScheduledAt" : "events.retryScheduled",
+									{
+										attempt: event.attempt,
+										max: event.maxAttempts,
+										seconds: Math.round(event.delayMs / 1000),
+										time: formatClock(Date.now() + event.delayMs),
+										error: event.errorMessage,
+									},
+								),
 							});
 							break;
 						}
@@ -787,7 +551,8 @@ export function useRpcEvents(): void {
 		};
 
 		const handleStatus = (payload: IpcSidecarStatusPayload, statusTabId: string) => {
-			if (closedTabFrame(statusTabId)) return;
+			if (disposed || closedTabFrame(statusTabId)) return;
+			statusVersion++;
 			const isFocused = () => useTabsStore.getState().activeTabId === statusTabId;
 			if (payload.status === "starting") {
 				if (isFocused()) stopHeartbeat();
@@ -869,9 +634,26 @@ export function useRpcEvents(): void {
 			typeof window.omp.events.onTabSidecarStatus === "function"
 				? window.omp.events.onTabSidecarStatus(handleStatus)
 				: window.omp.events.onSidecarStatus(payload => handleStatus(payload, focusedTabId()));
-		void window.omp.sidecar.getStatus().then(status => {
-			handleStatus(status, focusedTabId());
-		});
+		const snapshotTabId = focusedTabId();
+		const snapshotRuntime = sessionRuntime(snapshotTabId);
+		const snapshotVersion = statusVersion;
+		void window.omp.sidecar
+			.getStatus()
+			.then(status => {
+				// A boot snapshot cannot roll back a newer push, or reset a task
+				// selected/replaced while the active-tab request was in flight.
+				if (
+					disposed ||
+					statusVersion !== snapshotVersion ||
+					focusedTabId() !== snapshotTabId ||
+					sessionRuntime(snapshotTabId) !== snapshotRuntime
+				)
+					return;
+				handleStatus(status, snapshotTabId);
+			})
+			.catch(() => {
+				// Status pushes and GET_TABS remain authoritative when this read fails.
+			});
 
 		const handleSubagent = (frame: SubagentFrame, tabId: string) => {
 			if (closedTabFrame(tabId)) return;
@@ -976,6 +758,7 @@ export function useRpcEvents(): void {
 		});
 
 		return () => {
+			disposed = true;
 			stopHeartbeat();
 			unsubscribe();
 			unsubStatus();

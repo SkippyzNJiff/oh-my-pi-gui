@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CustomProviderView } from "../../../shared/ipc-types";
 import type { ProviderInfo } from "../../../shared/rpc-types";
 import { useT } from "../../lib/i18n";
+import { useTabRpc } from "../../lib/tab-rpc";
 import { useSessionStore } from "../../stores/session";
 import { useUiStore } from "../../stores/ui";
 import { Badge, Button, Modal } from "../common";
@@ -53,6 +54,7 @@ export function hasUsableModelProvider(
 }
 
 export function FirstRunOnboardingDialog() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const sidecarStatus = useSessionStore(state => state.status);
 	const openProviders = useUiStore(state => state.openProviders);
@@ -70,7 +72,7 @@ export function FirstRunOnboardingDialog() {
 			if (manual) setError(null);
 			try {
 				const [providerResult, configResult] = await Promise.allSettled([
-					window.omp.rpc.getProviders(),
+					tabRpc.getProviders(),
 					window.omp.models.listProviders(),
 				]);
 				if (version !== requestVersion.current) return;
@@ -99,6 +101,8 @@ export function FirstRunOnboardingDialog() {
 					return;
 				}
 
+				// A slow startup check must not cover a page the user already opened.
+				if (!manual && document.querySelector('[role="dialog"]')) return;
 				setOpen(true);
 				setError(
 					configResult.status === "rejected"
@@ -115,7 +119,7 @@ export function FirstRunOnboardingDialog() {
 				if (version === requestVersion.current) setChecking(false);
 			}
 		},
-		[t],
+		[t, tabRpc.getProviders],
 	);
 
 	useEffect(() => {
@@ -189,8 +193,10 @@ export function FirstRunOnboardingDialog() {
 					</section>
 				</div>
 
-				<section className="rounded-xl border border-(--omp-border-muted) p-4">
-					<h3 className="mb-1 text-omp-lg font-semibold text-(--omp-text)">{t("onboarding.parameters.title")}</h3>
+				<details className="rounded-xl border border-(--omp-border-muted) p-4">
+					<summary className="cursor-pointer text-omp-lg font-semibold text-(--omp-text)">
+						{t("onboarding.parameters.title")}
+					</summary>
 					<p className="mb-3 text-omp-sm leading-relaxed text-(--omp-dim)">
 						{t("onboarding.parameters.description")}
 					</p>
@@ -226,7 +232,7 @@ export function FirstRunOnboardingDialog() {
 							{CUSTOM_PROVIDER_EXAMPLE}
 						</pre>
 					</div>
-				</section>
+				</details>
 
 				{error && (
 					<div className="rounded-lg border border-[color-mix(in_srgb,var(--omp-warning)_40%,transparent)] px-3 py-2 text-omp-sm text-(--omp-warning)">

@@ -8,9 +8,9 @@ import type {
 	RpcSecurityTargetInput,
 } from "../../../shared/rpc-types";
 import { useT } from "../../lib/i18n";
+import { useTabRpc } from "../../lib/tab-rpc";
 import { useUiStore } from "../../stores/ui";
 import { Button, Input, Spinner } from "../common";
-import { UpdateSummaryStrip } from "./UpdatesSettingsPage";
 
 const ACTIVE_PHASES = new Set(["queued", "preparing", "reviewing", "publishing"]);
 const SEVERITIES = ["critical", "high", "medium", "low", "informational"] as const;
@@ -55,6 +55,7 @@ function errorMessage(error: unknown): string {
 }
 
 export function SecuritySettingsPage() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const closeSettings = useUiStore(state => state.closeSettings);
 	const [dashboard, setDashboard] = useState<RpcSecurityDashboardResult>();
@@ -70,37 +71,54 @@ export function SecuritySettingsPage() {
 	const [rationale, setRationale] = useState("");
 	const [savingDisposition, setSavingDisposition] = useState(false);
 	const [validating, setValidating] = useState(false);
+	const generation = useRef(0);
 	const loadInFlightRef = useRef<Promise<void> | undefined>(undefined);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: Changing the task client invalidates the previous task's responses.
+	useEffect(() => {
+		setDashboard(undefined);
+		setSelectedScan(undefined);
+		setSelectedFindingId(undefined);
+		setError(undefined);
+		loadInFlightRef.current = undefined;
+		return () => {
+			generation.current++;
+		};
+	}, [tabRpc]);
 
-	const load = useCallback((silent = false): Promise<void> => {
-		const inFlight = loadInFlightRef.current;
-		if (inFlight) return inFlight;
-		if (!silent) setLoading(true);
-		const request = (async () => {
-			try {
-				const response = await window.omp.rpc.getSecurityDashboard();
-				if (!response.success) {
-					setError(response.error);
-					return;
+	const load = useCallback(
+		(silent = false): Promise<void> => {
+			const version = generation.current;
+			const inFlight = loadInFlightRef.current;
+			if (inFlight) return inFlight;
+			if (!silent) setLoading(true);
+			const request = (async () => {
+				try {
+					const response = await tabRpc.getSecurityDashboard();
+					if (version !== generation.current) return;
+					if (!response.success) {
+						setError(response.error);
+						return;
+					}
+					const next = response.data as RpcSecurityDashboardResult;
+					setDashboard(next);
+					setSelectedScan(current =>
+						current?.scan.id === next.latest?.scan.id ? next.latest : (current ?? next.latest),
+					);
+					setError(undefined);
+				} catch (cause) {
+					if (version === generation.current) setError(errorMessage(cause));
+				} finally {
+					if (version === generation.current) setLoading(false);
 				}
-				const next = response.data as RpcSecurityDashboardResult;
-				setDashboard(next);
-				setSelectedScan(current =>
-					current?.scan.id === next.latest?.scan.id ? next.latest : (current ?? next.latest),
-				);
-				setError(undefined);
-			} catch (cause) {
-				setError(errorMessage(cause));
-			} finally {
-				setLoading(false);
-			}
-		})();
-		loadInFlightRef.current = request;
-		void request.finally(() => {
-			if (loadInFlightRef.current === request) loadInFlightRef.current = undefined;
-		});
-		return request;
-	}, []);
+			})();
+			loadInFlightRef.current = request;
+			void request.finally(() => {
+				if (loadInFlightRef.current === request) loadInFlightRef.current = undefined;
+			});
+			return request;
+		},
+		[tabRpc.getSecurityDashboard],
+	);
 	const refresh = useCallback(async (): Promise<void> => {
 		const inFlight = loadInFlightRef.current;
 		if (inFlight) await inFlight;
@@ -129,6 +147,17 @@ export function SecuritySettingsPage() {
 	}, [activeOperationId, load]);
 
 	const findings = selectedScan?.findings ?? [];
+	const emptyState = !dashboard
+		? "unavailable"
+		: activeOperation
+			? "running"
+			: !selectedScan
+				? "unscanned"
+				: selectedScan.scan.status === "completed"
+					? "clear"
+					: selectedScan.scan.status === "failed"
+						? "failed"
+						: "incomplete";
 	const counts = useMemo(() => severityCounts(findings), [findings]);
 	const selectedFinding = findings.find(finding => finding.id === selectedFindingId);
 	useEffect(() => {
@@ -142,7 +171,7 @@ export function SecuritySettingsPage() {
 		setError(undefined);
 		try {
 			if (!dashboard?.enabled) {
-				const enabled = await window.omp.rpc.setSetting("security.enabled", true);
+				const enabled = await tabRpc.setSetting("security.enabled", true);
 				if (!enabled.success) {
 					setError(enabled.error);
 					return;
@@ -150,7 +179,7 @@ export function SecuritySettingsPage() {
 			}
 			const scanTarget: RpcSecurityTargetInput =
 				target.kind === "ref_diff" ? { kind: "ref_diff", baseRevision, headRevision } : target;
-			const response = await window.omp.rpc.securityStart(scanTarget);
+			const response = await tabRpc.securityStart(scanTarget);
 			if (!response.success) setError(response.error);
 			await refresh();
 		} catch (cause) {
@@ -161,7 +190,7 @@ export function SecuritySettingsPage() {
 	};
 
 	const pickScan = async (scanId: string) => {
-		const response = await window.omp.rpc.getSecurityScan(scanId);
+		const response = await tabRpc.getSecurityScan(scanId);
 		if (!response.success) {
 			setError(response.error);
 			return;
@@ -174,7 +203,7 @@ export function SecuritySettingsPage() {
 		if (!selectedFinding) return;
 		setSavingDisposition(true);
 		try {
-			const response = await window.omp.rpc.securitySetDisposition(
+			const response = await tabRpc.securitySetDisposition(
 				selectedFinding.scanId,
 				selectedFinding.id,
 				disposition,
@@ -201,7 +230,7 @@ export function SecuritySettingsPage() {
 		setValidating(true);
 		setError(undefined);
 		try {
-			const response = await window.omp.rpc.securityValidate(selectedFinding.scanId, selectedFinding.id);
+			const response = await tabRpc.securityValidate(selectedFinding.scanId, selectedFinding.id);
 			if (!response.success) {
 				setError(response.error);
 				return;
@@ -217,7 +246,7 @@ export function SecuritySettingsPage() {
 	const cancelOperation = async () => {
 		if (!activeOperationId) return;
 		try {
-			const response = await window.omp.rpc.securityCancel(activeOperationId);
+			const response = await tabRpc.securityCancel(activeOperationId);
 			if (!response.success) setError(response.error);
 			await refresh();
 		} catch (cause) {
@@ -229,6 +258,15 @@ export function SecuritySettingsPage() {
 		return (
 			<div className="flex items-center justify-center py-16">
 				<Spinner />
+			</div>
+		);
+	}
+	if (!dashboard) {
+		return (
+			<div role="alert" className="flex flex-col items-start gap-3 py-8">
+				<h2 className="text-omp-lg font-semibold text-(--omp-text)">{t("security.empty.unavailable")}</h2>
+				<p className="text-omp-sm text-(--omp-muted)">{error}</p>
+				<Button onClick={() => void load()}>{t("common.retry")}</Button>
 			</div>
 		);
 	}
@@ -264,7 +302,12 @@ export function SecuritySettingsPage() {
 						: t("security.ready.noModel")}
 				</span>
 				<span className="flex items-center gap-1.5 text-(--omp-muted)">
-					<CheckCircle2 className="text-(--omp-success)" size={12} /> {t("security.ready.repository")}
+					{dashboard?.repositoryRoot ? (
+						<CheckCircle2 className="text-(--omp-success)" size={12} />
+					) : (
+						<CircleAlert className="text-(--omp-warning)" size={12} />
+					)}
+					{dashboard?.repositoryRoot ? t("security.ready.repository") : t("security.ready.noRepository")}
 				</span>
 				<span className="ml-auto text-(--omp-dim)">
 					{t("security.lastScan", {
@@ -275,6 +318,7 @@ export function SecuritySettingsPage() {
 					<Button
 						icon={<Play size={12} />}
 						loading={running}
+						disabled={!dashboard?.repositoryRoot || !dashboard.modelReady || !!activeOperation}
 						onClick={() => void runScan()}
 						size="sm"
 						variant="primary"
@@ -369,10 +413,23 @@ export function SecuritySettingsPage() {
 						</div>
 					</div>
 					{findings.length === 0 ? (
-						<div className="flex h-56 flex-col items-center justify-center gap-2 text-center">
-							<ShieldCheck className="text-(--omp-success)" size={24} />
-							<div className="text-omp-md font-medium text-(--omp-text)">{t("security.empty.title")}</div>
-							<div className="max-w-xs text-omp-xs text-(--omp-dim)">{t("security.empty.description")}</div>
+						<div
+							role="status"
+							className="flex min-h-56 flex-col items-center justify-center gap-2 px-4 text-center"
+						>
+							{emptyState === "clear" ? (
+								<ShieldCheck className="text-(--omp-success)" size={24} />
+							) : emptyState === "running" ? (
+								<Spinner />
+							) : (
+								<ScanSearch className="text-(--omp-muted)" size={24} />
+							)}
+							<div className="text-omp-md font-medium text-(--omp-text)">
+								{t(emptyState === "clear" ? "security.empty.title" : `security.empty.${emptyState}`)}
+							</div>
+							<div className="max-w-xs text-omp-xs text-(--omp-dim)">
+								{t(emptyState === "clear" ? "security.empty.description" : "security.empty.notVerified")}
+							</div>
 						</div>
 					) : (
 						<div className="max-h-[315px] overflow-y-auto px-2 py-2">
@@ -536,8 +593,6 @@ export function SecuritySettingsPage() {
 					</div>
 				</section>
 			)}
-
-			<UpdateSummaryStrip />
 		</div>
 	);
 }

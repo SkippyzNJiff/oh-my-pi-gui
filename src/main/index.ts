@@ -3,9 +3,9 @@
  * App lifecycle: ready → window, sidecar, session index, IPC, tray, menu, deep links, updater.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { app, BrowserWindow, globalShortcut, nativeImage, session } from "electron";
 import Store from "electron-store";
 import type { SessionKind } from "../shared/ipc-types";
@@ -26,6 +26,14 @@ import { createTray, destroyTray } from "./tray";
 import { setupUpdater } from "./updater";
 import { WindowManager } from "./window";
 import { resolveWindowSpawnTarget } from "./window-spawn-target";
+
+// Honor Electron's explicit profile before acquiring its instance lock.
+const userDataDirectory = app.commandLine.getSwitchValue("user-data-dir");
+if (userDataDirectory) {
+	const directory = resolve(userDataDirectory);
+	mkdirSync(directory, { recursive: true });
+	app.setPath("userData", directory);
+}
 
 // Single instance lock
 const gotLock = app.requestSingleInstanceLock();
@@ -316,6 +324,9 @@ app.whenReady().then(() => {
 		statsServer = new StatsServerManager(bundledOmp);
 		statsServer.on("ready", (port: number) => {
 			statsClient.port = port;
+		});
+		statsServer.on("exit", () => {
+			statsClient.port = 0;
 		});
 		statsServer.start();
 	}

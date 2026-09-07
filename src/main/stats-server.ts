@@ -9,8 +9,10 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { stripVTControlCharacters } from "node:util";
 
-const DEFAULT_PORT = 3847;
+// Bind a private ephemeral port; separate GUI instances must not share an index or listener.
+const DEFAULT_PORT = 0;
 const MAX_RESTART_ATTEMPTS = 3;
 const RESTART_DELAYS = [1000, 2000, 4000];
 
@@ -40,7 +42,7 @@ export class StatsServerManager extends EventEmitter {
 		// The bundled omp registers this flag as --no-open (kebab-case, per
 		// `omp stats --help`), not the camelCase --noOpen the oclif property
 		// name suggests — the latter is rejected as an unknown option.
-		const args = ["stats", "--port", String(DEFAULT_PORT), "--no-open"];
+		const args = ["stats", "--host", "127.0.0.1", "--port", String(DEFAULT_PORT), "--no-open"];
 		console.log(`[stats-server] spawning: ${this.#binaryPath} ${args.join(" ")}`);
 		let child: ChildProcess;
 		try {
@@ -57,14 +59,17 @@ export class StatsServerManager extends EventEmitter {
 		}
 		this.#child = child;
 
+		let stdout = "";
 		child.stdout?.on("data", (chunk: Buffer) => {
-			const text = chunk.toString("utf-8");
-			const match = /http:\/\/localhost:(\d+)/.exec(text);
-			if (match) {
+			stdout = (stdout + chunk.toString("utf-8")).slice(-4096);
+			const text = stripVTControlCharacters(stdout);
+			const match = /http:\/\/(?:localhost|127\.0\.0\.1):([0-9]+)(?=[\s/])/.exec(text);
+			if (match && Number(match[1]) > 0) {
 				this.#port = Number(match[1]);
 				this.#restartCount = 0;
 				console.log(`[stats-server] ready on http://localhost:${this.#port}`);
 				this.emit("ready", this.#port);
+				stdout = "";
 			}
 		});
 		child.stderr?.on("data", (chunk: Buffer) => {
@@ -90,9 +95,10 @@ export class StatsServerManager extends EventEmitter {
 	}
 
 	#attemptRestart(reason: string): void {
+		this.#port = 0;
+		this.emit("exit", null);
 		if (this.#restartCount >= MAX_RESTART_ATTEMPTS) {
 			console.error(`[stats-server] failed after ${MAX_RESTART_ATTEMPTS} attempts: ${reason}`);
-			this.emit("exit", null);
 			return;
 		}
 		const delay = RESTART_DELAYS[this.#restartCount] ?? 4000;

@@ -1,0 +1,4 @@
+{
+	"extends": "../../../../tsconfig.base.json",
+	"files": ["contract.ts", "../../../coding-agent/src/bun-fetch-cache.d.ts"]
+}

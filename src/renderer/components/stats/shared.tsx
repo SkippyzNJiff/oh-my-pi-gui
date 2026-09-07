@@ -10,19 +10,21 @@ import { Button, Spinner } from "../common";
 
 export function RouteFrame({
 	loading,
+	hasData = false,
 	error,
 	empty,
 	onRetry,
 	children,
 }: {
 	loading: boolean;
+	hasData?: boolean;
 	error: string | null;
 	empty?: boolean;
 	onRetry: () => void;
 	children: ReactNode;
 }) {
 	const t = useT();
-	if (loading) {
+	if (loading && !hasData) {
 		return (
 			<div className="flex h-64 items-center justify-center gap-2.5">
 				<Spinner size="md" />
@@ -30,7 +32,7 @@ export function RouteFrame({
 			</div>
 		);
 	}
-	if (error) {
+	if (error && !hasData) {
 		return (
 			<div className="flex h-64 flex-col items-center justify-center gap-3 text-center">
 				<AlertTriangle className="text-(--omp-warning)" size={20} />
@@ -45,7 +47,7 @@ export function RouteFrame({
 			</div>
 		);
 	}
-	if (empty) {
+	if (empty && !error) {
 		return (
 			<div className="flex h-64 flex-col items-center justify-center gap-2 text-center">
 				<Inbox className="text-(--omp-dim)" size={20} />
@@ -53,7 +55,24 @@ export function RouteFrame({
 			</div>
 		);
 	}
-	return <>{children}</>;
+	return (
+		<>
+			{error && (
+				<div
+					role="alert"
+					className="mb-3 flex items-center gap-3 rounded border border-(--omp-border-muted) p-3 text-omp-sm text-(--omp-warning)"
+				>
+					<span className="flex-1">
+						{t("stats.stale")}: {error}
+					</span>
+					<Button onClick={onRetry} size="sm" variant="secondary">
+						{t("stats.retry")}
+					</Button>
+				</div>
+			)}
+			{children}
+		</>
+	);
 }
 
 export function MetricCard({
@@ -125,6 +144,17 @@ export function StatTable<T>({
 							className={`border-b border-(--omp-border-muted) transition-colors last:border-b-0 hover:bg-(--omp-bg-tertiary) ${onRowClick ? "cursor-pointer" : ""}`}
 							key={keyFor(row)}
 							onClick={onRowClick ? () => onRowClick(row) : undefined}
+							tabIndex={onRowClick ? 0 : undefined}
+							onKeyDown={
+								onRowClick
+									? event => {
+											if (event.key === "Enter" || event.key === " ") {
+												event.preventDefault();
+												onRowClick(row);
+											}
+										}
+									: undefined
+							}
 						>
 							{columns.map(column => (
 								<td

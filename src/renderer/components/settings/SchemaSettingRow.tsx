@@ -1,3 +1,4 @@
+import { type TabRpc, useTabRpc } from "../../lib/tab-rpc";
 /**
  * SchemaSettingRow: one schema-driven setting row with inline editors.
  * Handles booleans (toggle), enums (dropdown), strings (input/dropdown),
@@ -6,9 +7,15 @@
 
 import { Check, Eye, EyeOff } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SettingEntry } from "../../../shared/rpc-types";
+import type { SettingEntry, SettingProvenance } from "../../../shared/rpc-types";
 import { useLang, useT } from "../../lib/i18n";
-import { applyThemeByName, getPersistedThemeSelection, THEMES, type ThemeName } from "../../lib/themes";
+import {
+	applyThemeByName,
+	getPersistedThemeSelection,
+	getThemeSelectionVersion,
+	THEMES,
+	type ThemeName,
+} from "../../lib/themes";
 import { toast } from "../../stores/toast";
 import { Button, Input, TextArea } from "../common";
 import { ArrayChipEditor } from "./editors/ArrayChipEditor";
@@ -29,13 +36,15 @@ function previewAgentTheme(name: string | null): void {
 	}
 	if (!themePreviewActive) return;
 	themePreviewActive = false;
+	const version = getThemeSelectionVersion();
 	void getPersistedThemeSelection().then(selection => {
-		if (!themePreviewActive) applyThemeByName(selection, { persist: false });
+		if (!themePreviewActive && getThemeSelectionVersion() === version)
+			applyThemeByName(selection, { persist: false });
 	});
 }
 
-async function themeOptions(): Promise<EnumerableOption[]> {
-	const res = await window.omp.rpc.getThemes();
+async function themeOptions(rpc: TabRpc): Promise<EnumerableOption[]> {
+	const res = await rpc.getThemes();
 	if (!res.success) throw new Error(res.error);
 	const data = res.data as { themes?: { name: string; path?: string }[] } | undefined;
 	return (data?.themes ?? []).map(theme => ({ value: theme.name, detail: theme.path ? "custom" : "builtin" }));
@@ -100,13 +109,34 @@ function SchemaSettingRow({
 	value: unknown;
 	onCommitted: (path: string, value: unknown) => void;
 }) {
+	const tabRpc = useTabRpc();
 	const [draft, setDraft] = useState<string | null>(null);
 	const t = useT();
 	const [saving, setSaving] = useState(false);
 	const [saved, setSaved] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [savedProvenance, setSavedProvenance] = useState<SettingProvenance>();
 	const [revealed, setRevealed] = useState(false);
 	const savedTimer = useRef<number | undefined>(undefined);
+
+	const generation = useRef(0);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: a different session client or setting invalidates pending saves.
+	useEffect(() => {
+		generation.current++;
+		setDraft(null);
+		setError(null);
+		setSaving(false);
+		setSaved(false);
+		setSavedProvenance(undefined);
+		return () => {
+			generation.current++;
+		};
+	}, [tabRpc, entry.path]);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: fresh schema provenance replaces a previous save acknowledgement.
+	useEffect(() => {
+		setSavedProvenance(undefined);
+	}, [entry.provenance]);
+	const fetchThemeOptions = useCallback(() => themeOptions(tabRpc), [tabRpc]);
 
 	useEffect(
 		() => () => {
@@ -117,18 +147,38 @@ function SchemaSettingRow({
 
 	const { lang } = useLang();
 	const zhEntry = lang === "zh" ? ZH_SETTINGS[entry.path] : undefined;
-	const label = zhEntry?.label ?? entry.label ?? entry.path;
-	const description = zhEntry?.description ?? entry.description;
+	const label =
+		entry.path === "tui.renderMermaid"
+			? t("settings.gui.allowMermaid")
+			: (zhEntry?.label ?? entry.label ?? entry.path);
+	const description =
+		entry.path === "tui.renderMermaid"
+			? t("settings.gui.allowMermaidDesc")
+			: (zhEntry?.description ?? entry.description);
 	const baseDraft = draftFor(entry, value);
 	const dirty = draft !== null && draft !== baseDraft;
 
 	const commit = useCallback(
 		async (next: unknown) => {
+			const requestGeneration = ++generation.current;
 			setSaving(true);
 			try {
-				const res = await window.omp.rpc.setSetting(entry.path, next);
+				const res = await tabRpc.setSetting(entry.path, next);
+				if (generation.current !== requestGeneration) return;
 				if (res.success) {
-					onCommitted(entry.path, next);
+					const data = res.data as { value?: unknown; provenance?: SettingProvenance } | undefined;
+					if (data?.provenance) {
+						onCommitted(entry.path, data.value);
+						setSavedProvenance(data.provenance);
+					} else {
+						// Older cores returned the submitted value; read back the effective value.
+						const readback = await tabRpc.getSettings([entry.path]);
+						if (generation.current !== requestGeneration) return;
+						if (!readback.success) throw new Error(readback.error);
+						const effective = readback.data as { values?: Record<string, unknown> } | undefined;
+						if (!effective?.values) throw new Error(t("settings.savedUnverified"));
+						onCommitted(entry.path, effective.values[entry.path]);
+					}
 					setDraft(null);
 					setError(null);
 					if (entry.type !== "boolean") {
@@ -137,15 +187,18 @@ function SchemaSettingRow({
 						savedTimer.current = window.setTimeout(() => setSaved(false), 2000);
 					}
 				} else {
+					setError(res.error);
 					toast({ variant: "error", title: t("settings.saveFailed"), message: res.error });
 				}
 			} catch (err) {
+				if (generation.current !== requestGeneration) return;
+				setError(String(err));
 				toast({ variant: "error", title: t("settings.saveFailed"), message: String(err) });
 			} finally {
-				setSaving(false);
+				if (generation.current === requestGeneration) setSaving(false);
 			}
 		},
-		[entry.path, entry.type, onCommitted, t],
+		[entry.path, entry.type, onCommitted, t, tabRpc],
 	);
 
 	const commitText = useCallback(() => {
@@ -208,299 +261,333 @@ function SchemaSettingRow({
 			</span>
 		) : null;
 
-	// Boolean settings render as one full-row switch and write immediately.
-	// The switch position is the success feedback; transient "Saved" text would
-	// compete with the control's hit target and obscure its actual state.
-	if (entry.type === "boolean") {
-		return (
-			<Toggle
-				badge={restartBadge}
-				checked={value === true}
-				description={description}
-				disabled={saving}
-				label={label}
-				onChange={next => void commit(next)}
-			/>
-		);
-	}
-
-	// Array/record settings get a full-width JSON editor below the label.
-	if (entry.type === "array" || entry.type === "record") {
-		const masked = entry.secret === true && !revealed;
-		// Structured editors for the common shapes; JSON stays the fallback.
-		const stringArray =
-			entry.type === "array" && Array.isArray(value) && (value as unknown[]).every(item => typeof item === "string");
-		const nestedRecord = entry.path === "images.urls.options" || entry.path === "images.urls.credentials";
-		const flatRecord =
-			entry.type === "record" &&
-			!nestedRecord &&
-			value !== null &&
-			typeof value === "object" &&
-			!Array.isArray(value) &&
-			Object.values(value as Record<string, unknown>).every(
-				item => item === null || ["string", "number", "boolean"].includes(typeof item),
-			);
-		const approvalOptions =
-			entry.path === "tools.approval"
-				? [
-						{ value: "allow", label: t("settings.editors.approval.allow") },
-						{ value: "prompt", label: t("settings.editors.approval.prompt") },
-						{ value: "deny", label: t("settings.editors.approval.deny") },
-					]
-				: undefined;
-		// Model-valued records (modelRoles) get a model dropdown per value cell.
-		const modelValued = entry.path === "modelRoles";
-		// Per-provider concurrency caps get the dedicated provider+number editor.
-		const providerLimits =
-			entry.path === "providers.maxInFlightRequests" &&
-			value !== null &&
-			typeof value === "object" &&
-			!Array.isArray(value);
-		return (
-			<div className="rounded-md px-2 py-2 transition-colors hover:bg-(--omp-bg-tertiary)">
-				<div className="flex items-center gap-2">
-					<span className="text-xs font-medium text-(--omp-text)" title={entry.path}>
-						{label}
-					</span>
-
-					{restartBadge}
-					{status}
-				</div>
-				{description && (
-					<span className="mt-0.5 block text-omp-sm leading-snug text-(--omp-muted)">{description}</span>
-				)}
-				{masked ? (
-					<div className="mt-2 flex items-center justify-between rounded-md border border-(--omp-border-muted) px-2.5 py-2">
-						<span className="text-xs text-(--omp-muted)">••••••••</span>
-						<Button onClick={() => setRevealed(true)} size="sm" type="button" variant="ghost">
-							<Eye size={12} className="mr-1 inline" />
-							{t("common.reveal")}
-						</Button>
-					</div>
-				) : stringArray ? (
-					<div className="mt-2">
-						<ArrayChipEditor
-							disabled={saving}
-							onCommit={next => void commit(next)}
-							ordered={entry.ordered === true}
-							options={entry.options?.map(option => ({
-								value: option.value,
-								label: lang === "zh" ? (ZH_SCHEMA_OPTION_TEXT[option.label] ?? option.label) : option.label,
-							}))}
-							values={value as string[]}
-						/>
-					</div>
-				) : providerLimits ? (
-					<div className="mt-2">
-						<ProviderLimitsEditor
-							disabled={saving}
-							onCommit={next => void commit(next)}
-							value={value as Record<string, unknown>}
-						/>
-					</div>
-				) : flatRecord ? (
-					<div className="mt-2">
-						<RecordKvEditor
-							disabled={saving}
-							onCommit={next => void commit(next)}
-							value={value as Record<string, unknown>}
-							valueKind={modelValued ? "model" : undefined}
-							valueOptions={approvalOptions}
-						/>
-					</div>
-				) : (
-					<>
-						<TextArea
-							autoGrow
-							className="mt-2"
-							disabled={saving}
-							error={error ?? undefined}
-							mono
-							onChange={event => {
-								setDraft(event.target.value);
-								setError(null);
-							}}
-							rows={3}
-							spellCheck={false}
-							value={draft ?? baseDraft}
-						/>
-						<div className="mt-1.5 flex items-center justify-end gap-1.5">
-							{entry.secret === true && (
-								<Button onClick={() => setRevealed(false)} size="sm" type="button" variant="ghost">
-									<EyeOff size={12} className="mr-1 inline" />
-									{t("common.hide")}
-								</Button>
-							)}
-							{dirty && (
-								<Button
-									onClick={() => {
-										setDraft(null);
-										setError(null);
-									}}
-									size="sm"
-									type="button"
-									variant="ghost"
-								>
-									{t("common.reset")}
-								</Button>
-							)}
-							<Button
-								disabled={!dirty || saving}
-								loading={saving}
-								onClick={commitJson}
-								size="sm"
-								type="button"
-								variant="secondary"
-							>
-								{t("common.apply")}
-							</Button>
-						</div>
-					</>
-				)}
-			</div>
-		);
-	}
-
-	// enum / number / string share a label-left, control-right row.
-	let control: React.ReactNode;
-	if (entry.type === "enum") {
-		const options = entry.options ?? [];
-		const current = typeof value === "string" ? value : undefined;
-		const hasCurrent = current !== undefined && options.some(option => option.value === current);
-		if (options.length === 0) {
-			control = (
-				<Input
+	const renderControl = () => {
+		// Boolean settings render as one full-row switch and write immediately.
+		// The switch position is the success feedback; transient "Saved" text would
+		// compete with the control's hit target and obscure its actual state.
+		if (entry.type === "boolean") {
+			return (
+				<Toggle
+					badge={restartBadge}
+					checked={value === true}
+					description={description}
 					disabled={saving}
-					onBlur={commitText}
-					onChange={event => setDraft(event.target.value)}
-					onKeyDown={onTextKeyDown}
-					value={draft ?? baseDraft}
+					label={label}
+					onChange={next => void commit(next)}
 				/>
-			);
-		} else {
-			control = (
-				<select
-					className={SELECT_CLASS}
-					disabled={saving}
-					onChange={event => {
-						if (event.target.value !== "") void commit(event.target.value);
-					}}
-					value={current ?? ""}
-				>
-					{current === undefined && <option value="">{t("common.unset")}</option>}
-					{!hasCurrent && current !== undefined && <option value={current}>{current}</option>}
-					{options.map(option => (
-						<option
-							key={option.value}
-							title={
-								lang === "zh" && option.description
-									? (ZH_SCHEMA_OPTION_TEXT[option.description] ?? option.description)
-									: option.description
-							}
-							value={option.value}
-						>
-							{lang === "zh" ? (ZH_SCHEMA_OPTION_TEXT[option.label] ?? option.label) : option.label}
-						</option>
-					))}
-				</select>
 			);
 		}
-	} else if (entry.type === "number") {
-		control = (
-			<Input
-				disabled={saving}
-				error={error ?? undefined}
-				onBlur={commitText}
-				onChange={event => {
-					setDraft(event.target.value);
-					setError(null);
-				}}
-				onKeyDown={onTextKeyDown}
-				type="number"
-				value={draft ?? baseDraft}
-			/>
-		);
-	} else {
-		const masked = entry.secret === true && !revealed;
-		// Enumerable string settings get dropdowns (never hand-typed); then
-		// model/provider references get searchable dropdowns; secrets stay text.
-		const refKind = entry.secret === true ? null : settingRefKind(entry.path);
-		const themeSetting = entry.secret !== true && /^theme\.(dark|light)$/.test(entry.path);
-		const shellSetting = entry.secret !== true && entry.path === "shellPath";
-		if (themeSetting) {
-			control = (
-				<EnumerableSelect
-					allowCustom
-					disabled={saving}
-					fetchOptions={themeOptions}
-					noun={t("settings.editors.themes")}
-					onCommit={next => void commit(next)}
-					onPreview={previewAgentTheme}
-					value={typeof value === "string" ? value : ""}
-				/>
+
+		// Array/record settings get a full-width JSON editor below the label.
+		if (entry.type === "array" || entry.type === "record") {
+			const masked = entry.secret === true && !revealed;
+			// Structured editors for the common shapes; JSON stays the fallback.
+			const stringArray =
+				entry.type === "array" &&
+				// Empty rule lists still contain objects; the current value cannot
+				// determine their editor until the first rule exists.
+				entry.path !== "bash.patterns" &&
+				entry.path !== "bashInterceptor.patterns" &&
+				Array.isArray(value) &&
+				(value as unknown[]).every(item => typeof item === "string");
+			const nestedRecord = entry.path === "images.urls.options" || entry.path === "images.urls.credentials";
+			const flatRecord =
+				entry.type === "record" &&
+				!nestedRecord &&
+				value !== null &&
+				typeof value === "object" &&
+				!Array.isArray(value) &&
+				Object.values(value as Record<string, unknown>).every(
+					item => item === null || ["string", "number", "boolean"].includes(typeof item),
+				);
+			const approvalOptions =
+				entry.path === "tools.approval"
+					? [
+							{ value: "allow", label: t("settings.editors.approval.allow") },
+							{ value: "prompt", label: t("settings.editors.approval.prompt") },
+							{ value: "deny", label: t("settings.editors.approval.deny") },
+						]
+					: undefined;
+			// Model-valued records (modelRoles) get a model dropdown per value cell.
+			const modelValued = entry.path === "modelRoles";
+			// Per-provider concurrency caps get the dedicated provider+number editor.
+			const providerLimits =
+				entry.path === "providers.maxInFlightRequests" &&
+				value !== null &&
+				typeof value === "object" &&
+				!Array.isArray(value);
+			return (
+				<div className="rounded-md px-2 py-2 transition-colors hover:bg-(--omp-bg-tertiary)">
+					<div className="flex items-center gap-2">
+						<span className="text-xs font-medium text-(--omp-text)" title={entry.path}>
+							{label}
+						</span>
+
+						{restartBadge}
+						{status}
+					</div>
+					{description && (
+						<span className="mt-0.5 block text-omp-sm leading-snug text-(--omp-muted)">{description}</span>
+					)}
+					{masked ? (
+						<div className="mt-2 flex items-center justify-between rounded-md border border-(--omp-border-muted) px-2.5 py-2">
+							<span className="text-xs text-(--omp-muted)">••••••••</span>
+							<Button onClick={() => setRevealed(true)} size="sm" type="button" variant="ghost">
+								<Eye size={12} className="mr-1 inline" />
+								{t("common.reveal")}
+							</Button>
+						</div>
+					) : stringArray ? (
+						<div className="mt-2">
+							<ArrayChipEditor
+								disabled={saving}
+								onCommit={next => void commit(next)}
+								ordered={entry.ordered === true}
+								options={entry.options?.map(option => ({
+									value: option.value,
+									label: lang === "zh" ? (ZH_SCHEMA_OPTION_TEXT[option.label] ?? option.label) : option.label,
+								}))}
+								values={value as string[]}
+							/>
+						</div>
+					) : providerLimits ? (
+						<div className="mt-2">
+							<ProviderLimitsEditor
+								disabled={saving}
+								onCommit={next => void commit(next)}
+								value={value as Record<string, unknown>}
+							/>
+						</div>
+					) : flatRecord ? (
+						<div className="mt-2">
+							<RecordKvEditor
+								disabled={saving}
+								onCommit={next => void commit(next)}
+								value={value as Record<string, unknown>}
+								valueKind={modelValued ? "model" : undefined}
+								valueOptions={approvalOptions}
+							/>
+						</div>
+					) : (
+						<>
+							<TextArea
+								autoGrow
+								className="mt-2"
+								disabled={saving}
+								error={error ?? undefined}
+								mono
+								onChange={event => {
+									setDraft(event.target.value);
+									setError(null);
+								}}
+								rows={3}
+								spellCheck={false}
+								value={draft ?? baseDraft}
+							/>
+							<div className="mt-1.5 flex items-center justify-end gap-1.5">
+								{entry.secret === true && (
+									<Button onClick={() => setRevealed(false)} size="sm" type="button" variant="ghost">
+										<EyeOff size={12} className="mr-1 inline" />
+										{t("common.hide")}
+									</Button>
+								)}
+								{dirty && (
+									<Button
+										onClick={() => {
+											setDraft(null);
+											setError(null);
+										}}
+										size="sm"
+										type="button"
+										variant="ghost"
+									>
+										{t("common.reset")}
+									</Button>
+								)}
+								<Button
+									disabled={!dirty || saving}
+									loading={saving}
+									onClick={commitJson}
+									size="sm"
+									type="button"
+									variant="secondary"
+								>
+									{t("common.apply")}
+								</Button>
+							</div>
+						</>
+					)}
+				</div>
 			);
-		} else if (shellSetting) {
-			control = (
-				<EnumerableSelect
-					allowCustom
-					disabled={saving}
-					fetchOptions={shellOptions}
-					noun={t("settings.editors.shells")}
-					onCommit={next => void commit(next)}
-					value={typeof value === "string" ? value : ""}
-				/>
-			);
-		} else if (refKind !== null) {
-			control = (
-				<ModelValueSelect
-					disabled={saving}
-					kind={refKind}
-					onCommit={next => void commit(next)}
-					value={typeof value === "string" ? value : ""}
-				/>
-			);
-		} else {
-			control = (
-				<div className="relative">
+		}
+
+		// enum / number / string share a label-left, control-right row.
+		let control: React.ReactNode;
+		if (entry.type === "enum") {
+			const options = entry.options ?? [];
+			const current = typeof value === "string" ? value : undefined;
+			const hasCurrent = current !== undefined && options.some(option => option.value === current);
+			if (options.length === 0) {
+				control = (
 					<Input
 						disabled={saving}
 						onBlur={commitText}
 						onChange={event => setDraft(event.target.value)}
 						onKeyDown={onTextKeyDown}
-						type={masked ? "password" : "text"}
 						value={draft ?? baseDraft}
 					/>
-					{entry.secret === true && (
-						<button
-							aria-label={masked ? t("common.revealValue") : t("common.hideValue")}
-							className="absolute top-1/2 right-2 -translate-y-1/2 text-(--omp-dim) hover:text-(--omp-text)"
-							onClick={() => setRevealed(!revealed)}
-							type="button"
-						>
-							{masked ? <Eye size={13} /> : <EyeOff size={13} />}
-						</button>
+				);
+			} else {
+				control = (
+					<select
+						className={SELECT_CLASS}
+						disabled={saving}
+						onChange={event => {
+							if (event.target.value !== "") void commit(event.target.value);
+						}}
+						value={current ?? ""}
+					>
+						{current === undefined && <option value="">{t("common.unset")}</option>}
+						{!hasCurrent && current !== undefined && <option value={current}>{current}</option>}
+						{options.map(option => (
+							<option
+								key={option.value}
+								title={
+									lang === "zh" && option.description
+										? (ZH_SCHEMA_OPTION_TEXT[option.description] ?? option.description)
+										: option.description
+								}
+								value={option.value}
+							>
+								{lang === "zh" ? (ZH_SCHEMA_OPTION_TEXT[option.label] ?? option.label) : option.label}
+							</option>
+						))}
+					</select>
+				);
+			}
+		} else if (entry.type === "number") {
+			control = (
+				<Input
+					disabled={saving}
+					error={error ?? undefined}
+					onBlur={commitText}
+					onChange={event => {
+						setDraft(event.target.value);
+						setError(null);
+					}}
+					onKeyDown={onTextKeyDown}
+					type="number"
+					value={draft ?? baseDraft}
+				/>
+			);
+		} else {
+			const masked = entry.secret === true && !revealed;
+			// Enumerable string settings get dropdowns (never hand-typed); then
+			// model/provider references get searchable dropdowns; secrets stay text.
+			const refKind = entry.secret === true ? null : settingRefKind(entry.path);
+			const themeSetting = entry.secret !== true && /^theme\.(dark|light)$/.test(entry.path);
+			const shellSetting = entry.secret !== true && entry.path === "shellPath";
+			if (themeSetting) {
+				control = (
+					<EnumerableSelect
+						allowCustom
+						disabled={saving}
+						fetchOptions={fetchThemeOptions}
+						noun={t("settings.editors.themes")}
+						onCommit={next => void commit(next)}
+						onPreview={previewAgentTheme}
+						value={typeof value === "string" ? value : ""}
+					/>
+				);
+			} else if (shellSetting) {
+				control = (
+					<EnumerableSelect
+						allowCustom
+						disabled={saving}
+						fetchOptions={shellOptions}
+						noun={t("settings.editors.shells")}
+						onCommit={next => void commit(next)}
+						value={typeof value === "string" ? value : ""}
+					/>
+				);
+			} else if (refKind !== null) {
+				control = (
+					<ModelValueSelect
+						disabled={saving}
+						kind={refKind}
+						onCommit={next => void commit(next)}
+						value={typeof value === "string" ? value : ""}
+					/>
+				);
+			} else {
+				control = (
+					<div className="relative">
+						<Input
+							disabled={saving}
+							onBlur={commitText}
+							onChange={event => setDraft(event.target.value)}
+							onKeyDown={onTextKeyDown}
+							type={masked ? "password" : "text"}
+							value={draft ?? baseDraft}
+						/>
+						{entry.secret === true && (
+							<button
+								aria-label={masked ? t("common.revealValue") : t("common.hideValue")}
+								className="absolute top-1/2 right-2 -translate-y-1/2 text-(--omp-dim) hover:text-(--omp-text)"
+								onClick={() => setRevealed(!revealed)}
+								type="button"
+							>
+								{masked ? <Eye size={13} /> : <EyeOff size={13} />}
+							</button>
+						)}
+					</div>
+				);
+			}
+		}
+
+		return (
+			<div className="settings-field-row rounded-md px-2 py-2 transition-colors hover:bg-(--omp-bg-tertiary)">
+				<div className="min-w-0 flex-1">
+					<div className="flex items-center gap-2">
+						<span className="text-xs font-medium text-(--omp-text)" title={entry.path}>
+							{label}
+						</span>
+
+						{restartBadge}
+						{status}
+					</div>
+					{description && (
+						<span className="mt-0.5 block text-omp-sm leading-snug text-(--omp-muted)">{description}</span>
 					)}
 				</div>
-			);
-		}
-	}
-
-	return (
-		<div className="settings-field-row rounded-md px-2 py-2 transition-colors hover:bg-(--omp-bg-tertiary)">
-			<div className="min-w-0 flex-1">
-				<div className="flex items-center gap-2">
-					<span className="text-xs font-medium text-(--omp-text)" title={entry.path}>
-						{label}
-					</span>
-
-					{restartBadge}
-					{status}
-				</div>
-				{description && (
-					<span className="mt-0.5 block text-omp-sm leading-snug text-(--omp-muted)">{description}</span>
-				)}
+				<div className="settings-field-control">{control}</div>
 			</div>
-			<div className="settings-field-control">{control}</div>
+		);
+	};
+	const provenance = savedProvenance ?? entry.provenance;
+	return (
+		<div>
+			{renderControl()}
+			{error && (
+				<p role="alert" className="px-2 pb-2 text-omp-xs text-(--omp-error)">
+					{error}
+				</p>
+			)}
+			{provenance && (
+				<details className="px-2 pb-2 text-omp-xs text-(--omp-dim)">
+					<summary className="cursor-pointer">
+						{t("settings.source.label")}:{" "}
+						{provenance.layers.length
+							? provenance.layers.map(layer => t(`settings.source.${layer}`)).join(" → ")
+							: t("settings.source.default")}
+					</summary>
+					<p className="mt-1">{t("settings.source.saveGlobal")}</p>
+					<code className="block break-words whitespace-pre-wrap">
+						{entry.secret ? "••••••" : (JSON.stringify(provenance.globalValue) ?? t("settings.source.default"))}
+					</code>
+					{provenance.globalPath && <p className="break-all">{provenance.globalPath}</p>}
+				</details>
+			)}
 		</div>
 	);
 }

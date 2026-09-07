@@ -44,18 +44,18 @@ function ShareBar({ fraction }: { fraction: number }) {
 export function ProjectsRoute({ range, refreshKey }: { range: StatsRange; refreshKey: number }) {
 	const t = useT();
 	const params = useMemo(() => ({ range }), [range]);
-	const { data, isLoading, error, refetch } = useStats("/api/stats/folders", params);
+	const { data, isLoading, error, refetch } = useStats<FolderRow[]>("/api/stats/folders", params);
 
 	useEffect(() => {
 		if (refreshKey > 0) refetch();
 	}, [refreshKey, refetch]);
 
 	const rows = useMemo(() => {
-		const list = Array.isArray(data) ? (data as FolderRow[]) : [];
+		const list = data ?? [];
 		return [...list].sort((a, b) => b.totalCost - a.totalCost);
 	}, [data]);
 
-	const maxCost = rows.length > 0 ? Math.max(...rows.map(row => row.totalCost), 1e-9) : 1;
+	const totalCost = rows.reduce((sum, row) => sum + row.totalCost, 0);
 
 	const columns: StatColumn<FolderRow>[] = useMemo(
 		() => [
@@ -80,7 +80,7 @@ export function ProjectsRoute({ range, refreshKey }: { range: StatsRange; refres
 			{
 				key: "share",
 				label: t("stats.projects.col.share"),
-				render: row => <ShareBar fraction={row.totalCost / maxCost} />,
+				render: row => <ShareBar fraction={totalCost > 0 ? row.totalCost / totalCost : 0} />,
 			},
 			{
 				key: "speed",
@@ -89,11 +89,11 @@ export function ProjectsRoute({ range, refreshKey }: { range: StatsRange; refres
 				render: row => (row.avgTokensPerSecond !== null ? Math.round(row.avgTokensPerSecond) : "—"),
 			},
 		],
-		[maxCost, t],
+		[totalCost, t],
 	);
 
 	return (
-		<RouteFrame empty={rows.length === 0} error={error} loading={isLoading} onRetry={refetch}>
+		<RouteFrame hasData={data !== null} empty={rows.length === 0} error={error} loading={isLoading} onRetry={refetch}>
 			<SectionTitle>{t("stats.projects.sectionTitle", { count: rows.length })}</SectionTitle>
 			<StatTable columns={columns} keyFor={row => row.folder} rows={rows} />
 		</RouteFrame>

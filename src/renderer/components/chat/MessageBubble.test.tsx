@@ -219,7 +219,8 @@ describe("MessageBubble compaction summaries", () => {
 				<MessageBubble
 					message={{
 						role: "compactionSummary",
-						summary: "Kept the active work.",
+						summary: "Long archived context details.",
+						shortSummary: "Kept the active work.",
 						method: "remote",
 						tokensBefore: 256_000,
 						tokensAfter: 20_000,
@@ -231,6 +232,7 @@ describe("MessageBubble compaction summaries", () => {
 
 		expect(html).toContain("Remote compacted · 256.0k → 20.0k");
 		expect(html).toContain("Kept the active work.");
+		expect(html).not.toContain("Long archived context details.");
 	});
 
 	it("preserves an unknown maintenance method and a zero-token starting point", () => {

@@ -54,13 +54,13 @@ const tokenCountFormatter = new Intl.NumberFormat("en-US");
 export function ModelsRoute({ range, refreshKey }: { range: StatsRange; refreshKey: number }) {
 	const t = useT();
 	const params = useMemo(() => ({ range }), [range]);
-	const { data, isLoading, error, refetch } = useStats("/api/stats/model-dashboard", params);
+	const { data, isLoading, error, refetch } = useStats<ModelsData>("/api/stats/model-dashboard", params);
 
 	useEffect(() => {
 		if (refreshKey > 0) refetch();
 	}, [refreshKey, refetch]);
 
-	const stats = (data ?? null) as ModelsData | null;
+	const stats = data;
 
 	const columns: StatColumn<ModelRow>[] = useMemo(
 		() => [
@@ -170,7 +170,13 @@ export function ModelsRoute({ range, refreshKey }: { range: StatsRange; refreshK
 	}, [stats, byModel]);
 
 	return (
-		<RouteFrame empty={byModel.length === 0} error={error} loading={isLoading} onRetry={refetch}>
+		<RouteFrame
+			hasData={data !== null}
+			empty={byModel.length === 0}
+			error={error}
+			loading={isLoading}
+			onRetry={refetch}
+		>
 			<div className="grid gap-3 xl:grid-cols-2">
 				<div>
 					<SectionTitle>{t("stats.models.requestsByModel")}</SectionTitle>

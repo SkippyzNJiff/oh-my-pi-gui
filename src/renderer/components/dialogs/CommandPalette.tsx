@@ -1,3 +1,5 @@
+import { type TabRpc, useTabRpc } from "../../lib/tab-rpc";
+import { useRuntimeTabId } from "../../stores/session-runtime-context";
 /**
  * Cmd+K command palette: fuzzy-searches the declarative command registry
  * and executes typed UI affordances (RPC actions, toggles, pickers, windows,
@@ -7,7 +9,7 @@
 import { Check, ChevronRight, CornerDownLeft, History, Search, Slash, X } from "lucide-react";
 import { type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AvailableCommand } from "../../../shared/rpc-types";
-import { hydrateSession } from "../../hooks/use-rpc-events";
+import { hydrateSession, hydrateTabSession } from "../../hooks/use-rpc-events";
 import { newSessionNow } from "../../hooks/use-session-switch";
 import {
 	buildCommandMenu,
@@ -75,6 +77,7 @@ async function runAffordance(
 	affordance: CommandAffordance,
 	close: () => void,
 	t: (key: string) => string,
+	rpc: TabRpc,
 ): Promise<void> {
 	switch (affordance.kind) {
 		case "action":
@@ -104,7 +107,8 @@ async function runAffordance(
 		case "prompt":
 			close();
 			try {
-				await window.omp.rpc.prompt(affordance.text.trim());
+				const response = await rpc.prompt(affordance.text.trim());
+				if (!response.success) throw new Error(response.error);
 			} catch (error) {
 				toast({ variant: "error", title: t("palette.failed"), message: String(error) });
 			}
@@ -117,6 +121,8 @@ async function runAffordance(
 }
 
 export function CommandPalette() {
+	const tabRpc = useTabRpc();
+	const tabId = useRuntimeTabId();
 	const t = useT();
 	const open = useUiStore(state => state.commandPaletteOpen);
 	const close = useUiStore(state => state.closeCommandPalette);
@@ -200,7 +206,7 @@ export function CommandPalette() {
 		document.addEventListener("keydown", onKey, true);
 		let cancelled = false;
 		setLoading(true);
-		window.omp.rpc
+		tabRpc
 			.getAvailableCommands()
 			.then(response => {
 				if (cancelled) return;
@@ -221,7 +227,7 @@ export function CommandPalette() {
 			unregisterLayer();
 			if (wasTop) restoreFocus?.focus();
 		};
-	}, [open]);
+	}, [open, tabRpc.getAvailableCommands]);
 	/** Retry: re-send the most recent user message; interrupt the active turn when streaming. */
 	const retryLastTurn = useCallback(
 		() =>
@@ -233,7 +239,7 @@ export function CommandPalette() {
 
 	/** Retry the last FAILED turn via the retry RPC (TUI /retry parity). */
 	const retryTurn = useCallback(async () => {
-		const response = await window.omp.rpc.retry();
+		const response = await tabRpc.retry();
 		if (!response.success) {
 			toast({ variant: "error", title: t("palette.failed"), message: response.error });
 			return;
@@ -242,7 +248,7 @@ export function CommandPalette() {
 		if (!data?.retried) {
 			toast({ variant: "warning", title: t("palette.retryNothing"), message: t("palette.retryNothingDesc") });
 		}
-	}, [t]);
+	}, [t, tabRpc.retry]);
 
 	const menuItems = useMemo(
 		() =>
@@ -273,7 +279,7 @@ export function CommandPalette() {
 				openBenchmark,
 				openHandoffDialog,
 				forkSession: forkSessionFromGui,
-				hydrateSession,
+				hydrateSession: () => (tabId ? hydrateTabSession(tabId) : hydrateSession()),
 				openExtensions,
 				openInventory,
 				openThemePicker,
@@ -288,22 +294,22 @@ export function CommandPalette() {
 				retryTurn,
 				retryLastTurn,
 				rpc: {
-					setFastMode: enabled => window.omp.rpc.setFastMode(enabled),
-					setAutoCompaction: enabled => window.omp.rpc.setAutoCompaction(enabled),
-					setAutoRetry: enabled => window.omp.rpc.setAutoRetry(enabled),
-					setSteeringMode: mode => window.omp.rpc.setSteeringMode(mode),
-					setFollowUpMode: mode => window.omp.rpc.setFollowUpMode(mode),
-					setInterruptMode: mode => window.omp.rpc.setInterruptMode(mode),
-					compact: instructions => window.omp.rpc.compact(instructions),
+					setFastMode: enabled => tabRpc.setFastMode(enabled),
+					setAutoCompaction: enabled => tabRpc.setAutoCompaction(enabled),
+					setAutoRetry: enabled => tabRpc.setAutoRetry(enabled),
+					setSteeringMode: mode => tabRpc.setSteeringMode(mode),
+					setFollowUpMode: mode => tabRpc.setFollowUpMode(mode),
+					setInterruptMode: mode => tabRpc.setInterruptMode(mode),
+					compact: instructions => tabRpc.compact(instructions),
 					newSession: newSessionNow,
-					handoff: () => window.omp.rpc.handoff(),
-					prompt: message => window.omp.rpc.prompt(message),
-					setPlanMode: enabled => window.omp.rpc.setPlanMode(enabled),
-					setPrewalk: enabled => window.omp.rpc.setPrewalk(enabled),
-					exportHtml: path => window.omp.rpc.exportHtml(path),
-					setSessionName: name => window.omp.rpc.setSessionName(name),
-					cycleModel: () => window.omp.rpc.cycleModel(),
-					cycleThinkingLevel: () => window.omp.rpc.cycleThinkingLevel(),
+					handoff: () => tabRpc.handoff(),
+					prompt: message => tabRpc.prompt(message),
+					setPlanMode: enabled => tabRpc.setPlanMode(enabled),
+					setPrewalk: enabled => tabRpc.setPrewalk(enabled),
+					exportHtml: path => tabRpc.exportHtml(path),
+					setSessionName: name => tabRpc.setSessionName(name),
+					cycleModel: () => tabRpc.cycleModel(),
+					cycleThinkingLevel: () => tabRpc.cycleThinkingLevel(),
 				},
 			}),
 		[
@@ -343,6 +349,22 @@ export function CommandPalette() {
 			openThemePicker,
 			openInventory,
 			openExtensions,
+			tabRpc.setPrewalk,
+			tabRpc.setSteeringMode,
+			tabRpc.setSessionName,
+			tabRpc.setPlanMode,
+			tabRpc.setInterruptMode,
+			tabRpc.setFollowUpMode,
+			tabRpc.setFastMode,
+			tabRpc.prompt,
+			tabRpc.setAutoRetry,
+			tabRpc.handoff,
+			tabRpc.cycleModel,
+			tabRpc.setAutoCompaction,
+			tabRpc.exportHtml,
+			tabRpc.cycleThinkingLevel,
+			tabRpc.compact,
+			tabId,
 		],
 	);
 
@@ -413,9 +435,9 @@ export function CommandPalette() {
 				return;
 			}
 			recordRecent(item.name);
-			void runAffordance(item.affordance, close, t);
+			void runAffordance(item.affordance, close, t, tabRpc);
 		},
-		[recordRecent, close, t],
+		[recordRecent, close, t, tabRpc],
 	);
 
 	const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {

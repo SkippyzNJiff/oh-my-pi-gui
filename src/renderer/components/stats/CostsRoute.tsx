@@ -30,13 +30,13 @@ interface CostsData {
 export function CostsRoute({ range, refreshKey }: { range: StatsRange; refreshKey: number }) {
 	const t = useT();
 	const params = useMemo(() => ({ range }), [range]);
-	const { data, isLoading, error, refetch } = useStats("/api/stats/costs", params);
+	const { data, isLoading, error, refetch } = useStats<CostsData>("/api/stats/costs", params);
 
 	useEffect(() => {
 		if (refreshKey > 0) refetch();
 	}, [refreshKey, refetch]);
 
-	const stats = (data ?? null) as CostsData | null;
+	const stats = data;
 	const series = stats?.costSeries ?? [];
 	const { total, chart } = useMemo(() => {
 		const sum = series.reduce((acc, point) => acc + point.cost, 0);
@@ -81,7 +81,13 @@ export function CostsRoute({ range, refreshKey }: { range: StatsRange; refreshKe
 	}, []);
 
 	return (
-		<RouteFrame empty={series.length === 0} error={error} loading={isLoading} onRetry={refetch}>
+		<RouteFrame
+			hasData={data !== null}
+			empty={series.length === 0}
+			error={error}
+			loading={isLoading}
+			onRetry={refetch}
+		>
 			<div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
 				<MetricCard label={t("stats.costs.totalCost")} tone="accent" value={formatUsd(total)} />
 				<MetricCard

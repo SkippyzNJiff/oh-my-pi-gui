@@ -1,3 +1,11 @@
+import {
+	activeTabCommand,
+	focusedSessionRuntime,
+	sessionRuntime,
+	sessionRuntimeStore,
+	withSessionRuntime,
+} from "../stores/session-runtime-context";
+import { createTabRpc } from "./tab-rpc";
 /**
  * Declarative command registry: maps every known slash command to a typed
  * UI affordance so the GUI can present them as first-class menu actions
@@ -14,11 +22,11 @@
  */
 
 import type { AvailableCommand, CopyTarget, RpcResponse } from "../../shared/rpc-types";
-import { hydrateSession } from "../hooks/use-rpc-events";
+import { hydrateSession, hydrateTabSession } from "../hooks/use-rpc-events";
 import { newSessionNow } from "../hooks/use-session-switch";
 import { openHandoffDialog } from "../stores/fork-handoff";
 import { useModelStore } from "../stores/model";
-import { useSessionStore } from "../stores/session";
+import { type SessionStore, useSessionStore } from "../stores/session";
 import { useSettingsStore } from "../stores/settings";
 import { useTabsStore } from "../stores/tabs";
 import { toast } from "../stores/toast";
@@ -160,18 +168,41 @@ const keyOf = (name: string): string =>
  * RPC failure, otherwise apply the returned state to the owning store so the
  * UI reflects the server truth immediately instead of waiting for a push.
  */
-async function applyToggle(
+export async function runSessionCommand(
 	promise: Promise<RpcResponse>,
 	title: string,
-	apply: (data: unknown) => void,
+	apply?: (data: unknown) => void,
 ): Promise<void> {
-	const res = await promise;
-	if (res.success) apply(res.data);
-	else toast({ variant: "error", title, message: res.error });
+	const runtime = focusedSessionRuntime();
+	const sessionId = useSessionStore.getState().sessionId;
+	try {
+		const res = await promise;
+		if (!res.success) {
+			toast({ variant: "error", title, message: res.error });
+			return;
+		}
+		if (!apply) return;
+		if (runtime) {
+			if (
+				sessionRuntime(runtime.tabId) !== runtime ||
+				sessionRuntimeStore<SessionStore>(runtime.tabId, "session")?.getState().sessionId !== sessionId
+			)
+				return;
+			withSessionRuntime(runtime.tabId, () => apply(res.data));
+		} else if (useSessionStore.getState().sessionId === sessionId) apply(res.data);
+	} catch (cause) {
+		toast({ variant: "error", title, message: String(cause) });
+	}
 }
 
 export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[] {
 	const { t } = ctx;
+	const runtime = focusedSessionRuntime();
+	const boundRpc = runtime
+		? createTabRpc(runtime.command)
+		: typeof window === "undefined"
+			? createTabRpc(activeTabCommand)
+			: window.omp.rpc;
 	const items: CommandMenuItem[] = [];
 	const seen = new Set<string>();
 
@@ -215,7 +246,7 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 
 	/** Read a single setting for status toasts; RPC failures throw for the palette to surface. */
 	const readSetting = async (path: string): Promise<unknown> => {
-		const res = await window.omp.rpc.getSettings([path]);
+		const res = await boundRpc.getSettings([path]);
 		if (!res.success) throw new Error(res.error);
 		return (res.data as { values?: Record<string, unknown> } | undefined)?.values?.[path];
 	};
@@ -225,14 +256,14 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 	 * toggles use (the agent live-applies runtime keys) and toast the result.
 	 */
 	const writeSetting = async (path: string, value: unknown, message: string): Promise<void> => {
-		const res = await window.omp.rpc.setSetting(path, value);
+		const res = await boundRpc.setSetting(path, value);
 		if (!res.success) throw new Error(res.error);
 		toast({ variant: "success", message });
 	};
 
 	/** /advisor on|off — set_setting live-applies advisor.enabled and reports activation state. */
 	const setAdvisor = async (enabled: boolean): Promise<void> => {
-		const res = await window.omp.rpc.setSetting("advisor.enabled", enabled);
+		const res = await boundRpc.setSetting("advisor.enabled", enabled);
 		if (!res.success) throw new Error(res.error);
 		const data = res.data as { advisorEnabled?: boolean; advisorActive?: boolean } | undefined;
 		if (enabled && data?.advisorEnabled === true && data.advisorActive !== true) {
@@ -249,7 +280,7 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 			ctx.openSettings("mcp");
 			return;
 		}
-		const res = await window.omp.rpc.mcpAction(name, verb);
+		const res = await boundRpc.mcpAction(name, verb);
 		if (!res.success) throw new Error(res.error);
 		await ctx.hydrateSession();
 		toast({ variant: "success", message: t(`mcpAction.${verb}`, { name }) });
@@ -285,7 +316,7 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 			payload.plugin = input.slice(0, at);
 			payload.marketplace = input.slice(at + 1);
 		}
-		const res = await window.omp.rpc.marketplaceAction(payload);
+		const res = await boundRpc.marketplaceAction(payload);
 		if (!res.success) throw new Error(res.error);
 		const data = res.data as { ok?: boolean; error?: string; activation?: string } | undefined;
 		if (data?.ok === false) throw new Error(data.error ?? t("marketplaceAction.failed"));
@@ -310,7 +341,7 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 		}
 		const origin = capturePluginActivationOrigin();
 		if (!origin) throw new Error(t("pluginActivation.routePending"));
-		const res = await window.omp.rpc.setPluginEnabled(id, enabled);
+		const res = await boundRpc.setPluginEnabled(id, enabled);
 		if (!res.success) throw new Error(res.error);
 		const data = res.data as { activation?: string } | undefined;
 		await handlePluginActivation(
@@ -566,7 +597,7 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 			kind: "toggle",
 			get: () => ctx.fastModeEnabled,
 			set: e =>
-				applyToggle(ctx.rpc.setFastMode(e), "Fast mode", data => {
+				runSessionCommand(ctx.rpc.setFastMode(e), "Fast mode", data => {
 					const d = data as { enabled?: boolean; active?: boolean } | undefined;
 					useModelStore.setState({ fastModeEnabled: d?.enabled ?? e, fastModeActive: d?.active ?? false });
 				}),
@@ -581,7 +612,7 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 			kind: "toggle",
 			get: () => ctx.prewalkArmed,
 			set: e =>
-				applyToggle(ctx.rpc.setPrewalk(e), t("cmd.prewalk"), data => {
+				runSessionCommand(ctx.rpc.setPrewalk(e), t("cmd.prewalk"), data => {
 					const d = data as { enabled?: boolean } | undefined;
 					useSessionStore.setState({ prewalkArmed: d?.enabled ?? e });
 				}),
@@ -690,8 +721,10 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 			kind: "toggle",
 			get: () => ctx.autoCompaction,
 			set: e =>
-				applyToggle(ctx.rpc.setAutoCompaction(e), "Auto-compaction", () =>
-					useSettingsStore.getState().update({ autoCompaction: e }),
+				runSessionCommand(ctx.rpc.setAutoCompaction(e), "Auto-compaction", data =>
+					useSettingsStore
+						.getState()
+						.update({ autoCompaction: (data as { enabled?: boolean } | undefined)?.enabled ?? e }),
 				),
 		},
 	});
@@ -704,8 +737,10 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 			kind: "toggle",
 			get: () => ctx.autoRetry,
 			set: e =>
-				applyToggle(ctx.rpc.setAutoRetry(e), "Auto-retry", () =>
-					useSettingsStore.getState().update({ autoRetry: e }),
+				runSessionCommand(ctx.rpc.setAutoRetry(e), "Auto-retry", data =>
+					useSettingsStore
+						.getState()
+						.update({ autoRetry: (data as { enabled?: boolean } | undefined)?.enabled ?? e }),
 				),
 		},
 	});
@@ -1054,7 +1089,7 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 			kind: "toggle",
 			get: () => ctx.planModeEnabled,
 			set: e =>
-				applyToggle(ctx.rpc.setPlanMode(e), "Plan mode", data => {
+				runSessionCommand(ctx.rpc.setPlanMode(e), "Plan mode", data => {
 					const d = data as { enabled?: boolean } | undefined;
 					useSessionStore.setState({ planModeEnabled: d?.enabled ?? e });
 				}),
@@ -1294,12 +1329,9 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 			kind: "toggle",
 			get: () => useSessionStore.getState().agentsPaused,
 			set: async enabled => {
-				const response = await window.omp.rpc.setAgentsPaused(enabled);
-				if (!response.success) throw new Error(response.error);
-				const data = response.data as { paused: boolean; pausedAt?: number } | undefined;
-				useSessionStore.setState({
-					agentsPaused: data?.paused ?? enabled,
-					agentsPausedAt: data?.pausedAt ?? null,
+				await runSessionCommand(boundRpc.setAgentsPaused(enabled), t("cmd.pause"), data => {
+					const state = data as { paused: boolean; pausedAt?: number };
+					useSessionStore.setState({ agentsPaused: state.paused, agentsPausedAt: state.pausedAt ?? null });
 				});
 			},
 		},
@@ -1329,7 +1361,7 @@ export function buildCommandMenu(ctx: CommandRegistryContext): CommandMenuItem[]
 		affordance: {
 			kind: "action",
 			run: async initial => {
-				const response = await window.omp.rpc.guidedGoal(initial);
+				const response = await boundRpc.guidedGoal(initial);
 				if (!response.success) throw new Error(response.error);
 			},
 		},
@@ -1370,10 +1402,12 @@ function prefillQueueShorthand(): void {
 /** /shake elide|images|thinking: confirm, then drop context via shake_context RPC;
  *  the toast carries the agent's removed summary. */
 async function shakeContextFromGui(mode: "elide" | "images" | "thinking"): Promise<void> {
+	const runtime = focusedSessionRuntime();
+	const rpc = runtime ? createTabRpc(runtime.command) : window.omp.rpc;
 	const confirmKey =
 		mode === "images" ? "shake.confirmImages" : mode === "thinking" ? "shake.confirmThinking" : "shake.confirmElide";
 	if (!window.confirm(translate(confirmKey))) return;
-	const response = await window.omp.rpc.shakeContext(mode);
+	const response = await rpc.shakeContext(mode);
 	if (!response.success) {
 		toast({ variant: "error", title: translate("cmd.shake"), message: response.error });
 		return;
@@ -1385,7 +1419,9 @@ async function shakeContextFromGui(mode: "elide" | "images" | "thinking"): Promi
 /** /fresh: rotate provider stream state via the fresh RPC; the server's busy
  *  refusal (mid-stream) rides a warning toast instead of failing hard. */
 async function freshProviderStateFromGui(): Promise<void> {
-	const response = await window.omp.rpc.fresh();
+	const runtime = focusedSessionRuntime();
+	const rpc = runtime ? createTabRpc(runtime.command) : window.omp.rpc;
+	const response = await rpc.fresh();
 	if (!response.success) {
 		toast({ variant: "warning", message: response.error });
 		return;
@@ -1396,7 +1432,9 @@ async function freshProviderStateFromGui(): Promise<void> {
 /** /reload-plugins: reload plugin state via the reload_plugins RPC, toast the
  *  post-reload counts, and rehydrate so the extensions inventory refreshes. */
 async function reloadPluginsFromGui(hydrate: () => Promise<void>): Promise<void> {
-	const response = await window.omp.rpc.reloadPlugins();
+	const runtime = focusedSessionRuntime();
+	const rpc = runtime ? createTabRpc(runtime.command) : window.omp.rpc;
+	const response = await rpc.reloadPlugins();
 	if (!response.success) {
 		toast({ variant: "error", title: translate("cmd.reloadPlugins"), message: response.error });
 		return;
@@ -1415,6 +1453,8 @@ async function reloadPluginsFromGui(hydrate: () => Promise<void>): Promise<void>
 }
 
 async function runCollabCommand(args?: string): Promise<void> {
+	const runtime = focusedSessionRuntime();
+	const rpc = runtime ? createTabRpc(runtime.command) : window.omp.rpc;
 	const input = args?.trim() ?? "";
 	if (!input) {
 		useUiStore.getState().openCollab();
@@ -1431,7 +1471,7 @@ async function runCollabCommand(args?: string): Promise<void> {
 	}
 	const knownVerb = verb === "start" || verb === "view";
 	const relayUrl = knownVerb ? rest.join(" ").trim() : input;
-	const response = await window.omp.rpc.collabStart(relayUrl || undefined, verb === "view");
+	const response = await rpc.collabStart(relayUrl || undefined, verb === "view");
 	if (!response.success) throw new Error(response.error);
 	useUiStore.getState().openCollab();
 }
@@ -1446,13 +1486,18 @@ async function joinCollab(link?: string): Promise<void> {
 }
 
 async function leaveCollab(): Promise<void> {
-	const response = await window.omp.rpc.collabLeave();
+	const runtime = focusedSessionRuntime();
+	const rpc = runtime ? createTabRpc(runtime.command) : window.omp.rpc;
+	const response = await rpc.collabLeave();
 	if (!response.success) throw new Error(response.error);
-	await hydrateSession();
+	if (runtime) await hydrateTabSession(runtime.tabId);
+	else await hydrateSession();
 	toast({ variant: "success", message: translate("collab.left") });
 }
 
 async function copyFromChat(args?: string): Promise<void> {
+	const runtime = focusedSessionRuntime();
+	const rpc = runtime ? createTabRpc(runtime.command) : window.omp.rpc;
 	const kind = args?.trim().toLowerCase();
 	if (!kind) {
 		useUiStore.getState().openCopySelector();
@@ -1462,7 +1507,7 @@ async function copyFromChat(args?: string): Promise<void> {
 		toast({ variant: "info", message: translate("copySelector.usage") });
 		return;
 	}
-	const response = await window.omp.rpc.getCopyTargets();
+	const response = await rpc.getCopyTargets();
 	if (!response.success) throw new Error(response.error);
 	const targets = (response.data as { targets?: CopyTarget[] } | undefined)?.targets ?? [];
 	let target: CopyTarget | undefined;
@@ -1489,25 +1534,30 @@ async function copyFromChat(args?: string): Promise<void> {
 }
 
 async function dispatchTan(work?: string): Promise<void> {
+	const runtime = focusedSessionRuntime();
+	const rpc = runtime ? createTabRpc(runtime.command) : window.omp.rpc;
 	const trimmed = work?.trim();
 	if (!trimmed) {
 		toast({ variant: "info", message: translate("tan.usage") });
 		return;
 	}
-	const response = await window.omp.rpc.tan(trimmed);
+	const response = await rpc.tan(trimmed);
 	if (!response.success) throw new Error(response.error);
 	const data = response.data as { jobId?: string } | undefined;
 	toast({ variant: "success", message: translate("tan.dispatched", { id: data?.jobId ?? "" }) });
-	await hydrateSession();
+	if (runtime) await hydrateTabSession(runtime.tabId);
+	else await hydrateSession();
 }
 
 async function forgeTtsrRule(complaint?: string): Promise<void> {
+	const runtime = focusedSessionRuntime();
+	const rpc = runtime ? createTabRpc(runtime.command) : window.omp.rpc;
 	const trimmed = complaint?.trim();
 	if (!trimmed) {
 		toast({ variant: "info", message: translate("omfg.usage") });
 		return;
 	}
-	const response = await window.omp.rpc.omfg(trimmed);
+	const response = await rpc.omfg(trimmed);
 	if (!response.success) throw new Error(response.error);
 	const data = response.data as { state?: "saved" | "rejected" | "aborted"; savedPath?: string } | undefined;
 	if (data?.state === "saved") {
@@ -1517,8 +1567,10 @@ async function forgeTtsrRule(complaint?: string): Promise<void> {
 	}
 }
 
-async function retryFailedTurn(): Promise<void> {
-	const response = await window.omp.rpc.retry();
+export async function retryFailedTurn(): Promise<void> {
+	const runtime = focusedSessionRuntime();
+	const rpc = runtime ? createTabRpc(runtime.command) : window.omp.rpc;
+	const response = await rpc.retry();
 	if (!response.success) throw new Error(response.error);
 	const data = response.data as { retried?: boolean } | undefined;
 	if (!data?.retried) {
@@ -1531,27 +1583,33 @@ async function retryFailedTurn(): Promise<void> {
 }
 
 export async function dropSessionFromGui(): Promise<void> {
+	const runtime = focusedSessionRuntime();
+	const rpc = runtime ? createTabRpc(runtime.command) : window.omp.rpc;
 	if (!window.confirm(translate("drop.confirm"))) return;
-	const response = await window.omp.rpc.dropSession();
+	const response = await rpc.dropSession();
 	if (!response.success) throw new Error(response.error);
 	const data = response.data as { cancelled?: boolean } | undefined;
 	if (data?.cancelled) {
 		toast({ variant: "info", message: translate("drop.cancelled") });
 		return;
 	}
-	await hydrateSession();
+	if (runtime) await hydrateTabSession(runtime.tabId);
+	else await hydrateSession();
 	toast({ variant: "success", message: translate("drop.success") });
 }
 
 export async function forkSessionFromGui(): Promise<void> {
-	const response = await window.omp.rpc.fork();
+	const runtime = focusedSessionRuntime();
+	const rpc = runtime ? createTabRpc(runtime.command) : window.omp.rpc;
+	const response = await rpc.fork();
 	if (!response.success) throw new Error(response.error);
 	const data = response.data as { cancelled?: boolean } | undefined;
 	if (data?.cancelled) {
 		toast({ variant: "info", message: translate("fork.cancelled") });
 		return;
 	}
-	await hydrateSession();
+	if (runtime) await hydrateTabSession(runtime.tabId);
+	else await hydrateSession();
 	toast({ variant: "success", message: translate("fork.success") });
 }
 
@@ -1561,6 +1619,8 @@ export async function forkSessionFromGui(): Promise<void> {
  * builtins instead of forwarding TUI-only command text to the model.
  */
 export function buildCurrentCommandMenu(availableCommands: AvailableCommand[]): CommandMenuItem[] {
+	const runtime = focusedSessionRuntime();
+	const rpc = runtime ? createTabRpc(runtime.command) : window.omp.rpc;
 	const session = useSessionStore.getState();
 	const model = useModelStore.getState();
 	const settings = useSettingsStore.getState();
@@ -1612,26 +1672,26 @@ export function buildCurrentCommandMenu(availableCommands: AvailableCommand[]): 
 				}),
 			),
 		forkSession: forkSessionFromGui,
-		hydrateSession,
+		hydrateSession: () => (runtime ? hydrateTabSession(runtime.tabId) : hydrateSession()),
 		rpc: {
-			setFastMode: enabled => window.omp.rpc.setFastMode(enabled),
-			setAutoCompaction: enabled => window.omp.rpc.setAutoCompaction(enabled),
-			setAutoRetry: enabled => window.omp.rpc.setAutoRetry(enabled),
-			setSteeringMode: mode => window.omp.rpc.setSteeringMode(mode),
-			setFollowUpMode: mode => window.omp.rpc.setFollowUpMode(mode),
-			setInterruptMode: mode => window.omp.rpc.setInterruptMode(mode),
-			compact: instructions => window.omp.rpc.compact(instructions),
+			setFastMode: enabled => rpc.setFastMode(enabled),
+			setAutoCompaction: enabled => rpc.setAutoCompaction(enabled),
+			setAutoRetry: enabled => rpc.setAutoRetry(enabled),
+			setSteeringMode: mode => rpc.setSteeringMode(mode),
+			setFollowUpMode: mode => rpc.setFollowUpMode(mode),
+			setInterruptMode: mode => rpc.setInterruptMode(mode),
+			compact: instructions => rpc.compact(instructions),
 			newSession: async () => {
 				return newSessionNow();
 			},
-			handoff: () => window.omp.rpc.handoff(),
-			prompt: message => window.omp.rpc.prompt(message),
-			setPlanMode: enabled => window.omp.rpc.setPlanMode(enabled),
-			setPrewalk: enabled => window.omp.rpc.setPrewalk(enabled),
-			exportHtml: path => window.omp.rpc.exportHtml(path),
-			setSessionName: name => window.omp.rpc.setSessionName(name),
-			cycleModel: () => window.omp.rpc.cycleModel(),
-			cycleThinkingLevel: () => window.omp.rpc.cycleThinkingLevel(),
+			handoff: () => rpc.handoff(),
+			prompt: message => rpc.prompt(message),
+			setPlanMode: enabled => rpc.setPlanMode(enabled),
+			setPrewalk: enabled => rpc.setPrewalk(enabled),
+			exportHtml: path => rpc.exportHtml(path),
+			setSessionName: name => rpc.setSessionName(name),
+			cycleModel: () => rpc.cycleModel(),
+			cycleThinkingLevel: () => rpc.cycleThinkingLevel(),
 		},
 	});
 }

@@ -1,3 +1,10 @@
+import {
+	GUI_DISPLAY_BOOL_FIELDS,
+	saveGuiPreference,
+	setDisplayPreference,
+	useDisplayPreference,
+} from "../../lib/display-preferences";
+import { useTabRpc } from "../../lib/tab-rpc";
 /**
  * Settings window (Cmd+,): schema-driven editor for the agent settings
  * schema. Tabs, groups, labels, and control types all come from the
@@ -26,14 +33,22 @@ import {
 	Webhook,
 	X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import {
+	flagsToCommandLine,
+	type LaunchProfile,
+	parseLaunchProfile,
+	profileToFlags,
+} from "../../../shared/launch-profile";
 import type { SettingEntry, SettingsSchemaResult } from "../../../shared/rpc-types";
-import { useT } from "../../lib/i18n";
-import { flagsToCommandLine, type LaunchProfile, parseLaunchProfile, profileToFlags } from "../../lib/launch-profile";
+import { useLang, useT } from "../../lib/i18n";
 import { setCodeLineNumbersPref } from "../../lib/markdown";
+import { en } from "../../locales/en";
+import { zh } from "../../locales/zh";
 import { useMessagesStore } from "../../stores/messages";
 import { useSessionStore } from "../../stores/session";
+import { focusedSessionRuntime, sessionRuntime, withSessionRuntime } from "../../stores/session-runtime-context";
 import { toast } from "../../stores/toast";
 import { useUiStore } from "../../stores/ui";
 import { CodeBlock } from "../chat/CodeBlock";
@@ -48,16 +63,17 @@ import { Toggle } from "./editors/Toggle";
 import { AdvancedTab } from "./pages/AdvancedTab";
 import { CapabilitiesHome } from "./pages/CapabilitiesHome";
 import { SchemaTabContent } from "./pages/SchemaTabContent";
-import { SchemaSettingRow } from "./SchemaSettingRow";
 import { SecuritySettingsPage } from "./SecuritySettingsPage";
 import { SkillsSettingsPage } from "./SkillsSettingsPage";
 import { SshSettingsPage } from "./SshSettingsPage";
-import { isSettingVisibleInGui, resolveSettingsTarget } from "./settings-schema-utils";
+import { ZH_SETTINGS } from "./schema-zh";
+import { isSettingVisibleInGui, matchesSettingSearch, resolveSettingsTarget } from "./settings-schema-utils";
 import {
 	ADVANCED_TAB_ID,
 	buildSettingsNavGroups,
 	CAPABILITIES_TAB_ID,
 	COMMANDS_TAB_ID,
+	GUI_SETTING_SEARCH_ITEMS,
 	GUI_TAB_ID,
 	HOOKS_TAB_ID,
 	LAUNCH_TEXT_FIELDS,
@@ -67,7 +83,6 @@ import {
 	MANAGEMENT_TAB_IDS,
 	MCP_TAB_ID,
 	RESOURCES_TAB_ID,
-	SEARCHABLE_MANAGEMENT_TAB_IDS,
 	SECURITY_TAB_ID,
 	type SettingsNavGroup,
 	type SettingsResponseData,
@@ -78,16 +93,55 @@ import {
 import { UpdatesSettingsPage } from "./UpdatesSettingsPage";
 
 /** Settings without UI metadata (advanced): searchable flat list. */
-export function SettingsWindow() {
+function DisplayPreferenceRow({ field }: { field: (typeof GUI_DISPLAY_BOOL_FIELDS)[number] }) {
 	const t = useT();
+	const value = useDisplayPreference(field);
+	const overridden = useUiStore(state => state.displayPreferences[field] != null);
+	const [saving, setSaving] = useState(false);
+	const save = async (next: boolean | null) => {
+		setSaving(true);
+		await setDisplayPreference(field, next);
+		setSaving(false);
+	};
+	return (
+		<div id={`setting-gui-${field}`} className="flex items-center gap-3">
+			<div className="flex-1">
+				<Toggle
+					label={t(`settings.display.${field}`)}
+					description={t(overridden ? "settings.display.local" : "settings.display.legacy")}
+					checked={value}
+					disabled={saving}
+					onChange={next => void save(next)}
+				/>
+			</div>
+			{overridden && (
+				<Button size="sm" variant="ghost" disabled={saving} onClick={() => void save(null)}>
+					{t("settings.display.inherit")}
+				</Button>
+			)}
+		</div>
+	);
+}
+
+export function SettingsWindow() {
+	const tabRpc = useTabRpc();
+	const t = useT();
+	const { lang } = useLang();
+	const contentRef = useRef<HTMLDivElement>(null);
+	const [focusedSetting, setFocusedSetting] = useState<string | null>(null);
 	const open = useUiStore(state => state.settingsOpen);
 	const requestedTab = useUiStore(state => state.settingsTab);
 	const close = useUiStore(state => state.closeSettings);
 	const setFontSize = useUiStore(state => state.setFontSize);
+	const pasteMenuThreshold = useDisplayPreference("pasteMenuThreshold");
+	const [pasteThresholdDraft, setPasteThresholdDraft] = useState<string | null>(null);
 	const setPanelTab = useUiStore(state => state.setPanelTab);
 	const setNotifications = useUiStore(state => state.setNotifications);
 	const setTranscriptDetail = useUiStore(state => state.setTranscriptDetail);
 	const fontSize = useUiStore(state => state.fontSize);
+	const compactDensity = useUiStore(state => state.compactDensity);
+	const colorBlindMode = useUiStore(state => state.colorBlindMode);
+	const followAgentTheme = useUiStore(state => state.followAgentTheme);
 	const panelTab = useUiStore(state => state.panelTab);
 	const notifications = useUiStore(state => state.notifications);
 	const thinkingExpanded = useUiStore(state => state.thinkingExpanded);
@@ -104,7 +158,13 @@ export function SettingsWindow() {
 	const [fontSizeDraft, setFontSizeDraft] = useState<string | null>(null);
 	const [proxyDraft, setProxyDraft] = useState<string | null>(null);
 	const [savedProxy, setSavedProxy] = useState("");
+	const [proxySaving, setProxySaving] = useState(false);
+	const proxyPending = useRef(false);
 	const [launchProfile, setLaunchProfile] = useState<LaunchProfile>({});
+	const [launchSaving, setLaunchSaving] = useState(false);
+	const launchPending = useRef<Promise<boolean> | null>(null);
+	const launchVersion = useRef(0);
+	const settingsVersion = useRef(0);
 	const [launchDrafts, setLaunchDrafts] = useState<Partial<Record<LaunchTextField, string>>>({});
 	const [launchRestarting, setLaunchRestarting] = useState(false);
 	const [codeLineNumbers, setCodeLineNumbers] = useState(false);
@@ -137,14 +197,12 @@ export function SettingsWindow() {
 	useEffect(() => {
 		if (!open || !sidecarReady) return;
 		let cancelled = false;
+		const version = ++settingsVersion.current;
 		setLoadState("loading");
 		setLoadError(null);
 		void (async () => {
 			try {
-				const [schemaRes, settingsRes] = await Promise.all([
-					window.omp.rpc.getSettingsSchema(),
-					window.omp.rpc.getSettings(),
-				]);
+				const [schemaRes, settingsRes] = await Promise.all([tabRpc.getSettingsSchema(), tabRpc.getSettings()]);
 				if (cancelled) return;
 				if (!schemaRes.success) {
 					setSchema(null);
@@ -169,7 +227,7 @@ export function SettingsWindow() {
 				}
 				setFontSizeDraft(null);
 				setSchema(result);
-				setValues(nextValues);
+				setValues(previous => (version === settingsVersion.current ? nextValues : { ...nextValues, ...previous }));
 				setLoadState("ready");
 			} catch (err) {
 				if (!cancelled) {
@@ -182,9 +240,10 @@ export function SettingsWindow() {
 		return () => {
 			cancelled = true;
 		};
-	}, [open, reloadToken, sidecarReady, t]);
+	}, [open, reloadToken, sidecarReady, t, tabRpc]);
 
 	const handleCommitted = useCallback((path: string, value: unknown) => {
+		settingsVersion.current++;
 		setValues(prev => ({ ...prev, [path]: value }));
 	}, []);
 
@@ -196,21 +255,37 @@ export function SettingsWindow() {
 		if (!open) return;
 		let cancelled = false;
 		const unsubscribe = window.omp.events.onConfigUpdate(() => {
-			void window.omp.rpc.getSettings().then(res => {
-				if (cancelled || !res.success) return;
-				const data = res.data as SettingsResponseData | undefined;
-				if (!data?.values) return;
-				const nextValues = { ...data.values };
-				if (typeof data.advisorEnabled === "boolean") nextValues["advisor.enabled"] = data.advisorEnabled;
-				setValues(prev => ({ ...prev, ...nextValues }));
-				setAdvisorActive(data.advisorActive);
-			});
+			const version = ++settingsVersion.current;
+			void tabRpc
+				.getSettings()
+				.then(res => {
+					if (cancelled || version !== settingsVersion.current || !res.success) return;
+					const data = res.data as SettingsResponseData | undefined;
+					if (!data?.values) return;
+					const nextValues = { ...data.values };
+					if (typeof data.advisorEnabled === "boolean") nextValues["advisor.enabled"] = data.advisorEnabled;
+					setValues(prev => ({ ...prev, ...nextValues }));
+					if (data.provenance)
+						setSchema(previous =>
+							previous
+								? {
+										...previous,
+										entries: previous.entries.map(entry => ({
+											...entry,
+											provenance: data.provenance?.[entry.path] ?? entry.provenance,
+										})),
+									}
+								: previous,
+						);
+					setAdvisorActive(data.advisorActive);
+				})
+				.catch(() => {});
 		});
 		return () => {
 			cancelled = true;
 			unsubscribe();
 		};
-	}, [open]);
+	}, [open, tabRpc.getSettings]);
 
 	const navGroups = useMemo<SettingsNavGroup[]>(() => buildSettingsNavGroups(schema), [schema]);
 	// Load the persisted proxy pref each time the window opens.
@@ -235,11 +310,12 @@ export function SettingsWindow() {
 	useEffect(() => {
 		if (!open) return;
 		let cancelled = false;
+		const version = ++launchVersion.current;
 		setLaunchDrafts({});
 		void window.omp.prefs
 			.get("launchProfiles")
 			.then(raw => {
-				if (cancelled) return;
+				if (cancelled || version !== launchVersion.current) return;
 				const map =
 					typeof raw === "object" && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
 				setLaunchProfile(parseLaunchProfile(map[cwd]));
@@ -258,20 +334,19 @@ export function SettingsWindow() {
 
 	// ── GUI-local preferences (prefs IPC) ──
 	const applyPanelTab = (next: typeof panelTab) => {
-		setPanelTab(next);
-		void window.omp.prefs.set("defaultPanelTab", next);
+		void saveGuiPreference("defaultPanelTab", next, () => setPanelTab(next));
 	};
 	const applyNotifications = (next: boolean) => {
-		setNotifications(next);
-		void window.omp.prefs.set("notifications", next);
+		void saveGuiPreference("notifications", next, () => setNotifications(next));
 	};
 	const applyThinkingExpanded = (next: boolean) => {
-		useUiStore.getState().setThinkingExpanded(next);
-		void window.omp.prefs.set("thinkingExpanded", next);
+		void saveGuiPreference("thinkingExpanded", next, () => useUiStore.getState().setThinkingExpanded(next));
 	};
 	const applyTranscriptDetail = (next: typeof transcriptDetail) => {
-		setTranscriptDetail(next);
-		void window.omp.prefs.set("transcriptDetail", next);
+		void saveGuiPreference("transcriptDetail", next, () => setTranscriptDetail(next));
+	};
+	const applyDisplayPreference = (key: "compactDensity" | "colorBlindMode" | "followAgentTheme", value: boolean) => {
+		void saveGuiPreference(key, value, () => useUiStore.setState({ [key]: value }));
 	};
 	const commitFontSize = () => {
 		if (fontSizeDraft === null) return;
@@ -281,88 +356,125 @@ export function SettingsWindow() {
 			toast({ variant: "warning", message: t("settings.fontSizeRange") });
 			return;
 		}
-		setFontSize(parsed);
-		void window.omp.prefs.set("fontSize", parsed);
-		setFontSizeDraft(null);
+		void saveGuiPreference("fontSize", parsed, () => {
+			setFontSize(parsed);
+			setFontSizeDraft(null);
+		});
 	};
-	const commitProxy = () => {
-		if (proxyDraft === null) return;
+	const commitProxy = async () => {
+		if (proxyDraft === null || proxyPending.current) return;
 		const next = proxyDraft.trim();
-		setProxyDraft(null);
-		if (next === savedProxy) return;
-		setSavedProxy(next);
-		void window.omp.prefs.set("proxyUrl", next || null);
-		// Apply immediately when the agent is idle; a busy sidecar keeps its
-		// env until the next restart — killing a run to change proxy is never
-		// right.
-		const { isStreaming, isCompacting } = useSessionStore.getState();
-		if (isStreaming || isCompacting) {
-			toast({ variant: "info", message: t("settings.gui.proxySavedPending") });
+		if (next === savedProxy) {
+			setProxyDraft(null);
 			return;
 		}
-		void window.omp.sidecar.restart();
-		toast({ variant: "info", message: t("settings.gui.proxyApplied") });
+		const origin = focusedSessionRuntime();
+		proxyPending.current = true;
+		setProxySaving(true);
+		try {
+			const saved = await saveGuiPreference("proxyUrl", next || null, () => {
+				setSavedProxy(next);
+				setProxyDraft(draft => (draft === proxyDraft ? null : draft));
+			});
+			if (!saved) return;
+			const restart = () => {
+				const state = useSessionStore.getState();
+				const executing = useMessagesStore
+					.getState()
+					.messages.some(
+						message =>
+							(message.role === "bashExecution" || message.role === "pythonExecution") &&
+							message.running === true,
+					);
+				if (state.status !== "ready" || state.isStreaming || state.isCompacting || executing) return null;
+				return window.omp.sidecar.restart({ tabId: origin?.tabId, sessionPath: state.sessionFile ?? undefined });
+			};
+			const restarted = origin
+				? sessionRuntime(origin.tabId) === origin
+					? withSessionRuntime(origin.tabId, restart)
+					: null
+				: restart();
+			if (restarted) await restarted;
+			toast({
+				variant: "info",
+				message: t(restarted ? "settings.gui.proxyApplied" : "settings.gui.proxySavedPending"),
+			});
+		} catch (error) {
+			toast({ variant: "error", message: t("pluginActivation.restartFailed", { message: String(error) }) });
+		} finally {
+			proxyPending.current = false;
+			setProxySaving(false);
+		}
 	};
 
 	// ── Launch profile (per-workspace, prefs `launchProfiles.<cwd>`) ──
-	// Write-through like the other GUI prefs: every committed change persists
-	// immediately (read-modify-write so other workspaces' profiles survive),
-	// so the effective-command preview is always truthful. The sidecar reads
-	// the profile at spawn — changes need a restart (note in the section).
-	const persistLaunchProfile = (next: LaunchProfile) => {
-		setLaunchProfile(next);
-		const cleaned = parseLaunchProfile(next);
-		void window.omp.prefs
-			.get("launchProfiles")
-			.then(raw => {
-				const map =
-					typeof raw === "object" && raw !== null && !Array.isArray(raw)
-						? { ...(raw as Record<string, unknown>) }
-						: {};
-				if (Object.keys(cleaned).length === 0) delete map[cwd];
-				else map[cwd] = cleaned;
-				void window.omp.prefs.set("launchProfiles", map);
-			})
-			.catch(() => {});
+	// Patch only edited fields; Main owns the atomic per-workspace merge.
+	const updateLaunchProfile = async (patch: Partial<LaunchProfile>): Promise<boolean> => {
+		const version = ++launchVersion.current;
+		const previous = launchPending.current;
+		setLaunchSaving(true);
+		const pending = (async () => {
+			await previous;
+			try {
+				const saved = await window.omp.prefs.updateLaunchProfile(cwd, patch);
+				if (version !== launchVersion.current) return false;
+				setLaunchProfile(saved);
+				return true;
+			} catch (error) {
+				toast({ variant: "error", title: t("settings.saveFailed"), message: String(error) });
+				return false;
+			}
+		})();
+		launchPending.current = pending;
+		try {
+			return await pending;
+		} finally {
+			if (launchPending.current === pending) {
+				launchPending.current = null;
+				setLaunchSaving(false);
+			}
+		}
 	};
-	const updateLaunchProfile = (patch: Partial<LaunchProfile>) => persistLaunchProfile({ ...launchProfile, ...patch });
-	const commitLaunchField = (field: LaunchTextField) => {
+	const commitLaunchField = async (field: LaunchTextField) => {
 		const draft = launchDrafts[field];
 		if (draft === undefined) return;
+		const value = LAUNCH_VERBATIM_FIELDS[field] === true ? draft : draft.trim();
+		if (!(await updateLaunchProfile({ [field]: value === "" ? undefined : value }))) return;
 		setLaunchDrafts(prev => {
+			if (prev[field] !== draft) return prev;
 			const next = { ...prev };
 			delete next[field];
 			return next;
 		});
-		const value = LAUNCH_VERBATIM_FIELDS[field] === true ? draft : draft.trim();
-		persistLaunchProfile({ ...launchProfile, [field]: value === "" ? undefined : value });
 	};
 	const pickLaunchAddDirs = async () => {
+		const version = launchVersion.current;
 		const picked = await window.omp.system.showOpenDialog([], { directory: true }).catch(() => null);
-		if (!picked || picked.length === 0) return;
+		if (!picked || picked.length === 0 || version !== launchVersion.current) return;
 		const current = launchProfile.addDirs ?? [];
 		const merged = [...current];
 		for (const dir of picked) if (!merged.includes(dir)) merged.push(dir);
-		if (merged.length !== current.length) updateLaunchProfile({ addDirs: merged });
+		if (merged.length !== current.length) await updateLaunchProfile({ addDirs: merged });
 	};
 	const restartForLaunchProfile = () => {
-		if (sidecarBusy || launchRestarting) return;
+		if (sidecarBusy || launchRestarting || launchPending.current || Object.keys(launchDrafts).length) return;
 		setLaunchRestarting(true);
 		// Preserve the current conversation: the respawned sidecar resumes the
 		// active session (--session) instead of starting a fresh one.
 		const { sessionFile } = useSessionStore.getState();
+		const origin = focusedSessionRuntime();
 		void window.omp.sidecar
-			.restart({ sessionPath: sessionFile ?? undefined })
+			.restart({ tabId: origin?.tabId, sessionPath: sessionFile ?? undefined })
 			.then(() => {
 				toast({ variant: "info", message: t("settings.launch.restarting") });
 			})
-			.catch(() => {})
+			.catch(error =>
+				toast({ variant: "error", message: t("pluginActivation.restartFailed", { message: String(error) }) }),
+			)
 			.finally(() => setLaunchRestarting(false));
 	};
-	const applyCodeLineNumbers = (next: boolean) => {
-		setCodeLineNumbers(next);
-		// Persists via prefs IPC and flips every mounted markdown code block live.
-		setCodeLineNumbersPref(next);
+	const applyCodeLineNumbers = async (next: boolean) => {
+		if (await setCodeLineNumbersPref(next)) setCodeLineNumbers(next);
 	};
 
 	// Effective command line, refreshed live as fields change: in-progress
@@ -383,18 +495,16 @@ export function SettingsWindow() {
 
 	const isSchemaTab = schema?.tabs.some(schemaTab => schemaTab.id === tab) === true;
 	const managementTab = MANAGEMENT_TAB_IDS.has(tab);
-	const showGlobalSearch = !managementTab || SEARCHABLE_MANAGEMENT_TAB_IDS.has(tab);
+	const showGlobalSearch = true;
 
 	// Global search covers every GUI-relevant schema setting across all tabs.
 	// TUI-only entries never appear in results.
 	const searchGroups = useMemo(() => {
-		if (MANAGEMENT_TAB_IDS.has(tab)) return null;
 		const q = query.trim().toLowerCase();
-		if (!q || !schema) return null;
-		const matches = schema.entries.filter(entry => {
+		if (!q) return null;
+		const matches = (schema?.entries ?? []).filter(entry => {
 			if (!isSettingVisibleInGui(entry, values)) return false;
-			const hay = `${entry.path} ${entry.label ?? ""} ${entry.description ?? ""}`.toLowerCase();
-			return hay.includes(q);
+			return matchesSettingSearch(entry, q);
 		});
 		const byTab = new Map<string, SettingEntry[]>();
 		for (const entry of matches) {
@@ -404,7 +514,37 @@ export function SettingsWindow() {
 			byTab.set(key, list);
 		}
 		return byTab;
-	}, [query, schema, tab, values]);
+	}, [query, schema, values]);
+
+	const guiSearchResults = useMemo(() => {
+		const q = query.trim().normalize("NFKC").toLowerCase();
+		if (!q) return [];
+		return GUI_SETTING_SEARCH_ITEMS.filter(item =>
+			`${item.id} ${en[item.labelKey]} ${zh[item.labelKey]} ${item.aliases}`
+				.normalize("NFKC")
+				.toLowerCase()
+				.includes(q),
+		);
+	}, [query]);
+	const locateSetting = (targetTab: string, id: string) => {
+		setTab(targetTab);
+		setQuery("");
+		setFocusedSetting(id);
+	};
+	// Each page starts at its own top; search navigation then scrolls to the requested control.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: page and query changes reset the scroll container.
+	useLayoutEffect(() => {
+		if (contentRef.current) contentRef.current.scrollTop = 0;
+		if (!focusedSetting || query) return;
+		const target = document.getElementById(focusedSetting);
+		if (target) {
+			target.scrollIntoView({ block: "center" });
+			target.querySelector<HTMLElement>("button, input, select, textarea")?.focus({ preventScroll: true });
+			target.animate?.([{ backgroundColor: "var(--omp-selected-bg)" }, { backgroundColor: "transparent" }], {
+				duration: 1600,
+			});
+		}
+	}, [tab, query, open, focusedSetting]);
 
 	// Focus management for the fullscreen dialog: initial focus, Tab trap, restore.
 	const dialogRef = useRef<HTMLDivElement>(null);
@@ -486,44 +626,57 @@ export function SettingsWindow() {
 					<div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
 						{navGroups.map((group, groupIndex) => (
 							<section className={groupIndex === 0 ? "" : "settings-nav-group mt-4"} key={group.id}>
-								<div className="settings-nav-group-label mb-1 px-3 text-omp-xxs font-semibold uppercase tracking-[0.14em] text-(--omp-dim)">
+								<button
+									type="button"
+									aria-expanded={group.items.some(item => item.id === tab)}
+									className="settings-nav-group-label mb-1 w-full rounded-lg px-3 py-2 text-left text-omp-md font-medium text-(--omp-text) hover:bg-(--omp-selected-bg)"
+									onClick={() => {
+										setTab(group.items[0].id);
+										setQuery("");
+										setFocusedSetting(null);
+									}}
+								>
 									{t(`settings.nav.${group.id}`)}
-								</div>
-								{group.items.map(tb => {
-									const active = tb.id === tab;
-									return (
-										<button
-											className={`settings-nav-item flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-omp-md transition-colors ${
-												active
-													? "bg-(--omp-selected-bg) font-medium text-(--omp-text)"
-													: "text-(--omp-muted) hover:bg-(--omp-bg-tertiary) hover:text-(--omp-text)"
-											}`}
-											key={tb.id}
-											onClick={() => {
-												setTab(tb.id);
-												setQuery("");
-											}}
-											title={tabTitle(tb)}
-											type="button"
-										>
-											<span className="flex size-4 shrink-0 items-center justify-center text-(--omp-dim)">
-												{tb.id === CAPABILITIES_TAB_ID && <Sparkles aria-hidden="true" size={13} />}
-												{tb.id === SKILLS_TAB_ID && <BookOpen aria-hidden="true" size={13} />}
-												{tb.id === MCP_TAB_ID && <Network aria-hidden="true" size={13} />}
-												{tb.id === RESOURCES_TAB_ID && <Blocks aria-hidden="true" size={13} />}
-												{tb.id === HOOKS_TAB_ID && <Webhook aria-hidden="true" size={13} />}
-												{tb.id === COMMANDS_TAB_ID && <Braces aria-hidden="true" size={13} />}
-												{tb.id === SECURITY_TAB_ID && <ShieldCheck aria-hidden="true" size={13} />}
-												{tb.id === SSH_TAB_ID && <Server aria-hidden="true" size={13} />}
-												{tb.id === UPDATES_TAB_ID && <HardDriveDownload aria-hidden="true" size={13} />}
-												{!MANAGEMENT_TAB_IDS.has(tb.id) &&
-													tb.id !== CAPABILITIES_TAB_ID &&
-													tb.id !== UPDATES_TAB_ID && <SlidersHorizontal aria-hidden="true" size={13} />}
-											</span>
-											<span className="settings-nav-label min-w-0 truncate">{tabTitle(tb)}</span>
-										</button>
-									);
-								})}
+								</button>
+								{group.items.some(item => item.id === tab) &&
+									group.items.map(tb => {
+										const active = tb.id === tab;
+										return (
+											<button
+												className={`settings-nav-item flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-omp-md transition-colors ${
+													active
+														? "bg-(--omp-selected-bg) font-medium text-(--omp-text)"
+														: "text-(--omp-muted) hover:bg-(--omp-bg-tertiary) hover:text-(--omp-text)"
+												}`}
+												key={tb.id}
+												onClick={() => {
+													setTab(tb.id);
+													setQuery("");
+													setFocusedSetting(null);
+												}}
+												title={tabTitle(tb)}
+												type="button"
+											>
+												<span className="flex size-4 shrink-0 items-center justify-center text-(--omp-dim)">
+													{tb.id === CAPABILITIES_TAB_ID && <Sparkles aria-hidden="true" size={13} />}
+													{tb.id === SKILLS_TAB_ID && <BookOpen aria-hidden="true" size={13} />}
+													{tb.id === MCP_TAB_ID && <Network aria-hidden="true" size={13} />}
+													{tb.id === RESOURCES_TAB_ID && <Blocks aria-hidden="true" size={13} />}
+													{tb.id === HOOKS_TAB_ID && <Webhook aria-hidden="true" size={13} />}
+													{tb.id === COMMANDS_TAB_ID && <Braces aria-hidden="true" size={13} />}
+													{tb.id === SECURITY_TAB_ID && <ShieldCheck aria-hidden="true" size={13} />}
+													{tb.id === SSH_TAB_ID && <Server aria-hidden="true" size={13} />}
+													{tb.id === UPDATES_TAB_ID && <HardDriveDownload aria-hidden="true" size={13} />}
+													{!MANAGEMENT_TAB_IDS.has(tb.id) &&
+														tb.id !== CAPABILITIES_TAB_ID &&
+														tb.id !== UPDATES_TAB_ID && (
+															<SlidersHorizontal aria-hidden="true" size={13} />
+														)}
+												</span>
+												<span className="settings-nav-label min-w-0 truncate">{tabTitle(tb)}</span>
+											</button>
+										);
+									})}
 							</section>
 						))}
 					</div>
@@ -619,9 +772,70 @@ export function SettingsWindow() {
 
 								{tab === GUI_TAB_ID && (
 									<>
-										{/* Theme + language live in the Sidebar's bottom rail — the only
-										    home they need; approval mode is Interaction › Approvals'. */}
-										<Section title={t("settings.gui.fontSize")}>
+										<Section id="setting-gui-theme" title={t("settings.gui.theme")}>
+											<Button
+												onClick={() => {
+													close();
+													useUiStore.getState().openThemePicker();
+												}}
+												variant="secondary"
+											>
+												{t("settings.gui.theme")}
+											</Button>
+											<Toggle
+												checked={followAgentTheme}
+												label={t("settings.gui.followAgentTheme")}
+												description={t("settings.gui.followAgentThemeDesc")}
+												onChange={value => applyDisplayPreference("followAgentTheme", value)}
+											/>
+										</Section>
+										<Section id="setting-gui-display" title={t("settings.display.title")}>
+											<p className="mb-3 text-omp-sm text-(--omp-muted)">{t("settings.display.scope")}</p>
+											<div className="space-y-4">
+												{GUI_DISPLAY_BOOL_FIELDS.map(field => (
+													<DisplayPreferenceRow key={field} field={field} />
+												))}
+											</div>
+											<label id="setting-gui-pasteMenuThreshold" className="mt-4 block text-omp-sm">
+												{t("settings.display.pasteMenuThreshold")}
+												<Input
+													type="number"
+													min={0}
+													step={1}
+													value={pasteThresholdDraft ?? String(pasteMenuThreshold)}
+													onChange={event => setPasteThresholdDraft(event.target.value)}
+													onBlur={() => {
+														if (pasteThresholdDraft === null) return;
+														const value = Number(pasteThresholdDraft);
+														if (
+															pasteThresholdDraft.trim() === "" ||
+															!Number.isInteger(value) ||
+															value < 0
+														) {
+															toast({ variant: "error", message: t("settings.editors.errNumber") });
+															return;
+														}
+														void setDisplayPreference("pasteMenuThreshold", value).then(ok => {
+															if (ok) setPasteThresholdDraft(null);
+														});
+													}}
+												/>
+											</label>
+										</Section>
+										<Section id="setting-gui-readability" title={t("settings.gui.readability")}>
+											<Toggle
+												checked={compactDensity}
+												label={t("settings.gui.compactDensity")}
+												description={t("settings.gui.compactDensityDesc")}
+												onChange={value => applyDisplayPreference("compactDensity", value)}
+											/>
+											<Toggle
+												checked={colorBlindMode}
+												label={t("settings.gui.colorBlindMode")}
+												onChange={value => applyDisplayPreference("colorBlindMode", value)}
+											/>
+										</Section>
+										<Section id="setting-gui-fontSize" title={t("settings.gui.fontSize")}>
 											<div className="w-40">
 												<Input
 													max={20}
@@ -639,7 +853,7 @@ export function SettingsWindow() {
 												{t("settings.gui.fontSizeDesc")}
 											</p>
 										</Section>
-										<Section title={t("settings.gui.panelDefault")}>
+										<Section id="setting-gui-panelDefault" title={t("settings.gui.panelDefault")}>
 											<RadioGroup
 												name="defaultPanelTab"
 												onChange={applyPanelTab}
@@ -651,7 +865,7 @@ export function SettingsWindow() {
 												value={panelTab}
 											/>
 										</Section>
-										<Section title={t("settings.gui.notifications")}>
+										<Section id="setting-gui-notifications" title={t("settings.gui.notifications")}>
 											<Toggle
 												checked={notifications}
 												description={t("settings.gui.notificationsDesc")}
@@ -659,7 +873,7 @@ export function SettingsWindow() {
 												onChange={applyNotifications}
 											/>
 										</Section>
-										<Section title={t("settings.gui.thinkingExpanded")}>
+										<Section id="setting-gui-thinkingExpanded" title={t("settings.gui.thinkingExpanded")}>
 											<Toggle
 												checked={thinkingExpanded}
 												description={t("settings.gui.thinkingExpandedDesc")}
@@ -667,7 +881,7 @@ export function SettingsWindow() {
 												onChange={applyThinkingExpanded}
 											/>
 										</Section>
-										<Section title={t("settings.gui.transcriptDetail")}>
+										<Section id="setting-gui-transcriptDetail" title={t("settings.gui.transcriptDetail")}>
 											<RadioGroup
 												name="transcriptDetail"
 												onChange={applyTranscriptDetail}
@@ -686,7 +900,7 @@ export function SettingsWindow() {
 												value={transcriptDetail}
 											/>
 										</Section>
-										<Section title={t("codeblock.title")}>
+										<Section id="setting-gui-lineNumbers" title={t("codeblock.title")}>
 											<Toggle
 												checked={codeLineNumbers}
 												description={t("codeblock.lineNumbersDesc")}
@@ -694,8 +908,13 @@ export function SettingsWindow() {
 												onChange={applyCodeLineNumbers}
 											/>
 										</Section>
-										<Section title={t("settings.gui.proxy")}>
+									</>
+								)}
+								{tab === ADVANCED_TAB_ID && (
+									<>
+										<Section id="setting-gui-proxy" title={t("settings.gui.proxy")}>
 											<Input
+												disabled={proxySaving}
 												onBlur={commitProxy}
 												onChange={event => setProxyDraft(event.target.value)}
 												onKeyDown={event => {
@@ -707,8 +926,8 @@ export function SettingsWindow() {
 											/>
 											<p className="mt-1.5 text-omp-sm text-(--omp-muted)">{t("settings.gui.proxyDesc")}</p>
 										</Section>
-										<Section title={t("settings.launch.title")}>
-											<div className="space-y-3">
+										<Section id="setting-gui-launch" title={t("settings.launch.title")}>
+											<fieldset className="space-y-3" disabled={launchSaving || launchRestarting}>
 												<div>
 													<span className="mb-1 block text-xs font-medium text-(--omp-text)">
 														{t("settings.launch.systemPrompt")}
@@ -866,7 +1085,12 @@ export function SettingsWindow() {
 														{t("settings.launch.restartNote")}
 													</span>
 													<Button
-														disabled={sidecarBusy || launchRestarting}
+														disabled={
+															sidecarBusy ||
+															launchRestarting ||
+															launchSaving ||
+															Object.keys(launchDrafts).length > 0
+														}
 														onClick={restartForLaunchProfile}
 														size="sm"
 														type="button"
@@ -880,7 +1104,7 @@ export function SettingsWindow() {
 												{sidecarBusy && (
 													<p className="text-omp-sm text-(--omp-muted)">{t("settings.launch.busyHint")}</p>
 												)}
-											</div>
+											</fieldset>
 										</Section>
 									</>
 								)}
@@ -920,21 +1144,48 @@ export function SettingsWindow() {
 									<AdvancedTab entries={schema.entries} onCommitted={handleCommitted} values={values} />
 								)}
 							</>
-						) : searchGroups.size === 0 ? (
+						) : searchGroups.size === 0 && guiSearchResults.length === 0 ? (
 							<div className="py-10 text-center text-xs text-(--omp-dim)">{t("settings.noMatches")}</div>
 						) : (
-							[...searchGroups.entries()].map(([tabId, entries]) => (
-								<Section key={tabId} title={tabTitle({ id: tabId, label: tabId })}>
-									{entries.map(entry => (
-										<SchemaSettingRow
-											key={entry.path}
-											entry={entry}
-											onCommitted={handleCommitted}
-											value={values[entry.path]}
-										/>
-									))}
-								</Section>
-							))
+							<>
+								{guiSearchResults.map(item => (
+									<button
+										key={item.id}
+										type="button"
+										className="mb-2 block w-full rounded-lg border border-(--omp-border-muted) p-3 text-left hover:bg-(--omp-selected-bg)"
+										onClick={() =>
+											locateSetting(
+												"tabId" in item ? item.tabId : GUI_TAB_ID,
+												`setting-gui-${item.id === "followAgentTheme" ? "theme" : item.id}`,
+											)
+										}
+									>
+										<span className="text-omp-md">{t(item.labelKey)}</span>
+										<span className="mt-1 block text-omp-xs text-(--omp-dim)">
+											{t("tabId" in item ? "settings.tab.advanced" : "settings.tab.gui")} · {item.id}
+										</span>
+									</button>
+								))}
+								{[...searchGroups.entries()].map(([tabId, entries]) => (
+									<Section key={tabId} title={tabTitle({ id: tabId, label: tabId })}>
+										{entries.map(entry => (
+											<button
+												key={entry.path}
+												type="button"
+												className="mb-2 block w-full rounded-lg border border-(--omp-border-muted) p-3 text-left hover:bg-(--omp-selected-bg)"
+												onClick={() => locateSetting(tabId, `setting-${entry.path}`)}
+											>
+												<span className="text-omp-md">
+													{lang === "zh"
+														? (ZH_SETTINGS[entry.path]?.label ?? entry.label ?? entry.path)
+														: (entry.label ?? entry.path)}
+												</span>
+												<span className="mt-1 block text-omp-xs text-(--omp-dim)">{entry.path}</span>
+											</button>
+										))}
+									</Section>
+								))}
+							</>
 						)}
 						{!managementTab && (
 							<div className="mt-8 flex items-center justify-between gap-2 border-t border-(--omp-border-muted) pt-4">

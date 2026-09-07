@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../../lib/tab-rpc";
 /**
  * Add-server wizard for MCP servers (C1). Single-form dialog following the
  * ProviderConfigDialog pattern (NOT stepped): transport picker cards
@@ -188,6 +189,7 @@ export interface McpServerWizardFormProps {
 }
 
 export function McpServerWizardForm({ onCancel, onAdded, initialValues }: McpServerWizardFormProps) {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const [values, setValues] = useState<McpWizardValues>(() => ({ ...initialMcpWizardValues(), ...initialValues }));
 	const [errors, setErrors] = useState<McpWizardErrors>({});
@@ -222,7 +224,7 @@ export function McpServerWizardForm({ onCancel, onAdded, initialValues }: McpSer
 		setTesting(true);
 		setTestView(null);
 		try {
-			const res = await window.omp.rpc.mcpTest({ config: buildMcpServerInput(values) });
+			const res = await tabRpc.mcpTest({ config: buildMcpServerInput(values) });
 			setTestView(res.success ? summarizeMcpTestData(res.data) : { kind: "error", error: res.error });
 		} catch (cause) {
 			setTestView({ kind: "error", error: cause instanceof Error ? cause.message : String(cause) });
@@ -240,7 +242,7 @@ export function McpServerWizardForm({ onCancel, onAdded, initialValues }: McpSer
 		setSubmitting(true);
 		setSubmitError(null);
 		try {
-			const res = await window.omp.rpc.mcpAdd(name, buildMcpServerInput(values), values.scope);
+			const res = await tabRpc.mcpAdd(name, buildMcpServerInput(values), values.scope);
 			if (!res.success) {
 				// Server-side failure: keep every field as typed.
 				setSubmitError(res.error);

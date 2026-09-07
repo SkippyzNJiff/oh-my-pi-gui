@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-09-07
+
+### Fixed
+
+- **Preference reliability**: slow startup reads cannot undo a chosen theme or font; failed proxy and launch-profile saves preserve edits and never trigger a premature restart.
+- **Concurrent task updates**: completed subtasks and live goal state survive delayed refreshes, and retired tasks cannot send commands to their replacements.
+- **Settings navigation**: search results for proxy and launch parameters open Advanced; concurrent workspace profile edits preserve each other.
+- **Desktop navigation**: workspace links cannot replace the application with an untrusted document.
+- **Rule editing**: empty Bash approval and interception rules use an object editor; terminal-only spelling controls are hidden and new Core settings have Chinese labels.
+
+- **Task isolation**: delayed replies, queued input, modes and collaboration updates stay with the task that requested them.
+- **Reliable input**: running tasks retain send and stop controls; uncertain delivery preserves the draft and prevents accidental duplicate submission.
+- **Settings and dialogs**: eight searchable settings groups remain accessible at narrow widths, with consistent focus and truthful security states.
+- **Session actions**: sharing previews match uploads; imports and handoff retries avoid duplicates; file changes distinguish repository state from edit history and virtual output.
+- **Statistics**: request history supports stable pagination, and usage separates current context from the complete session journal.
+- **Desktop boundaries**: typed sharing, voice and side questions retain their preview or start step; unavailable context limits show as unknown, and statistics connect only to the bundled service.
+- **Startup and recovery**: delayed setup checks no longer cover an open dialog, and restarting the core preserves unsent drafts even when its session identity changes.
+- **Notifications**: transient notifications stay clear of the composer's send and stop controls.
+
+- **Formatted write previews**: overwrite diffs match the final file after automatic formatting.
+- **Extension choices**: selection dialogs display option descriptions while returning the original choice to the agent.
+- **Continuous conversation rendering**: replies, steering, and follow-ups keep their content and order when multiple lifecycle events arrive together.
+- **Context maintenance**: automatic compaction refreshes history without clearing resumed work, and long context summaries open on demand.
+- **Transcript continuity**: switching tasks restores the reading position and expanded process groups; earlier errors remain available in history.
+- **Appearance controls**: GUI fonts scale transcript text consistently, density no longer zooms the page, and terminal palettes apply only when explicitly enabled without leaking across tasks.
+
+### Changed
+
+- **Redesigned GUI themes**: eleven coordinated palettes with clearer text, quieter surfaces, and matching transcript and terminal colors.
+
+- **Bundled agent upgraded to omp 18.1.13**: includes Muse Code subscription support, memory scope isolation, corrected Astra context windows, and more reliable tool calls and retries.
+- **Retry and shell settings**: GUI settings include waiting for quota resets and per-command approval of simple `&&` chains; long retry waits show a scheduled time and keep notifications brief.
+- **GUI settings**: theme, density, and accessible colors use application preferences; terminal-only display options are hidden, and proxy and launch configuration live under Advanced.
+
 ## [0.9.4] - 2026-09-04
 
 ### Added

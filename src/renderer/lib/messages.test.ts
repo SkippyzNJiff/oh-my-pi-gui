@@ -3,7 +3,6 @@ import type { RpcSessionTreeNode } from "../../shared/rpc-types";
 import { useMessagesStore } from "../stores/messages";
 import { useSessionStore } from "../stores/session";
 import { useTabsStore } from "../stores/tabs";
-import { useUiStore } from "../stores/ui";
 import {
 	abortActiveTurn,
 	forkSessionFromEntryInNewTab,
@@ -64,7 +63,7 @@ afterEach(() => {
 	useMessagesStore.getState().reset();
 	useSessionStore.getState().reset();
 	useTabsStore.getState().reset();
-	useUiStore.setState({ switchPending: null });
+	useSessionStore.setState({ switchPending: null });
 	vi.restoreAllMocks();
 });
 

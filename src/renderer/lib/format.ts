@@ -161,7 +161,10 @@ export function formatBytes(n: number): string {
 
 /** Format cost with safe fallback for NaN/null (which the wire sends when sidecar aggregates produce NaN). */
 export function formatCost(n: number | null | undefined, decimals = 4): string {
-	return n != null && Number.isFinite(n) ? `$${n.toFixed(decimals)}` : "—";
+	if (n == null || !Number.isFinite(n)) return "—";
+	const threshold = 10 ** -decimals;
+	if (n !== 0 && Math.abs(n) < threshold) return `${n < 0 ? "−" : ""}< $${threshold.toFixed(decimals)}`;
+	return `$${n.toFixed(decimals)}`;
 }
 
 /** Format percentage with safe fallback for NaN/null/undefined. */

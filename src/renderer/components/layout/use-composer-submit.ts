@@ -15,7 +15,7 @@ import { clearSessionContext } from "../../lib/messages";
 import { dropReferencedPastes, expandPasteMarkers } from "../../lib/paste-blobs";
 import { parseQueueShorthand, splitQueuedMessages } from "../../lib/queue-input";
 import { useTabRpc } from "../../lib/tab-rpc";
-import type { ComposerImage } from "../../stores/composer";
+import { type ComposerImage, type ComposerStore, useComposerStore } from "../../stores/composer";
 import { useInputHistoryStore } from "../../stores/input-history";
 import { type MessagesStore, useMessagesStore } from "../../stores/messages";
 import { type SessionStore, useSessionStore } from "../../stores/session";
@@ -75,13 +75,38 @@ export function useComposerSubmit({
 			}
 			const originTabId = runtimeTabId;
 			const originSession = sessionRuntimeStore<SessionStore>(originTabId, "session");
+			const originComposer = sessionRuntimeStore<ComposerStore>(originTabId, "composer") ?? useComposerStore;
+			if (originComposer.getState().sending || originComposer.getState().submissionUncertain) return;
+			if ((originSession?.getState() ?? useSessionStore.getState()).collab?.readOnly) {
+				toast({ variant: "warning", message: t("collab.readOnlyInput") });
+				return;
+			}
+
 			const originMessages = sessionRuntimeStore<MessagesStore>(originTabId, "messages") ?? useMessagesStore;
 			const originSessionId = originSession?.getState().sessionId ?? useSessionStore.getState().sessionId;
 			const originStillActive = () =>
 				originSession
-					? originSession.getState().sessionId === originSessionId
+					? sessionRuntimeStore<ComposerStore>(originTabId, "composer") === originComposer
 					: useTabsStore.getState().activeTabId === originTabId &&
 						useSessionStore.getState().sessionId === originSessionId;
+			const restoreDraft = (draft: string, attachments: ComposerImage[]) =>
+				restoreTabComposer(
+					originTabId,
+					originSessionId,
+					draft,
+					attachments,
+					originSession ? originComposer : undefined,
+				);
+
+			let uncertain = false;
+			const showSendError = (title: string, message: string) =>
+				toast({ variant: "error", title: uncertain ? t("input.deliveryUnknownTitle") : title, message });
+			const markUncertain = () => {
+				uncertain = true;
+				if (!originStillActive()) return;
+				originComposer.getState().setSubmissionUncertain(true);
+				if (originSession) void hydrateTabSession(originTabId);
+			};
 
 			// Paste markers expand to full blob content BEFORE mode/queue parsing and
 			// every dispatch path (bash, python, prompt, queue items) — the wire only
@@ -101,6 +126,7 @@ export function useComposerSubmit({
 				setImages([]);
 				setMenu(null);
 				setSending(true);
+				let accepted = false;
 				const pending: AgentMessage = {
 					role: "bashExecution",
 					command: parsed.body,
@@ -114,20 +140,29 @@ export function useComposerSubmit({
 					.then(async response => {
 						if (originStillActive()) originMessages?.getState().removeMessage(pending);
 						if (!response.success) {
-							restoreTabComposer(originTabId, originSessionId, message, previousImages);
-							toast({ variant: "error", title: t("input.bashFailed"), message: response.error });
+							if (response.code === "rpc_delivery_unknown") markUncertain();
+							restoreDraft(message, previousImages);
+							showSendError(t("input.bashFailed"), response.error);
 							return;
 						}
+						accepted = true;
 						if (!originStillActive()) return;
 						dropReferencedPastes(message);
 						await hydrateTabSession(originTabId);
 					})
 					.catch(error => {
+						if (accepted) {
+							toast({ variant: "error", message: String(error) });
+							return;
+						}
+						markUncertain();
 						if (originStillActive()) originMessages?.getState().removeMessage(pending);
-						restoreTabComposer(originTabId, originSessionId, message, previousImages);
-						toast({ variant: "error", title: t("input.bashFailed"), message: String(error) });
+						restoreDraft(message, previousImages);
+						showSendError(t("input.bashFailed"), String(error));
 					})
-					.finally(() => setSending(false));
+					.finally(() => {
+						if (originStillActive()) setSending(false);
+					});
 				return;
 			}
 
@@ -142,6 +177,7 @@ export function useComposerSubmit({
 				setImages([]);
 				setMenu(null);
 				setSending(true);
+				let accepted = false;
 				const pending: AgentMessage = {
 					role: "pythonExecution",
 					code: parsed.body,
@@ -154,20 +190,29 @@ export function useComposerSubmit({
 					.then(async response => {
 						if (originStillActive()) originMessages?.getState().removeMessage(pending);
 						if (!response.success) {
-							restoreTabComposer(originTabId, originSessionId, message, previousImages);
-							toast({ variant: "error", title: t("input.evalFailed"), message: response.error });
+							if (response.code === "rpc_delivery_unknown") markUncertain();
+							restoreDraft(message, previousImages);
+							showSendError(t("input.evalFailed"), response.error);
 							return;
 						}
+						accepted = true;
 						if (!originStillActive()) return;
 						dropReferencedPastes(message);
 						await hydrateTabSession(originTabId);
 					})
 					.catch(error => {
+						if (accepted) {
+							toast({ variant: "error", message: String(error) });
+							return;
+						}
+						markUncertain();
 						if (originStillActive()) originMessages?.getState().removeMessage(pending);
-						restoreTabComposer(originTabId, originSessionId, message, previousImages);
-						toast({ variant: "error", title: t("input.evalFailed"), message: String(error) });
+						restoreDraft(message, previousImages);
+						showSendError(t("input.evalFailed"), String(error));
 					})
-					.finally(() => setSending(false));
+					.finally(() => {
+						if (originStillActive()) setSending(false);
+					});
 				return;
 			}
 
@@ -203,8 +248,10 @@ export function useComposerSubmit({
 				const extensionCommandNames = new Set(
 					commands.filter(command => command.source === "extension").map(command => command.name),
 				);
+				setSending(true);
 				void (async () => {
 					let sent = 0;
+					let deliveryPending = false;
 					try {
 						for (let index = 0; index < dispatchItems.length; index++) {
 							if (!originStillActive()) throw new Error("Tab changed during queue dispatch");
@@ -212,20 +259,26 @@ export function useComposerSubmit({
 							const itemImages = index === 0 ? payload : undefined;
 							const isExtensionCommand =
 								item.startsWith("/") && extensionCommandNames.has(/^\/([a-z0-9-]+)/i.exec(item)?.[1] ?? "");
+							deliveryPending = true;
 							const response =
 								startImmediately && index === 0
 									? await rpc.prompt(item, itemImages, "followUp")
 									: isExtensionCommand
 										? await rpc.prompt(item, itemImages)
 										: await rpc.followUp(item, itemImages);
-							if (!response.success) throw new Error(response.error ?? "queue dispatch failed");
+							deliveryPending = false;
+							if (!response.success) {
+								if (response.code === "rpc_delivery_unknown") markUncertain();
+								throw new Error(response.error ?? "queue dispatch failed");
+							}
 							sent += 1;
 						}
 						if (originStillActive()) dropReferencedPastes(message);
 					} catch (error) {
+						if (deliveryPending) markUncertain();
 						if (sent === 0) {
 							// Zero items sent: restore the original draft (markers) and images.
-							restoreTabComposer(originTabId, originSessionId, message, previousImages);
+							restoreDraft(message, previousImages);
 						} else {
 							// Partial failure: restore the remainder in the exact shorthand
 							// shape the parser can consume again. Continuation indentation
@@ -237,15 +290,17 @@ export function useComposerSubmit({
 									: `=>\n${remaining
 											.map((item, index) => `${index + 1}. ${item.replaceAll("\n", "\n   ")}`)
 											.join("\n")}`;
-							restoreTabComposer(originTabId, originSessionId, remainingDraft, []);
+							restoreDraft(remainingDraft, []);
 							if (originStillActive()) dropReferencedPastes(message);
 						}
 						toast({
 							variant: "error",
-							title: t("input.sendFailed"),
+							title: uncertain ? t("input.deliveryUnknownTitle") : t("input.sendFailed"),
 							message:
 								sent > 0 ? t("input.queue.partial", { sent, total: dispatchItems.length }) : String(error),
 						});
+					} finally {
+						if (originStillActive()) setSending(false);
 					}
 				})();
 				return;
@@ -286,7 +341,7 @@ export function useComposerSubmit({
 						if (originStillActive()) dropReferencedPastes(message);
 						return;
 					}
-					restoreTabComposer(originTabId, originSessionId, message, previousImages);
+					restoreDraft(message, previousImages);
 				});
 				return;
 			}
@@ -306,32 +361,44 @@ export function useComposerSubmit({
 			setText("");
 			setImages([]);
 			setMenu(null);
+			setSending(true);
+			let accepted = false;
 			// Let React commit the cleared draft before contextBridge serializes the
 			// request payload. On large sessions/attachments that synchronous bridge
 			// work used to make Enter look ignored for a noticeable beat.
 			setTimeout(() => {
 				if (!originStillActive()) {
 					if (optimisticMessage) originMessages.getState().removeLiveMessage(optimisticMessage);
-					restoreTabComposer(originTabId, originSessionId, message, previousImages);
+					restoreDraft(message, previousImages);
 					return;
 				}
 				void submit
 					.request()
 					.then(async response => {
 						if (!response.success) {
+							if (response.code === "rpc_delivery_unknown") markUncertain();
 							if (optimisticMessage) originMessages.getState().removeLiveMessage(optimisticMessage);
-							restoreTabComposer(originTabId, originSessionId, message, previousImages);
-							toast({ variant: "error", title: t("input.sendFailed"), message: response.error });
+							restoreDraft(message, previousImages);
+							showSendError(t("input.sendFailed"), response.error);
 							return;
 						}
+						accepted = true;
 						if (!originStillActive()) return;
 						dropReferencedPastes(message);
 						await settleComposerResponse(response, () => hydrateTabSession(originTabId));
 					})
 					.catch(error => {
+						if (accepted) {
+							toast({ variant: "error", message: String(error) });
+							return;
+						}
+						markUncertain();
 						if (optimisticMessage) originMessages.getState().removeLiveMessage(optimisticMessage);
-						restoreTabComposer(originTabId, originSessionId, message, previousImages);
-						toast({ variant: "error", title: t("input.sendFailed"), message: String(error) });
+						restoreDraft(message, previousImages);
+						showSendError(t("input.sendFailed"), String(error));
+					})
+					.finally(() => {
+						if (originStillActive()) setSending(false);
 					});
 			}, 0);
 		},

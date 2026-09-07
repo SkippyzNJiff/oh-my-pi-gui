@@ -55,7 +55,7 @@ export const createModelStore = (command: TabCommand = activeTabCommand) =>
 		...initialState,
 		setFromState: state =>
 			set({
-				model: state.model,
+				model: state.model ?? null,
 				thinkingLevel: state.thinkingLevel,
 				thinkingConfigured: state.thinkingConfigured,
 				availableThinkingLevels: state.availableThinkingLevels ?? [],

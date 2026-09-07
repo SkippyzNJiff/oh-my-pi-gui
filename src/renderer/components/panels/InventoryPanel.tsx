@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../lib/tab-rpc";
 /**
  * Inventory window: tabs over the session's installed plugins,
  * configured marketplaces, prompt templates, and memory backend report.
@@ -423,6 +424,7 @@ function PluginsTab({
 	onBrowseMarketplaces: () => void;
 	externalQuery?: string;
 }) {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const [localQuery, setLocalQuery] = useState("");
 	const query = externalQuery ?? localQuery;
@@ -451,7 +453,7 @@ function PluginsTab({
 				return rest;
 			});
 		try {
-			const res = await window.omp.rpc.setPluginEnabled(plugin.id ?? plugin.name, next, plugin.scope);
+			const res = await tabRpc.setPluginEnabled(plugin.id ?? plugin.name, next, plugin.scope);
 			if (!res.success) {
 				clearOverride();
 				if (isPluginActivationOriginActive(origin)) {
@@ -700,10 +702,10 @@ function MemoryStatusCard({ report, t }: { report: RpcMemoryReport; t: TFn }) {
 					{status.active ? t("invPanel.memory.active") : t("invPanel.memory.inactive")}
 				</Badge>
 				<Badge variant={status.writable ? "success" : "muted"} dot={status.writable}>
-					{t("invPanel.memory.writable")}
+					{t("invPanel.memory.writable")}: {t(status.writable ? "invPanel.memory.yes" : "invPanel.memory.no")}
 				</Badge>
 				<Badge variant={status.searchable ? "info" : "muted"} dot={status.searchable}>
-					{t("invPanel.memory.searchable")}
+					{t("invPanel.memory.searchable")}: {t(status.searchable ? "invPanel.memory.yes" : "invPanel.memory.no")}
 				</Badge>
 			</div>
 			{counts.length > 0 && (
@@ -813,13 +815,14 @@ function InventoryContent({
 	embedded: boolean;
 	query?: string;
 }) {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const [tab, setTab] = useState<TabId>(initialTab);
 	const [detailPlugin, setDetailPlugin] = useState<RpcPluginInfo | null>(null);
-	const plugins = useRpcResource<RpcPluginsResult>(() => window.omp.rpc.getPlugins());
-	const marketplaces = useRpcResource<RpcMarketplacesResult>(() => window.omp.rpc.getMarketplaces());
-	const templates = useRpcResource<RpcPromptTemplatesResult>(() => window.omp.rpc.getPromptTemplates());
-	const memory = useRpcResource<RpcMemoryReport>(() => window.omp.rpc.getMemoryReport());
+	const plugins = useRpcResource<RpcPluginsResult>(() => tabRpc.getPlugins());
+	const marketplaces = useRpcResource<RpcMarketplacesResult>(() => tabRpc.getMarketplaces());
+	const templates = useRpcResource<RpcPromptTemplatesResult>(() => tabRpc.getPromptTemplates());
+	const memory = useRpcResource<RpcMemoryReport>(() => tabRpc.getMemoryReport());
 
 	// Reopening deep-links to the requested tab and drops any open detail drawer.
 	useEffect(() => {
@@ -847,7 +850,13 @@ function InventoryContent({
 				: t("invPanel.readonlyNote");
 
 	return (
-		<div className={cx("relative flex flex-col overflow-hidden", embedded ? "settings-embedded-panel" : "h-[72vh]")}>
+		<div
+			className={cx(
+				"relative flex flex-col overflow-hidden",
+				embedded ? "settings-embedded-panel" : "h-[72vh]",
+				detailPlugin && "settings-plugin-detail-open",
+			)}
+		>
 			<Tabs
 				tabs={tabs}
 				activeId={tab}

@@ -10,6 +10,7 @@ import { FolderGit2, FolderPlus, PackageOpen, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { RpcWorkspaceDirectoriesResult } from "../../../shared/rpc-types";
 import { useT } from "../../lib/i18n";
+import { useTabRpc } from "../../lib/tab-rpc";
 import {
 	addWorkspaceDirectory,
 	moveSessionTo,
@@ -22,6 +23,7 @@ import { useUiStore } from "../../stores/ui";
 import { Badge, Button, Modal, Spinner } from "../common";
 
 export function WorkspaceDirsDialog() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const open = useUiStore(state => state.workspaceDirsOpen);
 	const close = useUiStore(state => state.closeWorkspaceDirs);
@@ -36,7 +38,7 @@ export function WorkspaceDirsDialog() {
 		setLoading(true);
 		setError(null);
 		try {
-			const response = await window.omp.rpc.getDirectories();
+			const response = await tabRpc.getDirectories();
 			if (response.success) {
 				setDirectories((response.data as RpcWorkspaceDirectoriesResult | undefined)?.directories ?? []);
 			} else {
@@ -47,7 +49,7 @@ export function WorkspaceDirsDialog() {
 		} finally {
 			setLoading(false);
 		}
-	}, []);
+	}, [tabRpc.getDirectories]);
 
 	useEffect(() => {
 		if (!open) return;

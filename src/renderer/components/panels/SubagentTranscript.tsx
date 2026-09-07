@@ -1,3 +1,5 @@
+import { useTabRpc } from "../../lib/tab-rpc";
+import { useRuntimeTabId, withSessionRuntime } from "../../stores/session-runtime-context";
 /**
  * Lazily loaded subagent transcript (byte pagination), shared by the list
  * rows and the DAG detail pane. Loaded pages also feed the graph's tool-call
@@ -31,6 +33,10 @@ interface TranscriptState {
 
 export const SubagentTranscript = memo(function SubagentTranscript({ agent }: { agent: SubagentSnapshot }) {
 	const t = useT();
+	const rpc = useTabRpc();
+	const tabId = useRuntimeTabId();
+	const generation = useRef(0);
+	const [error, setError] = useState<string | null>(null);
 	const [state, setState] = useState<TranscriptState>({
 		loading: true,
 		messages: [],
@@ -50,9 +56,12 @@ export const SubagentTranscript = memo(function SubagentTranscript({ agent }: { 
 		async (fromByte: number) => {
 			if (loadingRef.current) return;
 			loadingRef.current = true;
+			const version = generation.current;
+			setError(null);
 			setState(prev => ({ ...prev, loading: true }));
 			try {
-				const response = await window.omp.rpc.getSubagentMessages(agent.id, agent.sessionFile, fromByte);
+				const response = await rpc.getSubagentMessages(agent.id, agent.sessionFile, fromByte);
+				if (version !== generation.current) return;
 				if (!response.success) {
 					toast({ variant: "error", title: t("subagent.transcriptFailed"), message: response.error });
 					setState(prev => ({ ...prev, loading: false, hasMore: false }));
@@ -64,24 +73,36 @@ export const SubagentTranscript = memo(function SubagentTranscript({ agent }: { 
 					reset?: boolean;
 				};
 				const incoming = data.messages ?? [];
-				registerTranscriptToolCalls(agent.id, incoming);
+				if (tabId) withSessionRuntime(tabId, () => registerTranscriptToolCalls(agent.id, incoming));
+				else registerTranscriptToolCalls(agent.id, incoming);
 				setState(prev => ({
 					loading: false,
-					messages: data.reset ? incoming : [...prev.messages, ...incoming],
+					messages: data.reset || fromByte === 0 ? incoming : [...prev.messages, ...incoming],
 					nextByte: data.nextByte ?? fromByte,
 					// A still-running agent keeps its load-more affordance even when
 					// caught up (0 new messages) — it doubles as the refresh button.
 					hasMore: incoming.length > 0 || statusRef.current === "started",
 				}));
+			} catch (cause) {
+				if (version === generation.current) {
+					setError(String(cause));
+					setState(previous => ({ ...previous, loading: false }));
+				}
 			} finally {
-				loadingRef.current = false;
+				if (version === generation.current) loadingRef.current = false;
 			}
 		},
-		[agent.id, agent.sessionFile, t],
+		[agent.id, agent.sessionFile, t, rpc.getSubagentMessages, tabId],
 	);
 
 	useEffect(() => {
+		generation.current++;
+		loadingRef.current = false;
+		setState({ loading: true, messages: [], nextByte: 0, hasMore: true });
 		void load(0);
+		return () => {
+			generation.current++;
+		};
 	}, [load]);
 
 	if (state.loading && state.messages.length === 0) {
@@ -95,6 +116,11 @@ export const SubagentTranscript = memo(function SubagentTranscript({ agent }: { 
 
 	return (
 		<div className="space-y-1.5 px-2 py-2">
+			{error && (
+				<p role="alert" className="text-omp-sm text-(--omp-error)">
+					{error}
+				</p>
+			)}
 			{state.messages.length === 0 && (
 				<div className="text-omp-sm text-(--omp-dim) italic">{t("subagent.noEntries")}</div>
 			)}

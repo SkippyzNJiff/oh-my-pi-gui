@@ -137,7 +137,7 @@ export function StatsDashboard({ open, onClose }: { open: boolean; onClose: () =
 									aria-pressed={range === value}
 									className={`rounded px-2 py-0.5 text-omp-xs font-medium tabular-nums transition-colors ${
 										range === value
-											? "bg-(--omp-accent) text-black"
+											? "bg-(--omp-btn-primary-bg) text-(--omp-btn-primary-text)"
 											: "text-(--omp-muted) hover:text-(--omp-text)"
 									}`}
 									key={value}
@@ -158,7 +158,8 @@ export function StatsDashboard({ open, onClose }: { open: boolean; onClose: () =
 						</Button>
 					</div>
 				</div>
-				<div className="min-h-0 flex-1 overflow-y-auto p-4">
+				<div key={route} className="min-h-0 flex-1 overflow-y-auto p-4">
+					<p className="mb-3 text-omp-xs text-(--omp-dim)">{t("stats.scope", { range })}</p>
 					{route === "overview" && <OverviewRoute range={range} refreshKey={refreshKey} />}
 					{route === "models" && <ModelsRoute range={range} refreshKey={refreshKey} />}
 					{route === "providers" && <ProvidersRoute range={range} refreshKey={refreshKey} />}
@@ -168,7 +169,9 @@ export function StatsDashboard({ open, onClose }: { open: boolean; onClose: () =
 					{route === "behavior" && <BehaviorRoute range={range} refreshKey={refreshKey} />}
 					{route === "gain" && <GainRoute range={range} refreshKey={refreshKey} />}
 					{route === "projects" && <ProjectsRoute range={range} refreshKey={refreshKey} />}
-					{route === "requests" && <RequestsRoute range={range} refreshKey={refreshKey} />}
+					{route === "requests" && (
+						<RequestsRoute key={`${range}:${refreshKey}`} range={range} refreshKey={refreshKey} />
+					)}
 				</div>
 			</div>
 		</Modal>

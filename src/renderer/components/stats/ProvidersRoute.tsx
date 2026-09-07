@@ -58,13 +58,13 @@ interface ProvidersData {
 export function ProvidersRoute({ range, refreshKey }: { range: StatsRange; refreshKey: number }) {
 	const t = useT();
 	const params = useMemo(() => ({ range }), [range]);
-	const { data, isLoading, error, refetch } = useStats("/api/stats/providers", params);
+	const { data, isLoading, error, refetch } = useStats<ProvidersData>("/api/stats/providers", params);
 
 	useEffect(() => {
 		if (refreshKey > 0) refetch();
 	}, [refreshKey, refetch]);
 
-	const stats = (data ?? null) as ProvidersData | null;
+	const stats = data;
 
 	const columns: StatColumn<ProviderRow>[] = useMemo(
 		() => [
@@ -190,7 +190,13 @@ export function ProvidersRoute({ range, refreshKey }: { range: StatsRange; refre
 	}, []);
 
 	return (
-		<RouteFrame empty={providers.length === 0} error={error} loading={isLoading} onRetry={refetch}>
+		<RouteFrame
+			hasData={data !== null}
+			empty={providers.length === 0}
+			error={error}
+			loading={isLoading}
+			onRetry={refetch}
+		>
 			<div className="grid gap-3 xl:grid-cols-2">
 				<div>
 					<SectionTitle>{t("stats.providers.tokenShare")}</SectionTitle>

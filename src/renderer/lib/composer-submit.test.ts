@@ -81,7 +81,14 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	delete (globalThis as Record<string, unknown>).window;
 	useToastStore.setState({ toasts: [] });
-	useUiStore.setState({ settingsOpen: false, copySelectorOpen: false, btwRequest: null, collabOpen: false });
+	useUiStore.setState({
+		settingsOpen: false,
+		copySelectorOpen: false,
+		btwRequest: null,
+		collabOpen: false,
+		shareSessionOpen: false,
+		liveOpen: false,
+	});
 	useSessionStore.setState({ agentsPaused: false, agentsPausedAt: null });
 });
 
@@ -92,6 +99,44 @@ const guiOnly = (name: string): AvailableCommand => ({
 	textModeExecutable: false,
 });
 describe("planComposerSubmit", () => {
+	it("typed share still requires a desktop preview when Core can upload directly or discovery is pending", () => {
+		const omp = installMockOmp();
+		for (const commands of [[{ ...guiOnly("share"), textModeExecutable: true }], []]) {
+			useUiStore.setState({ shareSessionOpen: false });
+			const submit = planComposerSubmit({
+				message: "/share",
+				images: [],
+				isStreaming: false,
+				mode: "prompt",
+				commands,
+			});
+			expect(submit.kind).toBe("handled");
+			expect(useUiStore.getState().shareSessionOpen).toBe(true);
+		}
+		expect(omp.rpc.prompt).not.toHaveBeenCalled();
+	});
+
+	it("text-capable voice and side-question commands open their explicit start surfaces", () => {
+		const omp = installMockOmp();
+		planComposerSubmit({
+			message: "/live",
+			images: [],
+			isStreaming: false,
+			mode: "prompt",
+			commands: [{ ...guiOnly("live"), textModeExecutable: true }],
+		});
+		expect(useUiStore.getState().liveOpen).toBe(true);
+		planComposerSubmit({
+			message: "/btw local question",
+			images: [],
+			isStreaming: false,
+			mode: "prompt",
+			commands: [{ ...guiOnly("btw"), textModeExecutable: true }],
+		});
+		expect(useUiStore.getState().btwRequest).toBe("local question");
+		expect(omp.rpc.prompt).not.toHaveBeenCalled();
+	});
+
 	it("routes typed /compact through its long-running RPC instead of the 8s prompt path", async () => {
 		const omp = installMockOmp();
 		const submit = planComposerSubmit({

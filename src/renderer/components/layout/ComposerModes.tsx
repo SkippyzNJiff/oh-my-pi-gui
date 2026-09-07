@@ -1,3 +1,4 @@
+import { useDisplayPreference } from "../../lib/display-preferences";
 /**
  * Compact composer entry for session modes and lower-frequency coding
  * toggles. The trigger surfaces active mode count; the menu keeps every
@@ -8,14 +9,15 @@
 import { Check, ChevronDown, SlidersHorizontal } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import type { RpcResponse, RpcSessionState } from "../../../shared/rpc-types";
 import { cx } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { loopLimitText, parseLoopLimit } from "../../lib/loop-mode";
 import { useTabRpc } from "../../lib/tab-rpc";
 import { type SessionStore, useSessionStore } from "../../stores/session";
 import { sessionRuntimeStore, useRuntimeTabId } from "../../stores/session-runtime-context";
-import { useSettingsStore } from "../../stores/settings";
-import { useTabsStore } from "../../stores/tabs";
+import { type SettingsStore, useSettingsStore } from "../../stores/settings";
+import { toast } from "../../stores/toast";
 import { useUiStore } from "../../stores/ui";
 
 const triggerClass = (active: boolean) =>
@@ -36,7 +38,7 @@ export function ComposerModes() {
 	const loopMode = useSessionStore(s => s.loopMode);
 	const loopActive = loopMode?.enabled === true;
 	const vibeModeEnabled = useSessionStore(s => s.vibeModeEnabled);
-	const goalStatusInFooter = useSettingsStore(s => s.goalStatusInFooter);
+	const goalStatusInFooter = useDisplayPreference("goalStatusInFooter");
 	const autoCompaction = useSettingsStore(s => s.autoCompaction);
 	const autoRetry = useSettingsStore(s => s.autoRetry);
 	const steeringMode = useSettingsStore(s => s.steeringMode);
@@ -44,6 +46,7 @@ export function ComposerModes() {
 	const openModelRoles = useUiStore(s => s.openModelRoles);
 	const openModes = useUiStore(s => s.openModes);
 
+	const [pending, setPending] = useState(false);
 	const [menuOpen, setMenuOpen] = useState(false);
 	const triggerRef = useRef<HTMLButtonElement>(null);
 	const menuRef = useRef<HTMLDivElement>(null);
@@ -91,37 +94,34 @@ export function ComposerModes() {
 		};
 	}, [menuOpen]);
 
-	const togglePlan = () => {
-		const enabled = !planModeEnabled;
-		// Resolve the target store at CLICK time: the response can land after
-		// the user focused the other pane, and the static setter follows focus.
-		const originTabId = useTabsStore.getState().activeTabId;
-		const originSessionId = useSessionStore.getState().sessionId;
-		void rpc.setPlanMode(enabled).then(response => {
-			if (!response.success) return;
-			const data = response.data as { enabled?: boolean } | undefined;
-			const store = sessionRuntimeStore<SessionStore>(tabId, "session");
-			if (store) {
-				// The runtime may have been rebuilt by an in-place session switch
-				// while the RPC was in flight — never stamp the old session's flag.
-				if (originSessionId && store.getState().sessionId !== originSessionId) return;
-				store.setState({ planModeEnabled: data?.enabled ?? enabled });
+	const update = async (action: () => Promise<RpcResponse>, mode: "settings" | "plan" = "settings") => {
+		if (pending) return;
+		const session = sessionRuntimeStore<SessionStore>(tabId, "session") ?? useSessionStore;
+		const settings = sessionRuntimeStore<SettingsStore>(tabId, "settings") ?? useSettingsStore;
+		const originSession = session.getState().sessionId;
+		setPending(true);
+		try {
+			const response = await action();
+			if (!response.success) throw new Error(response.error);
+			const plan = response.data as { enabled?: boolean } | undefined;
+			if (mode === "plan" && typeof plan?.enabled === "boolean") {
+				if (session.getState().sessionId === originSession) session.setState({ planModeEnabled: plan.enabled });
 				return;
 			}
-			if (
-				useTabsStore.getState().activeTabId !== originTabId ||
-				useSessionStore.getState().sessionId !== originSessionId
-			)
-				return;
-			useSessionStore.setState({ planModeEnabled: data?.enabled ?? enabled });
-		});
+			const current = await rpc.getState();
+			if (!current.success) throw new Error(current.error);
+			if (session.getState().sessionId !== originSession) return;
+			const state = current.data as RpcSessionState;
+			settings.getState().setFromState(state);
+			session.setState({ planModeEnabled: state.planModeEnabled });
+		} catch (cause) {
+			toast({ variant: "error", title: t("modesPanel.actionFailed"), message: String(cause) });
+		} finally {
+			setPending(false);
+		}
 	};
 
-	const toggle = (get: boolean, set: (enabled: boolean) => Promise<unknown>, apply: (enabled: boolean) => void) => {
-		const next = !get;
-		apply(next);
-		void set(next);
-	};
+	const togglePlan = () => void update(() => rpc.setPlanMode(!planModeEnabled), "plan");
 
 	const select = (action: () => void) => {
 		setMenuOpen(false);
@@ -142,7 +142,7 @@ export function ComposerModes() {
 				<SlidersHorizontal size={14} />
 				<span className="omp-composer-control-label">{t("modesPanel.title")}</span>
 				{activeModeLabels.length > 0 && (
-					<span className="rounded-full bg-[var(--omp-accent)] px-1.5 text-omp-xs leading-4 text-white tabular-nums">
+					<span className="rounded-full bg-(--omp-btn-primary-bg) px-1.5 text-omp-xs leading-4 text-(--omp-btn-primary-text) tabular-nums">
 						{activeModeLabels.length}
 					</span>
 				)}
@@ -156,6 +156,8 @@ export function ComposerModes() {
 							style={{ left: pos.left, bottom: pos.bottom }}
 							className="fixed z-[100] w-64 overflow-hidden rounded-xl border border-[var(--omp-border)] bg-[var(--omp-panel-bg)] p-1 shadow-[var(--omp-shadow-md)]"
 							role="menu"
+							aria-busy={pending}
+							inert={pending}
 						>
 							<ModeRow
 								label={t("input.plan.label")}
@@ -200,32 +202,19 @@ export function ComposerModes() {
 							<MoreRow
 								label={t("input.more.autoCompact")}
 								checked={autoCompaction}
-								onToggle={() =>
-									toggle(
-										autoCompaction,
-										enabled => rpc.setAutoCompaction(enabled),
-										enabled => useSettingsStore.setState({ autoCompaction: enabled }),
-									)
-								}
+								onToggle={() => void update(() => rpc.setAutoCompaction(!autoCompaction))}
 							/>
 							<MoreRow
 								label={t("input.more.autoRetry")}
 								checked={autoRetry}
-								onToggle={() =>
-									toggle(
-										autoRetry,
-										enabled => rpc.setAutoRetry(enabled),
-										enabled => useSettingsStore.setState({ autoRetry: enabled }),
-									)
-								}
+								onToggle={() => void update(() => rpc.setAutoRetry(!autoRetry))}
 							/>
 							<MoreRow
 								label={t("input.more.steeringAll")}
 								checked={steeringMode === "all"}
 								onToggle={() => {
 									const next = steeringMode === "all" ? "one-at-a-time" : "all";
-									useSettingsStore.setState({ steeringMode: next });
-									void rpc.setSteeringMode(next);
+									void update(() => rpc.setSteeringMode(next));
 								}}
 							/>
 							<MoreRow
@@ -233,8 +222,7 @@ export function ComposerModes() {
 								checked={interruptMode === "immediate"}
 								onToggle={() => {
 									const next = interruptMode === "immediate" ? "wait" : "immediate";
-									useSettingsStore.setState({ interruptMode: next });
-									void rpc.setInterruptMode(next);
+									void update(() => rpc.setInterruptMode(next));
 								}}
 							/>
 						</div>,
@@ -276,6 +264,8 @@ function MoreRow({ label, checked, onToggle }: { label: string; checked: boolean
 		<button
 			type="button"
 			onClick={onToggle}
+			role="menuitemcheckbox"
+			aria-checked={checked}
 			className="omp-pressable flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-omp-md font-medium text-[var(--omp-muted)] hover:bg-[var(--omp-selected-bg)] hover:text-[var(--omp-text)]"
 		>
 			<span className="truncate">{label}</span>

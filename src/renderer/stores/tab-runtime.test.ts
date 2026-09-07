@@ -2,13 +2,14 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentMessage, RpcCommand, RpcResponse } from "../../shared/rpc-types";
 import { type ComposerStore, useComposerStore } from "./composer";
 import { type MessagesStore, useMessagesStore } from "./messages";
+import type { SessionStore } from "./session";
 import {
 	deleteSessionRuntime,
 	sessionRuntimeStore,
 	setFocusedSessionRuntime,
 	withSessionRuntime,
 } from "./session-runtime-context";
-import { createTabRuntime } from "./tab-runtime";
+import { createTabRuntime, replaceTabRuntime } from "./tab-runtime";
 import type { ToolsStore } from "./tools";
 
 beforeAll(() => {
@@ -29,6 +30,7 @@ beforeAll(() => {
 });
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	deleteSessionRuntime("tab-a");
 	deleteSessionRuntime("tab-b");
 	setFocusedSessionRuntime(null);
@@ -121,4 +123,62 @@ describe("scoped store subscribe", () => {
 			.appendMessage({ role: "user", content: "b-2", timestamp: 3 });
 		expect(seen).toEqual(["b-1"]);
 	});
+});
+
+it("rejects late snapshots after an in-place session replacement and tab closure", async () => {
+	const runtime = createTabRuntime("tab-a");
+	const state = sessionRuntimeStore<SessionStore>("tab-a", "session")!;
+	state.setState({ sessionId: "old-session" });
+	const first = Promise.withResolvers<RpcResponse>();
+	const second = Promise.withResolvers<RpcResponse>();
+	const spy = vi
+		.spyOn(window.omp.rpc, "commandForTab")
+		.mockReturnValueOnce(first.promise)
+		.mockReturnValueOnce(second.promise);
+	try {
+		const old = runtime.command({ type: "get_settings" });
+		state.setState({ sessionId: "replacement" });
+		first.resolve({ type: "response", command: "get_settings", success: true, data: { values: { old: true } } });
+		expect(await old).toMatchObject({ success: false });
+		const closing = runtime.command({ type: "get_state" });
+		deleteSessionRuntime("tab-a");
+		second.resolve({ type: "response", command: "get_state", success: true, data: {} });
+		expect(await closing).toMatchObject({ success: false });
+		expect(state.getState().sessionId).toBe("replacement");
+	} finally {
+		spy.mockRestore();
+	}
+});
+
+it("does not deliver an old view's command to the replacement session", async () => {
+	const old = createTabRuntime("tab-a");
+	const replacement = replaceTabRuntime("tab-a");
+	let enabled = false;
+	vi.spyOn(window.omp.rpc, "commandForTab").mockImplementation(async (_tabId, command) => {
+		if (command.type === "set_setting") enabled = command.value === true;
+		return { type: "response", command: command.type, success: true, data: {} };
+	});
+
+	expect(await old.command({ type: "set_setting", path: "compaction.enabled", value: true })).toMatchObject({
+		success: false,
+	});
+	expect(enabled).toBe(false);
+	expect(await replacement.command({ type: "set_setting", path: "compaction.enabled", value: true })).toMatchObject({
+		success: true,
+	});
+	expect(enabled).toBe(true);
+});
+
+it("preserves a committed session change acknowledgement when its metadata arrives before the response", async () => {
+	const runtime = createTabRuntime("tab-a");
+	vi.spyOn(window.omp.rpc, "commandForTab").mockImplementation(async (_tabId, command) => {
+		if (command.type === "new_session") {
+			replaceTabRuntime("tab-a");
+			sessionRuntimeStore<SessionStore>("tab-a", "session")?.setState({ sessionId: "committed-session" });
+		}
+		return { type: "response", command: command.type, success: true, data: { cancelled: false } };
+	});
+
+	expect(await runtime.command({ type: "new_session" })).toMatchObject({ success: true, data: { cancelled: false } });
+	expect(sessionRuntimeStore<SessionStore>("tab-a", "session")?.getState().sessionId).toBe("committed-session");
 });

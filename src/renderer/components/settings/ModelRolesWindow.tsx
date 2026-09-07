@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../lib/tab-rpc";
 /**
  * Model Roles window: configure per-role model assignments.
  * Each role (default, smol, slow, vision, plan, designer, commit, tiny, task, advisor)
@@ -81,6 +82,7 @@ function RoleRow({
 }
 
 export function ModelRolesWindow() {
+	const tabRpc = useTabRpc();
 	const open = useUiStore(s => s.modelRolesOpen);
 	const close = useUiStore(s => s.closeModelRoles);
 	const t = useT();
@@ -104,9 +106,9 @@ export function ModelRolesWindow() {
 			// model store, which is otherwise populated only when the ModelPicker
 			// opens — leaving every dropdown empty on a fresh launch.
 			const [rolesRes, metaRes, modelsRes] = await Promise.all([
-				window.omp.rpc.getModelRoles(),
-				window.omp.rpc.getModelRoleMetadata(),
-				window.omp.rpc.getAvailableModels(),
+				tabRpc.getModelRoles(),
+				tabRpc.getModelRoleMetadata(),
+				tabRpc.getAvailableModels(),
 			]);
 			if (rolesRes.success) setRoles((rolesRes.data as ModelRolesResult).roles);
 			if (metaRes.success) setMetadata((metaRes.data as { roles: ModelRoleMetadata[] }).roles);
@@ -120,7 +122,14 @@ export function ModelRolesWindow() {
 		} finally {
 			setLoading(false);
 		}
-	}, [sidecarReady, setAvailableModels, t]);
+	}, [
+		sidecarReady,
+		setAvailableModels,
+		t,
+		tabRpc.getModelRoles,
+		tabRpc.getModelRoleMetadata,
+		tabRpc.getAvailableModels,
+	]);
 
 	useEffect(() => {
 		if (open) void load();
@@ -140,7 +149,7 @@ export function ModelRolesWindow() {
 	const handleChange = async (role: string, modelId: string | null) => {
 		setBusyRole(role);
 		try {
-			const res = await window.omp.rpc.setModelRole(role, modelId);
+			const res = await tabRpc.setModelRole(role, modelId);
 			if (res.success) {
 				toast({
 					variant: "success",

@@ -1,8 +1,33 @@
+import type { VirtualItem } from "@tanstack/react-virtual";
 import { createStore } from "zustand/vanilla";
-import type { ContextUsage, RpcLoopModeState, RpcSessionState, SidecarStatus } from "../../shared/rpc-types";
+import type {
+	ContextUsage,
+	RpcCollabState,
+	RpcLoopModeState,
+	RpcSessionState,
+	SidecarStatus,
+} from "../../shared/rpc-types";
 import { createScopedStoreHook } from "./session-runtime-context";
 
+export interface TranscriptView {
+	sessionId: string;
+	pinned: boolean;
+	preCompactionOpen: boolean;
+	expandedProcessKeys: Set<string>;
+	scrollOffset: number;
+	anchorKey?: string;
+	anchorOffset: number;
+	measurements: VirtualItem[];
+}
+
 export interface SessionStore {
+	collab: RpcCollabState | null;
+	switchPending: { fromId: string; toId: string } | null;
+	setSwitchPending: (pending: { fromId: string; toId: string } | null) => void;
+	/** Live event revision; a delayed snapshot cannot overwrite a newer lifecycle transition. */
+	eventVersion: number;
+	transcriptView: TranscriptView | null;
+	saveTranscriptView: (view: TranscriptView) => void;
 	sessionId: string;
 	sessionName: string | null;
 	sessionFile: string | null;
@@ -43,6 +68,10 @@ export interface SessionStore {
 }
 
 const initialState = {
+	collab: null as RpcCollabState | null,
+	switchPending: null as { fromId: string; toId: string } | null,
+	eventVersion: 0,
+	transcriptView: null as TranscriptView | null,
 	sessionId: "",
 	sessionName: null,
 	sessionFile: null,
@@ -69,18 +98,21 @@ const initialState = {
 export const createSessionStore = () =>
 	createStore<SessionStore>()(set => ({
 		...initialState,
+		setSwitchPending: switchPending => set({ switchPending }),
+		saveTranscriptView: transcriptView => set({ transcriptView }),
 		setFromState: state =>
 			set({
 				sessionId: state.sessionId,
+				collab: state.collab ?? null,
 				// Sessions whose auto-title never ran carry an empty title slot on
 				// disk; normalize "" to null so the TitleBar falls through to the
 				// session-list title/first message instead of rendering blank.
 				sessionName: state.sessionName || null,
-				sessionFile: state.sessionFile,
+				sessionFile: state.sessionFile ?? null,
 				cwd: state.cwd,
 				isStreaming: state.isStreaming,
 				isCompacting: state.isCompacting,
-				contextUsage: state.contextUsage,
+				contextUsage: state.contextUsage ?? null,
 				messageCount: state.messageCount,
 				queuedMessageCount: state.queuedMessageCount,
 				planModeEnabled: state.planModeEnabled ?? false,

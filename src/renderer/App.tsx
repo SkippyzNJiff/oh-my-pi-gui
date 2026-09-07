@@ -40,19 +40,36 @@ import { TitleBar } from "./components/layout/TitleBar";
 import { UpdateBanner } from "./components/layout/UpdateBanner";
 import { useAwaitingConfirmation } from "./hooks/use-awaiting-confirmation";
 import { useExtensionUi } from "./hooks/use-extension-ui";
-import { hydrateSession, useRpcEvents } from "./hooks/use-rpc-events";
+import { useRpcEvents } from "./hooks/use-rpc-events";
 import { newSessionNow, requestSessionSwitch } from "./hooks/use-session-switch";
 import { useSidebarRecency } from "./hooks/use-sidebar-recency";
 import { useTraySync } from "./hooks/use-tray-sync";
+import { retryFailedTurn, runSessionCommand } from "./lib/command-registry";
+import {
+	hydrateDisplayPreferences,
+	readDisplayPreference,
+	setDisplayPreference,
+	useDisplayPreference,
+} from "./lib/display-preferences";
 import { exportSessionHtml } from "./lib/export-session";
 import { useLang, useT } from "./lib/i18n";
 import { chordFromEvent, compileKeymap, KEYMAP_ACTION_BY_ID, KEYMAP_ACTIONS, type KeymapActionId } from "./lib/keymap";
 import { abortActiveTurn, restoreQueuedMessages } from "./lib/messages";
 import { watchPluginActivation } from "./lib/plugin-activation";
-import { acceptsActiveTabEvents, onActiveTabRouteSettled } from "./lib/tab-routing";
-import { applyFontSize, applyTheme, watchSystemTheme } from "./lib/theme";
-import { applyThemeByName, getPersistedThemeSelection, initAgentThemeSync, refreshPluginThemes } from "./lib/themes";
+import { acceptsActiveTabEvents, onActiveTabRouteSettled, onActiveTabRouteState } from "./lib/tab-routing";
+import { focusedTabRpc } from "./lib/tab-rpc";
+import { applyFontSize, watchSystemTheme } from "./lib/theme";
+import {
+	applyThemeByName,
+	clearPluginThemes,
+	getPersistedThemeSelection,
+	getThemeSelectionVersion,
+	initAgentThemeSync,
+	refreshPluginThemes,
+	resolveThemeSelection,
+} from "./lib/themes";
 import { startVoiceAutoSpeak } from "./lib/voice";
+import { openHandoffDialog } from "./stores/fork-handoff";
 import { useModelStore } from "./stores/model";
 import { useSessionStore } from "./stores/session";
 import { SessionRuntimeProvider } from "./stores/session-runtime-context";
@@ -102,15 +119,15 @@ const ProvidersWindow = lazy(() =>
 function FocusedSessionEffects() {
 	useTraySync();
 	useSidebarRecency();
-	const titleRunState = useSettingsStore(s => s.titleState);
+	const titleRunState = useDisplayPreference("titleState");
 	const titleStreaming = useSessionStore(s => s.isStreaming);
 	const titleSessionName = useSessionStore(s => s.sessionName);
 	const titleAwaiting = useAwaitingConfirmation();
-	const progressEnabled = useSettingsStore(s => s.showProgress);
+	const progressEnabled = useDisplayPreference("showProgress");
 	const progressStreaming = useSessionStore(s => s.isStreaming);
 	const progressAwaiting = useAwaitingConfirmation();
-	const tuiTight = useSettingsStore(s => s.tuiTight);
-	const colorBlindMode = useSettingsStore(s => s.colorBlindMode);
+	const compactDensity = useUiStore(s => s.compactDensity);
+	const colorBlindMode = useUiStore(s => s.colorBlindMode);
 
 	useEffect(() => {
 		const name = titleSessionName ?? "omp";
@@ -129,9 +146,9 @@ function FocusedSessionEffects() {
 		return () => clearTimeout(timer);
 	}, [progressEnabled, progressAwaiting, progressStreaming]);
 	useEffect(() => {
-		document.documentElement.dataset.density = tuiTight ? "tight" : "comfortable";
+		document.documentElement.dataset.density = compactDensity ? "tight" : "comfortable";
 		document.documentElement.dataset.colorblind = colorBlindMode ? "true" : "false";
-	}, [tuiTight, colorBlindMode]);
+	}, [compactDensity, colorBlindMode]);
 	return null;
 }
 
@@ -149,6 +166,7 @@ export function App() {
 	const panelVisible = useUiStore(s => s.panelVisible);
 	const theme = useUiStore(s => s.theme);
 	const fontSize = useUiStore(s => s.fontSize);
+	const followAgentTheme = useUiStore(s => s.followAgentTheme);
 	const statsDashboardOpen = useUiStore(s => s.statsDashboardOpen);
 	const closeStatsDashboard = useUiStore(s => s.closeStatsDashboard);
 	const modelCompareOpen = useUiStore(s => s.modelCompareOpen);
@@ -175,55 +193,91 @@ export function App() {
 	const closeProviderConfig = useUiStore(s => s.closeProviderConfig);
 	const activeTabId = useTabsStore(s => s.activeTabId);
 	const activeTabStatus = useTabsStore(s => s.tabs.find(tab => tab.id === s.activeTabId)?.status);
+	const themeSidecarReady = activeTabStatus === "ready" || activeTabStatus === "running";
 	const { lang, setLang } = useLang();
 	const t = useT();
 
 	// Seed theme/fontSize from persisted prefs once at boot.
 	useEffect(() => {
 		let cancelled = false;
+		const changedPreferences = new Set<string>();
+		const unsubscribe = useUiStore.subscribe((next, previous) => {
+			for (const key of [
+				"compactDensity",
+				"colorBlindMode",
+				"followAgentTheme",
+				"fontSize",
+				"notifications",
+				"thinkingExpanded",
+				"transcriptDetail",
+				"panelTab",
+			] as const) {
+				if (next[key] !== previous[key]) changedPreferences.add(key);
+			}
+		});
+		const initialThemeVersion = getThemeSelectionVersion();
 		void window.omp.prefs
 			.get()
-			.then(raw => {
+			.then(async raw => {
 				if (cancelled) return;
 				const prefs = (raw ?? {}) as Partial<Record<string, unknown>>;
-				if (typeof prefs.theme === "string") {
-					useUiStore.setState({ theme: prefs.theme as Parameters<typeof applyTheme>[0] });
+				hydrateDisplayPreferences(prefs.displayPreferences);
+				const selection = await getPersistedThemeSelection(prefs);
+				if (cancelled) return;
+				if (getThemeSelectionVersion() === initialThemeVersion) {
+					applyThemeByName(selection, { persist: false });
+					useUiStore.setState({
+						theme: selection === "system" ? "system" : resolveThemeSelection(selection).scheme,
+					});
 				}
-				if (typeof prefs.fontSize === "number") {
+				for (const key of ["compactDensity", "colorBlindMode", "followAgentTheme"] as const) {
+					if (typeof prefs[key] === "boolean" && !changedPreferences.has(key))
+						useUiStore.setState({ [key]: prefs[key] });
+				}
+				if (typeof prefs.fontSize === "number" && !changedPreferences.has("fontSize")) {
 					useUiStore.setState({ fontSize: prefs.fontSize });
 				}
-				if (typeof prefs.notifications === "boolean") {
+				if (typeof prefs.notifications === "boolean" && !changedPreferences.has("notifications")) {
 					useUiStore.setState({ notifications: prefs.notifications });
 				}
-				if (typeof prefs.thinkingExpanded === "boolean") {
+				if (typeof prefs.thinkingExpanded === "boolean" && !changedPreferences.has("thinkingExpanded")) {
 					useUiStore.setState({ thinkingExpanded: prefs.thinkingExpanded });
 				}
-				if (prefs.transcriptDetail === "compact" || prefs.transcriptDetail === "full") {
+				if (
+					(prefs.transcriptDetail === "compact" || prefs.transcriptDetail === "full") &&
+					!changedPreferences.has("transcriptDetail")
+				) {
 					useUiStore.setState({ transcriptDetail: prefs.transcriptDetail });
 				}
 				// Restore the default workspace panel tab (written by Settings → GUI).
 				if (
+					!changedPreferences.has("panelTab") &&
 					typeof prefs.defaultPanelTab === "string" &&
 					["diff", "files", "logs"].includes(prefs.defaultPanelTab)
 				) {
 					useUiStore.setState({ panelTab: prefs.defaultPanelTab as PanelTab });
 				}
 			})
-			.catch(() => {});
-		// Apply the persisted (possibly named) theme on boot so custom themes
-		// survive restarts; the App effect's same-mode refire guard keeps the
-		// inline tokens instead of clearing them.
-		void getPersistedThemeSelection().then(sel => {
-			if (!cancelled) applyThemeByName(sel);
-		});
+			.catch(() => {})
+			.finally(unsubscribe);
 		return () => {
 			cancelled = true;
+			unsubscribe();
 		};
 	}, []);
 
-	// Layer the agent's theme.dark/theme.light TUI themes over the active GUI
-	// theme; re-syncs live on config_update frames and GUI theme switches.
-	useEffect(() => initAgentThemeSync(), []);
+	// Terminal palettes affect the application only when explicitly requested.
+	useEffect(
+		() => (followAgentTheme && themeSidecarReady ? initAgentThemeSync() : undefined),
+		[followAgentTheme, themeSidecarReady],
+	);
+	useEffect(
+		() =>
+			onActiveTabRouteState(ready => {
+				if (!ready) clearPluginThemes();
+			}),
+		[],
+	);
 
 	// Restart-required plugin installs queue while a run is in flight; restart
 	// the active sidecar (resuming its session) once the run settles.
@@ -250,12 +304,9 @@ export function App() {
 		[],
 	);
 
-	// Apply theme + font size to the DOM whenever they change.
-	useEffect(() => {
-		applyTheme(theme);
-		applyFontSize(fontSize);
-		return watchSystemTheme(theme, () => applyTheme(theme));
-	}, [theme, fontSize]);
+	// Font changes do not participate in theme resolution.
+	useEffect(() => watchSystemTheme(theme, () => applyThemeByName("system", { persist: false })), [theme]);
+	useEffect(() => applyFontSize(fontSize), [fontSize]);
 
 	// Keep the conversation usable at the minimum window size. The inspector
 	// becomes an on-demand overlay instead of permanently squeezing the chat.
@@ -321,31 +372,20 @@ export function App() {
 			switch (actionId) {
 				case "model.cycleForward":
 					// ⌃P — cycle to the next model (TUI parity).
-					void window.omp.rpc.cycleModel();
+					void runSessionCommand(focusedTabRpc().cycleModel(), t("palette.failed"));
 					return;
 				case "model.cycleBackward":
 					// ⇧⌃P — cycle model backward (TUI app.model.cycleBackward), via the
 					// cycle_model direction arg (A1 RPC).
-					void window.omp.rpc.cycleModel("backward");
+					void runSessionCommand(focusedTabRpc().cycleModel("backward"), t("palette.failed"));
 					return;
 				case "retry":
 					// ⌥R — retry the last failed turn (TUI app.retry) via the retry RPC.
 					// Distinct from the palette's re-send-last-message action: this knows
 					// what "failed turn" means server-side.
-					void window.omp.rpc.retry().then(response => {
-						if (!response.success) {
-							toast({ variant: "error", title: t("palette.failed"), message: response.error });
-							return;
-						}
-						const data = response.data as { retried?: boolean } | undefined;
-						if (!data?.retried) {
-							toast({
-								variant: "warning",
-								title: t("palette.retryNothing"),
-								message: t("palette.retryNothingDesc"),
-							});
-						}
-					});
+					void retryFailedTurn().catch(error =>
+						toast({ variant: "error", title: t("palette.failed"), message: String(error) }),
+					);
 					return;
 				case "dequeue":
 					// ⌥↑ — restore queued messages to the composer (TUI app.message.dequeue):
@@ -357,13 +397,10 @@ export function App() {
 				case "plan.toggle": {
 					// ⌥⇧P — toggle plan mode (TUI app.plan.toggle).
 					const enabled = !useSessionStore.getState().planModeEnabled;
-					void window.omp.rpc.setPlanMode(enabled).then(response => {
-						if (response.success) {
-							const data = response.data as { enabled?: boolean } | undefined;
-							useSessionStore.setState({ planModeEnabled: data?.enabled ?? enabled });
-						} else {
-							toast({ variant: "error", title: t("settings.runtime.planMode"), message: response.error });
-						}
+					void runSessionCommand(focusedTabRpc().setPlanMode(enabled), t("settings.runtime.planMode"), data => {
+						const result = data as { enabled?: boolean } | undefined;
+						if (typeof result?.enabled === "boolean")
+							useSessionStore.setState({ planModeEnabled: result.enabled });
 					});
 					return;
 				}
@@ -373,11 +410,7 @@ export function App() {
 					return;
 				case "thinking.toggle": {
 					// ⌃T — show/hide thinking blocks (TUI app.thinking.toggle).
-					const hidden = !useSettingsStore.getState().hideThinkingBlock;
-					void window.omp.rpc.setSetting("hideThinkingBlock", hidden).then(response => {
-						if (response.success) useSettingsStore.setState({ hideThinkingBlock: hidden });
-						else toast({ variant: "error", title: t("palette.failed"), message: response.error });
-					});
+					void setDisplayPreference("hideThinkingBlock", !readDisplayPreference("hideThinkingBlock"));
 					return;
 				}
 				case "tab.new":
@@ -463,7 +496,7 @@ export function App() {
 					document.activeElement instanceof HTMLTextAreaElement
 				) {
 					event.preventDefault();
-					void window.omp.rpc.cycleThinkingLevel();
+					void runSessionCommand(focusedTabRpc().cycleThinkingLevel(), t("palette.failed"));
 				}
 				return;
 			}
@@ -535,7 +568,7 @@ export function App() {
 				return;
 			}
 			if (action === "cycle-thinking") {
-				void window.omp.rpc.cycleThinkingLevel();
+				void runSessionCommand(focusedTabRpc().cycleThinkingLevel(), t("palette.failed"));
 				return;
 			}
 			if (action === "set-approval") {
@@ -563,10 +596,7 @@ export function App() {
 				} else if (action === "export-html") {
 					await exportSessionHtml();
 				} else if (action === "handoff") {
-					const response = await window.omp.rpc.handoff();
-					if (!response.success) throw new Error(response.error);
-					await hydrateSession();
-					toast({ variant: "success", message: t("app.handoffCreated") });
+					openHandoffDialog();
 				}
 			} catch (error) {
 				toast({ variant: "error", title: t("app.actionFailed"), message: String(error) });

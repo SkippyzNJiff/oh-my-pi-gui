@@ -26,14 +26,14 @@ interface ErrorRow {
 export function ErrorsRoute({ range, refreshKey }: { range: StatsRange; refreshKey: number }) {
 	const t = useT();
 	const params = useMemo(() => ({ range, limit: "100" }), [range]);
-	const { data, isLoading, error, refetch } = useStats("/api/stats/errors", params);
+	const { data, isLoading, error, refetch } = useStats<ErrorRow[]>("/api/stats/errors", params);
 
 	useEffect(() => {
 		if (refreshKey > 0) refetch();
 	}, [refreshKey, refetch]);
 
 	const rows = useMemo(() => {
-		const list = Array.isArray(data) ? (data as ErrorRow[]) : [];
+		const list = data ?? [];
 		return [...list].sort((a, b) => b.timestamp - a.timestamp);
 	}, [data]);
 
@@ -88,7 +88,7 @@ export function ErrorsRoute({ range, refreshKey }: { range: StatsRange; refreshK
 	);
 
 	return (
-		<RouteFrame empty={rows.length === 0} error={error} loading={isLoading} onRetry={refetch}>
+		<RouteFrame hasData={data !== null} empty={rows.length === 0} error={error} loading={isLoading} onRetry={refetch}>
 			<SectionTitle>{t("stats.errors.sectionTitle", { count: rows.length })}</SectionTitle>
 			<StatTable columns={columns} keyFor={row => `${row.id ?? row.entryId ?? row.timestamp}`} rows={rows} />
 		</RouteFrame>

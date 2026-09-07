@@ -7,6 +7,7 @@ import type { ProviderInfo, RpcResponse } from "../../../shared/rpc-types";
 import { I18nProvider } from "../../lib/i18n";
 import { useSessionStore } from "../../stores/session";
 import { useUiStore } from "../../stores/ui";
+import { Modal } from "../common";
 import { FirstRunOnboardingDialog, hasUsableModelProvider } from "./FirstRunOnboardingDialog";
 
 const { document, window, Event, HTMLElement, Node } = parseHTML("<html><body></body></html>");
@@ -129,6 +130,25 @@ describe("hasUsableModelProvider", () => {
 });
 
 describe("FirstRunOnboardingDialog", () => {
+	it("keeps the user's settings dialog accessible when the startup readiness check finishes late", async () => {
+		const omp = installMockOmp();
+		const pending = Promise.withResolvers<RpcResponse>();
+		omp.rpc.getProviders.mockReturnValue(pending.promise);
+		useSessionStore.getState().setStatus("ready", "/tmp/project");
+		await mount(
+			<>
+				<FirstRunOnboardingDialog />
+				<Modal open onClose={() => {}} title="Settings">
+					Current settings
+				</Modal>
+			</>,
+		);
+		await act(async () => pending.resolve(success([])));
+		await flush();
+		expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+		expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Current settings");
+	});
+
 	it("opens for an empty profile, links both setup surfaces, and closes after readiness succeeds", async () => {
 		const omp = installMockOmp();
 		useSessionStore.getState().setStatus("ready", "/tmp/project");

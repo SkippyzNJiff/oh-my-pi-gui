@@ -1,49 +1,68 @@
 import { AlertTriangle, Copy, ExternalLink } from "lucide-react";
-import { useEffect, useState } from "react";
-import type { RpcShareSessionResult } from "../../../shared/rpc-types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { RpcShareSessionPreview, RpcShareSessionResult } from "../../../shared/rpc-types";
 import { copyText } from "../../lib/format";
 import { useT } from "../../lib/i18n";
+import { useTabRpc } from "../../lib/tab-rpc";
 import { toast } from "../../stores/toast";
 import { useUiStore } from "../../stores/ui";
 import { Button, Modal, Spinner } from "../common";
 
-/**
- * Native /share: seals and uploads the session on open (TUI runs the command
- * eagerly too), then presents the encrypted viewer link with copy /
- * open-in-browser actions. The truncated flag surfaces the share server's
- * size-limit trim note.
- */
 export function ShareSessionDialog() {
 	const t = useT();
+	const rpc = useTabRpc();
+	const generation = useRef(0);
+	const [preview, setPreview] = useState<RpcShareSessionPreview | null>(null);
+	const [uploading, setUploading] = useState(false);
 	const open = useUiStore(state => state.shareSessionOpen);
 	const close = useUiStore(state => state.closeShareSession);
 	const [result, setResult] = useState<RpcShareSessionResult | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
-	useEffect(() => {
-		if (!open) return;
-		let cancelled = false;
+	const prepare = useCallback(async () => {
+		const version = ++generation.current;
+		setPreview(null);
+		setUploading(false);
 		setResult(null);
 		setError(null);
 		setLoading(true);
-		void window.omp.rpc
-			.shareSession()
-			.then(response => {
-				if (cancelled) return;
-				if (response.success) setResult(response.data as RpcShareSessionResult);
-				else setError(response.error);
-			})
-			.catch(cause => {
-				if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
-			})
-			.finally(() => {
-				if (!cancelled) setLoading(false);
-			});
+		try {
+			const response = await rpc.previewShareSession();
+			if (version !== generation.current) return;
+			if (!response.success) throw new Error(response.error);
+			setPreview(response.data as RpcShareSessionPreview);
+		} catch (cause) {
+			if (version === generation.current) setError(String(cause));
+		} finally {
+			if (version === generation.current) setLoading(false);
+		}
+	}, [rpc]);
+
+	useEffect(() => {
+		if (open) void prepare();
 		return () => {
-			cancelled = true;
+			generation.current++;
 		};
-	}, [open]);
+	}, [open, prepare]);
+
+	const upload = async () => {
+		if (!preview || uploading) return;
+		const version = generation.current;
+		setUploading(true);
+		setError(null);
+		try {
+			const response = await rpc.shareSession(preview.snapshotId);
+			if (version !== generation.current) return;
+			if (!response.success) throw new Error(response.error);
+			setResult(response.data as RpcShareSessionResult);
+			setPreview(null);
+		} catch (cause) {
+			if (version === generation.current) setError(String(cause));
+		} finally {
+			if (version === generation.current) setUploading(false);
+		}
+	};
 
 	const copy = async (value: string) => {
 		if (await copyText(value)) toast({ variant: "success", message: t("shareDialog.copied") });
@@ -51,14 +70,10 @@ export function ShareSessionDialog() {
 	};
 
 	return (
-		<Modal onClose={close} open={open} size="md" title={t("shareDialog.title")}>
+		<Modal onClose={uploading ? () => {} : close} open={open} size="md" title={t("shareDialog.title")}>
 			{loading ? (
 				<div className="flex items-center justify-center gap-2 py-8 text-sm text-(--omp-dim)">
-					<Spinner size="sm" /> {t("shareDialog.sharing")}
-				</div>
-			) : error ? (
-				<div className="py-4 text-sm text-(--omp-error)">
-					{t("shareDialog.error")}: {error}
+					<Spinner size="sm" /> {t("shareDialog.preparing")}
 				</div>
 			) : result ? (
 				<div className="space-y-3">
@@ -95,7 +110,48 @@ export function ShareSessionDialog() {
 						</div>
 					) : null}
 				</div>
+			) : preview ? (
+				<div className="space-y-3">
+					<p className="text-sm text-(--omp-muted)">{t("shareDialog.previewHint")}</p>
+					<p className="break-all text-xs text-(--omp-dim)">
+						{t("shareDialog.destination")}: {preview.store === "gist" ? t("shareDialog.gistDestination") : ""}
+						{preview.serverUrl}
+					</p>
+					<p className="text-xs text-(--omp-dim)">
+						{t(preview.redactionEnabled ? "shareDialog.redactionOn" : "shareDialog.redactionOff")}
+					</p>
+					{preview.truncated && (
+						<p role="status" className="text-omp-sm text-(--omp-warning)">
+							{t("shareDialog.previewTrimmed")}
+						</p>
+					)}
+					<pre
+						tabIndex={0}
+						aria-label={t("shareDialog.preview")}
+						className="max-h-[40vh] overflow-auto rounded border border-(--omp-border-muted) p-3 text-xs whitespace-pre-wrap break-words"
+					>
+						{preview.preview}
+					</pre>
+					<div className="flex justify-end gap-2">
+						<Button variant="secondary" disabled={uploading} onClick={() => void prepare()}>
+							{t("shareDialog.refreshPreview")}
+						</Button>
+						<Button loading={uploading} disabled={uploading} onClick={() => void upload()}>
+							{t("shareDialog.upload")}
+						</Button>
+					</div>
+				</div>
 			) : null}
+			{error && (
+				<div role="alert" className="space-y-2 py-3 text-sm text-(--omp-error)">
+					<p>
+						{t("shareDialog.error")}: {error}
+					</p>
+					<Button variant="secondary" disabled={uploading} onClick={() => void prepare()}>
+						{t("shareDialog.refreshPreview")}
+					</Button>
+				</div>
+			)}
 		</Modal>
 	);
 }

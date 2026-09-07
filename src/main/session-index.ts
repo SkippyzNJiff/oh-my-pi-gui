@@ -4,10 +4,10 @@
  * LRU cache keyed by mtime:size avoids re-parsing unchanged files.
  */
 import { open, readdir, rm, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { type FSWatcher, watch } from "chokidar";
 import type { SessionInfo, SessionKind } from "../shared/ipc-types";
+import { agentDir } from "./agent-paths";
 
 const TITLE_SLOT_BYTES = 256;
 const TAIL_BYTES = 32 * 1024;
@@ -39,7 +39,7 @@ export class SessionIndex {
 	onChange: (() => void) | null = null;
 
 	constructor(sessionsDir?: string, cwd = process.cwd()) {
-		this.#sessionsDir = sessionsDir ?? join(homedir(), ".omp", "agent", "sessions");
+		this.#sessionsDir = sessionsDir ?? join(agentDir(), "sessions");
 		this.#cwd = resolve(cwd);
 	}
 

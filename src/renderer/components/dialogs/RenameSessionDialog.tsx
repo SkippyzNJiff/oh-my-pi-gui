@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../lib/tab-rpc";
 /**
  * Rename session dialog: single text input prefilled with the current
  * session name; submits via rpc.setSessionName and mirrors the result into
@@ -12,6 +13,7 @@ import { useUiStore } from "../../stores/ui";
 import { Button, Input, Modal } from "../common";
 
 export function RenameSessionDialog() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const open = useUiStore(state => state.renameDialogOpen);
 	const close = useUiStore(state => state.closeRenameDialog);
@@ -36,7 +38,7 @@ export function RenameSessionDialog() {
 		if (!trimmed || saving) return;
 		setSaving(true);
 		try {
-			const response = await window.omp.rpc.setSessionName(trimmed);
+			const response = await tabRpc.setSessionName(trimmed);
 			if (!response.success) {
 				toast({ variant: "error", title: t("rename.failed"), message: response.error });
 				return;

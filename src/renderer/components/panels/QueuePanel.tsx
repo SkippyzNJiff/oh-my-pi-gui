@@ -1,3 +1,4 @@
+import { type TabRpc, useTabRpc } from "../../lib/tab-rpc";
 /**
  * Queue panel: the agent's pending message queue as two sortable lanes —
  * 引导 (steering, delivered mid-run) and 排队 (follow-up, delivered after the
@@ -26,9 +27,11 @@ import {
 } from "@dnd-kit/sortable";
 import { ArrowLeftRight, Check, ChevronDown, ChevronUp, GripVertical, ListX, Pencil, X } from "lucide-react";
 import { memo, useCallback, useEffect, useState } from "react";
+import type { StoreApi } from "zustand/vanilla";
 import type { RpcQueuedMessage } from "../../../shared/rpc-types";
 import { useT } from "../../lib/i18n";
-import { type QueueLane, useQueuedMessages, useQueueStore } from "../../stores/queue";
+import { type QueueLane, type QueueStore, useQueuedMessages, useQueueStore } from "../../stores/queue";
+import { sessionRuntimeStore, useRuntimeTabId } from "../../stores/session-runtime-context";
 import { toast } from "../../stores/toast";
 import { Badge } from "../common";
 
@@ -52,17 +55,18 @@ function rollbackBase(items: RpcQueuedMessage[]): RpcQueuedMessage[] {
  *  transport calls roll back this mutation unless a newer snapshot superseded
  *  it, then attempt an authoritative refresh. */
 async function applyLaneMutation(
+	queueStore: StoreApi<QueueStore>,
 	lane: QueueLane,
 	optimistic: (items: RpcQueuedMessage[]) => RpcQueuedMessage[],
 	persist: () => Promise<{ success: boolean; error?: string }>,
 	failureKey: string,
 	t: (key: string) => string,
 ): Promise<void> {
-	const store = useQueueStore.getState();
+	const store = queueStore.getState();
 	const before = store[lane];
 	const optimisticItems = optimistic(before);
 	if (optimisticItems === before) return;
-	useQueueStore.setState({ [lane]: optimisticItems });
+	queueStore.setState({ [lane]: optimisticItems });
 	let failure: string | undefined;
 	try {
 		const response = await persist();
@@ -72,12 +76,12 @@ async function applyLaneMutation(
 		failure = cause instanceof Error ? cause.message : String(cause);
 	}
 	failedOptimisticStates.set(optimisticItems, before);
-	if (useQueueStore.getState()[lane] === optimisticItems) {
+	if (queueStore.getState()[lane] === optimisticItems) {
 		const rollback = rollbackBase(before);
-		useQueueStore.setState(lane === "steering" ? { steering: rollback } : { followUp: rollback });
+		queueStore.setState(lane === "steering" ? { steering: rollback } : { followUp: rollback });
 	}
 	toast({ variant: "error", title: t(failureKey), message: failure });
-	await useQueueStore.getState().refresh();
+	await queueStore.getState().refresh();
 }
 
 interface SortableQueuedRowProps {
@@ -95,9 +99,15 @@ interface SortableQueuedRowProps {
 /** Optimistically move an entry to the END of the other lane (queue_move with
  *  toLane). Failed responses and rejected transport calls roll back unless a
  *  newer snapshot superseded this mutation, then attempt a refresh. */
-async function applyCrossLaneMove(lane: QueueLane, id: string, t: (key: string) => string): Promise<void> {
+async function applyCrossLaneMove(
+	queueStore: StoreApi<QueueStore>,
+	rpc: TabRpc,
+	lane: QueueLane,
+	id: string,
+	t: (key: string) => string,
+): Promise<void> {
 	const target: QueueLane = lane === "steering" ? "followUp" : "steering";
-	const store = useQueueStore.getState();
+	const store = queueStore.getState();
 	const item = store[lane].find(entry => entry.id === id);
 	if (!item) return;
 	const beforeSteering = store.steering;
@@ -106,10 +116,10 @@ async function applyCrossLaneMove(lane: QueueLane, id: string, t: (key: string) 
 		lane === "steering" ? beforeSteering.filter(entry => entry.id !== id) : [...beforeSteering, item];
 	const optimisticFollowUp =
 		lane === "followUp" ? beforeFollowUp.filter(entry => entry.id !== id) : [...beforeFollowUp, item];
-	useQueueStore.setState({ steering: optimisticSteering, followUp: optimisticFollowUp });
+	queueStore.setState({ steering: optimisticSteering, followUp: optimisticFollowUp });
 	let failure: string | undefined;
 	try {
-		const response = await window.omp.rpc.queueMove(id, Number.MAX_SAFE_INTEGER, target);
+		const response = await rpc.queueMove(id, Number.MAX_SAFE_INTEGER, target);
 		if (response.success) return;
 		failure = response.error;
 	} catch (cause) {
@@ -117,15 +127,15 @@ async function applyCrossLaneMove(lane: QueueLane, id: string, t: (key: string) 
 	}
 	failedOptimisticStates.set(optimisticSteering, beforeSteering);
 	failedOptimisticStates.set(optimisticFollowUp, beforeFollowUp);
-	const current = useQueueStore.getState();
+	const current = queueStore.getState();
 	if (current.steering === optimisticSteering) {
-		useQueueStore.setState({ steering: rollbackBase(beforeSteering) });
+		queueStore.setState({ steering: rollbackBase(beforeSteering) });
 	}
 	if (current.followUp === optimisticFollowUp) {
-		useQueueStore.setState({ followUp: rollbackBase(beforeFollowUp) });
+		queueStore.setState({ followUp: rollbackBase(beforeFollowUp) });
 	}
 	toast({ variant: "error", title: t("queuePanel.moveFailed"), message: failure });
-	await useQueueStore.getState().refresh();
+	await queueStore.getState().refresh();
 }
 
 const SortableQueuedRow = memo(function SortableQueuedRow({
@@ -358,6 +368,9 @@ function LaneSection({
 }
 
 export function QueuePanel() {
+	const tabRpc = useTabRpc();
+	const tabId = useRuntimeTabId();
+	const queueStore = sessionRuntimeStore<QueueStore>(tabId, "queue") ?? useQueueStore;
 	const t = useT();
 	const { steering, followUp } = useQueuedMessages();
 	const total = steering.length + followUp.length;
@@ -365,23 +378,25 @@ export function QueuePanel() {
 	const removeItem = useCallback(
 		(lane: QueueLane, id: string) => {
 			void applyLaneMutation(
+				queueStore,
 				lane,
 				items => items.filter(item => item.id !== id),
-				() => window.omp.rpc.queueRemove(id),
+				() => tabRpc.queueRemove(id),
 				"queuePanel.removeFailed",
 				t,
 			);
 		},
-		[t],
+		[t, tabRpc.queueRemove, queueStore],
 	);
 
 	const editItem = useCallback(
 		(lane: QueueLane, id: string, text: string) => {
 			void applyLaneMutation(
+				queueStore,
 				lane,
 				items => items.map(item => (item.id === id ? { ...item, text } : item)),
 				async () => {
-					const response = await window.omp.rpc.queueEdit(id, text);
+					const response = await tabRpc.queueEdit(id, text);
 					return response.success
 						? { success: true as const }
 						: { success: false as const, error: response.error };
@@ -390,19 +405,20 @@ export function QueuePanel() {
 				t,
 			);
 		},
-		[t],
+		[t, tabRpc.queueEdit, queueStore],
 	);
 
 	const moveItem = useCallback(
 		(lane: QueueLane, id: string, toIndex: number) => {
 			void applyLaneMutation(
+				queueStore,
 				lane,
 				items => {
 					const from = items.findIndex(item => item.id === id);
 					return from < 0 ? items : arrayMove(items, from, toIndex);
 				},
 				async () => {
-					const response = await window.omp.rpc.queueMove(id, toIndex);
+					const response = await tabRpc.queueMove(id, toIndex);
 					return response.success
 						? { success: true as const }
 						: { success: false as const, error: response.error };
@@ -411,23 +427,24 @@ export function QueuePanel() {
 				t,
 			);
 		},
-		[t],
+		[t, tabRpc.queueMove, queueStore],
 	);
 
 	const moveToLane = useCallback(
 		(lane: QueueLane, id: string) => {
-			void applyCrossLaneMove(lane, id, t);
+			void applyCrossLaneMove(queueStore, tabRpc, lane, id, t);
 		},
-		[t],
+		[t, tabRpc, queueStore],
 	);
 
 	const clearLane = useCallback(
 		(lane: QueueLane) => {
 			void applyLaneMutation(
+				queueStore,
 				lane,
 				() => [],
 				async () => {
-					const response = await window.omp.rpc.queueClear(lane);
+					const response = await tabRpc.queueClear(lane);
 					return response.success
 						? { success: true as const }
 						: { success: false as const, error: response.error };
@@ -436,7 +453,7 @@ export function QueuePanel() {
 				t,
 			);
 		},
-		[t],
+		[t, tabRpc.queueClear, queueStore],
 	);
 
 	return (

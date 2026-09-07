@@ -77,6 +77,8 @@ if (!existsSync(compileBinaryModulePath) || !existsSync(path.join(nativesDir, "s
 	process.exit(1);
 }
 
+await runPackageScript(guiRoot, "check:protocol");
+
 // Runtime-selected module: only resolvable inside the monorepo layout proven
 // above, so a static import would crash standalone clones before the guidance.
 const { compileCodingAgent } = await import(compileBinaryModulePath);

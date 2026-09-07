@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { THEME_TOKEN_KEYS, THEMES, TRANSCRIPT_OVERLAY_VARS } from "./themes";
+import { resolveTokenColor, THEME_TOKEN_KEYS, THEMES, type ThemeTokenKey, TRANSCRIPT_OVERLAY_VARS } from "./themes";
 
 describe("theme registry", () => {
 	it("defines every canonical token on every theme", () => {
@@ -44,6 +44,39 @@ describe("theme registry", () => {
 		}
 	});
 
+	it("keeps small text, syntax, and diff lines readable on their actual surfaces", () => {
+		for (const [name, theme] of Object.entries(THEMES)) {
+			const color = (key: ThemeTokenKey) => resolveTokenColor(theme, key);
+			const assertReadable = (foreground: ThemeTokenKey, background: ThemeTokenKey, base = "#ffffff") => {
+				const ratio = contrast(color(foreground), composite(color(background), base));
+				expect(ratio, `${name}: ${foreground} on ${background}`).toBeGreaterThanOrEqual(4.5);
+			};
+			for (const background of [
+				"--omp-bg-primary",
+				"--omp-sidebar-bg",
+				"--omp-bg-elevated",
+				"--omp-bg-tertiary",
+			] as const) {
+				for (const foreground of [
+					"--omp-text",
+					"--omp-text-secondary",
+					"--omp-muted",
+					"--omp-dim",
+					"--omp-accent",
+				] as const) {
+					assertReadable(foreground, background);
+				}
+			}
+			for (const key of THEME_TOKEN_KEYS.filter(key => key.startsWith("--omp-syntax-"))) {
+				assertReadable(key, "--omp-code-bg");
+			}
+			assertReadable("--omp-diff-added", "--omp-diff-added-bg", color("--omp-code-bg"));
+			assertReadable("--omp-diff-removed", "--omp-diff-removed-bg", color("--omp-code-bg"));
+			assertReadable("--omp-btn-primary-text", "--omp-btn-primary-bg");
+			assertReadable("--omp-btn-danger-text", "--omp-btn-danger-bg");
+		}
+	});
+
 	it("keeps dark and light accents in the same hue family", () => {
 		const delta = hueDelta(hexHue(THEMES.dark.tokens["--omp-accent"]), hexHue(THEMES.light.tokens["--omp-accent"]));
 		expect(delta).toBeLessThan(30);
@@ -58,6 +91,32 @@ describe("theme registry", () => {
 		}
 	});
 });
+
+function composite(color: string, background: string): string {
+	if (color.startsWith("#")) return color;
+	const match = /^rgba\((\d+), (\d+), (\d+), ([\d.]+)\)$/.exec(color);
+	if (!match) throw new Error(`Unsupported contrast color: ${color}`);
+	const alpha = Number(match[4]);
+	return `#${[1, 2, 3]
+		.map((channel, i) => {
+			const base = Number.parseInt(background.slice(1 + i * 2, 3 + i * 2), 16);
+			return Math.round(Number(match[channel]) * alpha + base * (1 - alpha))
+				.toString(16)
+				.padStart(2, "0");
+		})
+		.join("")}`;
+}
+
+function contrast(foreground: string, background: string): number {
+	const luminance = (hex: string) =>
+		[0.2126, 0.7152, 0.0722].reduce((sum, weight, i) => {
+			const channel = Number.parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16) / 255;
+			return sum + weight * (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+		}, 0);
+	const a = luminance(foreground);
+	const b = luminance(background);
+	return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
 
 function hexHue(hex: string): number {
 	const raw = hex.trim();

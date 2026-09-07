@@ -53,13 +53,13 @@ interface OverviewData {
 export function OverviewRoute({ range, refreshKey }: { range: StatsRange; refreshKey: number }) {
 	const t = useT();
 	const params = useMemo(() => ({ range }), [range]);
-	const { data, isLoading, error, refetch } = useStats("/api/stats/overview", params);
+	const { data, isLoading, error, refetch } = useStats<OverviewData>("/api/stats/overview", params);
 
 	useEffect(() => {
 		if (refreshKey > 0) refetch();
 	}, [refreshKey, refetch]);
 
-	const stats = (data ?? null) as OverviewData | null;
+	const stats = data;
 	const overall = stats?.overall;
 	const series = stats?.timeSeries ?? [];
 	const theme = chartTheme();
@@ -87,7 +87,13 @@ export function OverviewRoute({ range, refreshKey }: { range: StatsRange; refres
 	);
 
 	return (
-		<RouteFrame empty={!overall || overall.totalRequests === 0} error={error} loading={isLoading} onRetry={refetch}>
+		<RouteFrame
+			hasData={data !== null}
+			empty={!overall || overall.totalRequests === 0}
+			error={error}
+			loading={isLoading}
+			onRetry={refetch}
+		>
 			{overall && (
 				<>
 					<div className="grid grid-cols-2 gap-2.5 md:grid-cols-3 xl:grid-cols-6">

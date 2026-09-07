@@ -6,7 +6,7 @@
  */
 
 import { ArrowLeft, AtSign, ExternalLink as ExternalLinkIcon, File, Folder, FolderOpen, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FsTreeEntry } from "../../../shared/ipc-types";
 import { useT } from "../../lib/i18n";
 import { MarkdownRenderer } from "../../lib/markdown";
@@ -36,12 +36,27 @@ function countFiles(entries: FsTreeEntry[]): number {
 	return count;
 }
 
+/** Search the bounded tree already loaded from the workspace; preserve full paths. */
+export function searchFiles(entries: FsTreeEntry[], query: string): FsTreeEntry[] {
+	const needle = query.trim().toLocaleLowerCase();
+	return entries.flatMap(entry =>
+		entry.kind === "file"
+			? entry.path.toLocaleLowerCase().includes(needle)
+				? [entry]
+				: []
+			: searchFiles(entry.children ?? [], query),
+	);
+}
+
 export function FilesPanel() {
 	const t = useT();
 	const tabId = useRuntimeTabId();
 	const filePreviewPath = useUiStore(s => s.filePreviewPath);
 	const openFilePreview = useUiStore(s => s.openFilePreview);
 	const closeFilePreview = useUiStore(s => s.closeFilePreview);
+	const listVersion = useRef(0);
+	const previewVersion = useRef(0);
+	const [query, setQuery] = useState("");
 	const [tree, setTree] = useState<FsTreeEntry[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [truncated, setTruncated] = useState(false);
@@ -50,13 +65,14 @@ export function FilesPanel() {
 	const [preview, setPreview] = useState<PreviewState | null>(null);
 
 	const load = useCallback(async () => {
-		if (!tabId) return;
+		const version = ++listVersion.current;
 		setLoading(true);
 		setError(null);
 		try {
 			const result = tabId
 				? await window.omp.fs.list(undefined, MAX_DEPTH, MAX_FILES, tabId)
 				: await window.omp.fs.list(undefined, MAX_DEPTH, MAX_FILES);
+			if (version !== listVersion.current) return;
 			if (!result.ok) {
 				setError(result.error ?? t("filesPanel.unavailable"));
 				setTree([]);
@@ -66,25 +82,33 @@ export function FilesPanel() {
 			setTree(result.entries);
 			setTruncated(result.truncated);
 		} catch (err) {
+			if (version !== listVersion.current) return;
 			setError(err instanceof Error ? err.message : String(err));
 			setTree([]);
 			setTruncated(false);
 		} finally {
-			setLoading(false);
+			if (version === listVersion.current) setLoading(false);
 		}
 	}, [t, tabId]);
 
 	useEffect(() => {
+		setTree([]);
+		setExpanded(new Set());
 		void load();
+		return () => {
+			listVersion.current++;
+		};
 	}, [load]);
 
 	const openPreview = useCallback(
 		async (path: string) => {
+			const version = ++previewVersion.current;
 			setPreview({ path, content: null, loading: true, truncated: false });
 			try {
 				const result = tabId
 					? await window.omp.fs.read(path, PREVIEW_MAX_BYTES, tabId)
 					: await window.omp.fs.read(path, PREVIEW_MAX_BYTES);
+				if (version !== previewVersion.current) return;
 				if (!result.ok) {
 					setPreview({
 						path,
@@ -100,6 +124,7 @@ export function FilesPanel() {
 				}
 				setPreview({ path, content: result.content, loading: false, truncated: result.truncated });
 			} catch (error) {
+				if (version !== previewVersion.current) return;
 				setPreview({
 					path,
 					content: t("filesPanel.readFailed", { error: error instanceof Error ? error.message : String(error) }),
@@ -114,6 +139,9 @@ export function FilesPanel() {
 	useEffect(() => {
 		if (filePreviewPath) void openPreview(filePreviewPath);
 		else setPreview(null);
+		return () => {
+			previewVersion.current++;
+		};
 	}, [filePreviewPath, openPreview]);
 
 	const insertMention = useCallback(
@@ -151,8 +179,10 @@ export function FilesPanel() {
 				children: entry.children && entry.children.length > 0 ? entry.children.map(toNode) : undefined,
 			};
 		};
-		return tree.map(toNode);
-	}, [tree, expanded, onNodeClick]);
+		return query.trim()
+			? searchFiles(tree, query).map(entry => ({ ...toNode(entry), label: entry.path }))
+			: tree.map(toNode);
+	}, [tree, query, expanded, onNodeClick]);
 
 	const fileCount = useMemo(() => countFiles(tree), [tree]);
 	const activePreview = preview?.path === filePreviewPath ? preview : null;
@@ -245,6 +275,20 @@ export function FilesPanel() {
 						<RefreshCw className={loading ? "animate-spin" : undefined} size={11} />
 					</button>
 				</div>
+			</div>
+			<div className="px-3 pb-2">
+				<input
+					aria-label={t("filesPanel.search")}
+					placeholder={t("filesPanel.search")}
+					className="w-full rounded border border-(--omp-input-border) bg-(--omp-input-bg) px-2 py-1.5 text-omp-sm"
+					value={query}
+					onChange={event => setQuery(event.target.value)}
+				/>
+				{truncated && (
+					<p className="mt-1 text-omp-xs text-(--omp-muted)">
+						{t("filesPanel.searchLimit", { files: MAX_FILES, depth: MAX_DEPTH })}
+					</p>
+				)}
 			</div>
 			<div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
 				{loading && tree.length === 0 ? (

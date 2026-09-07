@@ -98,7 +98,8 @@ export type RpcCommand =
 	// Session reports (structured TUI /context /share /jobs parity; /tools rides get_active_tools)
 	| { id?: string; type: "get_context_report" }
 	| { id?: string; type: "get_active_tools" }
-	| { id?: string; type: "share_session" }
+	| { id?: string; type: "preview_share_session" }
+	| { id?: string; type: "share_session"; snapshotId?: string }
 	| { id?: string; type: "get_jobs" }
 	| { id?: string; type: "set_session_pinned"; sessionId: string; pinned: boolean }
 
@@ -243,6 +244,8 @@ export type RpcCommand =
 	// footer git segment; worktree_create materializes branch omp/gui/<name> at
 	// ~/.omp/wt/gui-<name>-<hash7>; worktree_remove refuses dirty unless force.
 	| { id?: string; type: "get_git_status" }
+	| { id?: string; type: "get_git_changes" }
+	| { id?: string; type: "get_git_diff"; path: string }
 	| { id?: string; type: "worktree_create"; name: string; baseCwd?: string; baseRef?: "HEAD" | "default" }
 	| { id?: string; type: "worktree_remove"; path: string; force?: boolean }
 	// Pull requests (PR Center, plan/21). pr_diff is per-file (lazy), pr_draft
@@ -306,6 +309,16 @@ export interface RpcContextReportResult {
 }
 
 /** share_session result. `truncated` rides only when content was trimmed to fit the share budget. */
+export interface RpcShareSessionPreview {
+	/** The local preview already reflects upload size limits. */
+	truncated?: boolean;
+	snapshotId: string;
+	preview: string;
+	serverUrl: string;
+	store: "blob" | "gist";
+	redactionEnabled: boolean;
+}
+
 export interface RpcShareSessionResult {
 	url: string;
 	truncated?: boolean;
@@ -350,11 +363,17 @@ export interface RpcForceToolState {
 /** One async background job, as carried by the agent's job snapshot. */
 export interface RpcAsyncJobItem {
 	id: string;
-	type: "bash" | "task";
+	type: "bash" | "task" | "eval";
 	status: "running" | "completed" | "failed" | "cancelled";
 	label: string;
 	/** Epoch ms when the job started. */
 	startTime: number;
+	endedAt?: number;
+	agentId?: string;
+	cancellationPending?: boolean;
+	resultPreview?: string;
+	errorPreview?: string;
+	previewTruncated?: boolean;
 }
 
 /** get_jobs result: running jobs first, then recent (TUI /jobs ordering). */
@@ -661,6 +680,22 @@ export interface RpcWorkspaceDirectoriesResult {
  * Result of get_git_status: footer git segment state for the session cwd.
  * `isRepo` false outside a repository (counts zeroed, branch null).
  */
+/** Net changes from the current HEAD to this checkout, including untracked files. */
+export interface RpcGitChanges {
+	isRepo: boolean;
+	root: string | null;
+	base: string | null;
+	files: { path: string; oldPath?: string; status: string }[];
+	truncated: boolean;
+}
+
+export interface RpcGitDiff {
+	path: string;
+	diff: string;
+	kind: "text" | "binary" | "large" | "symlink" | "directory";
+	truncated: boolean;
+}
+
 export interface RpcGitStatus {
 	isRepo: boolean;
 	branch: string | null;
@@ -909,7 +944,7 @@ export interface RpcVibeModeState {
 }
 export interface RpcGoalState {
 	enabled: boolean;
-	status: string;
+	status?: string;
 	objective?: string;
 	tokenBudget?: number | null;
 	tokensUsed?: number;
@@ -977,7 +1012,8 @@ export interface ModelInfo {
 }
 
 export interface RpcSessionState {
-	model: ModelInfo | null;
+	collab?: RpcCollabState;
+	model?: ModelInfo | null;
 	thinkingLevel: ThinkingLevel | undefined;
 	/** Configured selector: "auto" while auto mode is active, else the effective level. */
 	thinkingConfigured?: ThinkingLevel | "auto";
@@ -988,10 +1024,10 @@ export interface RpcSessionState {
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
 	interruptMode: "immediate" | "wait";
-	sessionFile: string | null;
+	sessionFile?: string | null;
 	cwd: string;
 	sessionId: string;
-	sessionName: string | null;
+	sessionName?: string | null;
 	fastModeEnabled: boolean;
 	fastModeActive: boolean;
 	tokensPerSecond: number | null;
@@ -1000,9 +1036,9 @@ export interface RpcSessionState {
 	messageCount: number;
 	queuedMessageCount: number;
 	todoPhases: TodoPhase[];
-	systemPrompt: string[];
-	dumpTools: ToolDump[];
-	contextUsage: ContextUsage | null;
+	systemPrompt?: string[];
+	dumpTools?: ToolDump[];
+	contextUsage?: ContextUsage | null;
 	planModeEnabled: boolean;
 	/** Whether a prewalk model switch is armed and waiting for the first edit/write. */
 	prewalkArmed?: boolean;
@@ -1021,7 +1057,7 @@ export interface RpcThinkingLevelState {
 export interface ToolDump {
 	name: string;
 	description: string;
-	parameters: Record<string, unknown>;
+	parameters: unknown;
 }
 
 export interface CopyTarget {
@@ -1071,8 +1107,20 @@ export interface ExtensionAskDialogChatResult {
 }
 export type ExtensionAskDialogResult = ExtensionAskDialogSubmitResult | ExtensionAskDialogChatResult;
 
+export interface ExtensionUISelectOptionDetail {
+	description?: string;
+}
+
 export type ExtensionUIRequest =
-	| { type: "extension_ui_request"; id: string; method: "select"; title: string; options: string[]; timeout?: number }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "select";
+			title: string;
+			options: string[];
+			optionDetails?: ExtensionUISelectOptionDetail[];
+			timeout?: number;
+	  }
 	| { type: "extension_ui_request"; id: string; method: "confirm"; title: string; message: string; timeout?: number }
 	| {
 			type: "extension_ui_request";
@@ -1347,7 +1395,7 @@ export type SubagentFrame = SubagentLifecycleFrame | SubagentProgressFrame | Sub
 // Shared Value Types
 // ============================================================================
 
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ThinkingLevel = "inherit" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
  * Extension-UI methods that block until the user responds — the "waiting for
@@ -1406,6 +1454,8 @@ export interface AgentMessage {
 	optimistic?: boolean;
 	/** Last committed entry when this local echo was created; null means an empty transcript. */
 	optimisticAfterEntryId?: string | null;
+	/** The local echo has received its wire delivery and must not match another user message. */
+	optimisticDelivered?: boolean;
 	role:
 		| "user"
 		| "assistant"
@@ -1567,7 +1617,14 @@ export interface UsageResult {
 // Settings schema
 // ============================================================================
 
+export interface SettingProvenance {
+	layers: ("global" | "project" | "overlay" | "runtime")[];
+	globalValue?: unknown;
+	globalPath?: string;
+}
+
 export interface SettingEntry {
+	provenance?: SettingProvenance;
 	path: string;
 	type: "boolean" | "string" | "number" | "enum" | "array" | "record";
 	value: unknown;
@@ -1685,6 +1742,20 @@ export interface ModelRoleMetadataResult {
 // ============================================================================
 
 export interface SessionStats {
+	/** Entire journal, including pre-compaction history and sibling branches. */
+	history?: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		totalTokens: number;
+		orchestrationInput: number;
+		orchestrationOutput: number;
+		orchestrationCacheRead: number;
+		premiumRequests: number;
+		cost: number;
+		sampledAt: number;
+	};
 	sessionFile?: string;
 	sessionId: string;
 	userMessages: number;
@@ -1812,6 +1883,7 @@ export interface ExtensionErrorFrame {
 // ============================================================================
 
 export type AgentSessionEvent =
+	| { type: "collab_state"; state: RpcCollabState; restored?: boolean }
 	| { type: "agent_start"; sessionId?: string }
 	| { type: "agent_end"; messages?: AgentMessage[]; isTerminal?: boolean; telemetry?: unknown; coverage?: unknown }
 	| { type: "turn_start" }

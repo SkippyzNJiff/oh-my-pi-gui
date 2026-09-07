@@ -12,6 +12,7 @@ export type RuntimeStoreKey =
 	| "queue"
 	| "session"
 	| "settings"
+	| "subagentGraph"
 	| "subagents"
 	| "todo"
 	| "tools";
@@ -63,6 +64,8 @@ export interface SessionRuntime {
 	tabId: string;
 	command: TabCommand;
 	stores: Map<RuntimeStoreKey, StoreApi<unknown>>;
+	/** A process restart may allocate a new ID for an unpersisted session. */
+	recovering?: boolean;
 }
 
 const SessionRuntimeContext = createContext<SessionRuntime | null>(null);

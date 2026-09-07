@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../lib/tab-rpc";
 /**
  * Providers window: lists all configured providers with auth status,
  * login/logout for OAuth providers, model counts, and base URL overrides.
@@ -5,7 +6,7 @@
  */
 
 import { Edit, ExternalLink, Globe, LogIn, LogOut, Plus, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CustomProviderView } from "../../../shared/ipc-types";
 import type { ProviderDiscoveryState, ProviderInfo, ProvidersResult } from "../../../shared/rpc-types";
 import { useT } from "../../lib/i18n";
@@ -134,6 +135,7 @@ export function ProviderRow({
 }
 
 export function ProvidersWindow() {
+	const tabRpc = useTabRpc();
 	const open = useUiStore(s => s.providersOpen);
 	const close = useUiStore(s => s.closeProviders);
 	const openProviderConfig = useUiStore(s => s.openProviderConfig);
@@ -143,11 +145,22 @@ export function ProvidersWindow() {
 	const applyCatalogUpdate = useModelStore(s => s.applyCatalogUpdate);
 	const [result, setResult] = useState<ProvidersResult | null>(null);
 	const [customConfigs, setCustomConfigs] = useState<CustomProviderView[]>([]);
+	const [configError, setConfigError] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [busyProvider, setBusyProvider] = useState<string | null>(null);
+	const requestVersion = useRef(0);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: Changing the task client invalidates the previous task's responses.
+	useEffect(() => {
+		setResult(null);
+		setError(null);
+		return () => {
+			requestVersion.current++;
+		};
+	}, [tabRpc]);
 	const load = useCallback(
 		async (forceRefresh = false) => {
+			const version = ++requestVersion.current;
 			setLoading(true);
 			setError(null);
 			if (!sidecarReady) {
@@ -157,9 +170,16 @@ export function ProvidersWindow() {
 			}
 			try {
 				const [providerResult, configsResult] = await Promise.allSettled([
-					window.omp.rpc.getProviders(forceRefresh),
+					tabRpc.getProviders(forceRefresh),
 					window.omp.models.listProviders(),
 				]);
+				if (version !== requestVersion.current) return;
+				if (configsResult.status === "fulfilled") {
+					setCustomConfigs(configsResult.value);
+					setConfigError(null);
+				} else {
+					setConfigError(t("providers.configFailed", { details: String(configsResult.reason) }));
+				}
 				if (providerResult.status === "rejected") throw providerResult.reason;
 				if (providerResult.value.success) {
 					const wire = providerResult.value.data as Partial<ProvidersResult>;
@@ -180,14 +200,13 @@ export function ProvidersWindow() {
 						setError(t("providers.discoveryFailed", { details: discoveryErrors.join("; ") }));
 					}
 				} else setError(providerResult.value.error);
-				setCustomConfigs(configsResult.status === "fulfilled" ? configsResult.value : []);
 			} catch (cause) {
-				setError(String(cause));
+				if (version === requestVersion.current) setError(String(cause));
 			} finally {
-				setLoading(false);
+				if (version === requestVersion.current) setLoading(false);
 			}
 		},
-		[applyCatalogUpdate, sidecarReady, t],
+		[applyCatalogUpdate, sidecarReady, t, tabRpc.getProviders],
 	);
 
 	useEffect(() => {
@@ -216,7 +235,7 @@ export function ProvidersWindow() {
 	const handleLogin = async (providerId: string) => {
 		setBusyProvider(providerId);
 		try {
-			const res = await window.omp.rpc.login(providerId);
+			const res = await tabRpc.login(providerId);
 			if (res.success) {
 				toast({ variant: "success", message: t("providers.loginSuccess", { provider: providerId }) });
 				await load();
@@ -233,7 +252,7 @@ export function ProvidersWindow() {
 	const handleLogout = async (providerId: string) => {
 		setBusyProvider(providerId);
 		try {
-			const res = await window.omp.rpc.logout(providerId);
+			const res = await tabRpc.logout(providerId);
 			if (res.success) {
 				toast({ variant: "success", message: t("providers.logoutSuccess", { provider: providerId }) });
 				await load();
@@ -301,6 +320,14 @@ export function ProvidersWindow() {
 					</div>
 				</div>
 
+				{configError && (
+					<div
+						role="alert"
+						className="rounded-md bg-[var(--omp-tool-error-bg)] px-3 py-2 text-omp-md text-[var(--omp-error)]"
+					>
+						{configError}
+					</div>
+				)}
 				{error && (
 					<div className="rounded-md bg-[var(--omp-tool-error-bg)] px-3 py-2 text-omp-md text-[var(--omp-error)]">
 						{error}

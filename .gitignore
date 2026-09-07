@@ -17,3 +17,7 @@ tmp/
 # electron-builder trial/override configs
 electron-builder.trial.yml
 dev-app-update.yml
+
+# Desktop functional audit artifacts
+playwright-report/
+test-results/

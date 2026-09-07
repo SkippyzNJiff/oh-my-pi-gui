@@ -5,8 +5,9 @@
 
 import { ArrowDown, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { LogBatch } from "../../../shared/ipc-types";
+import { copyText } from "../../lib/format";
 import { useT } from "../../lib/i18n";
-import { acceptsActiveTabEvents } from "../../lib/tab-routing";
 
 const MAX_LINES = 1000;
 
@@ -32,8 +33,6 @@ const LEVEL_LABEL_KEY = {
 	error: "logPanel.level.error",
 } as const;
 
-let nextSeq = 0;
-
 function detectLevel(text: string): LogLevel {
 	const lower = text.toLowerCase();
 	if (/\b(error|err!|fatal)\b/.test(lower)) return "error";
@@ -50,18 +49,31 @@ export function LogPanel() {
 	const [pinned, setPinned] = useState(true);
 	const scrollRef = useRef<HTMLDivElement>(null);
 
+	const [error, setError] = useState<string | null>(null);
 	useEffect(() => {
-		// Lines arrive batched (LogWatcher flushes every 150ms): one setState
-		// per batch instead of one per line.
-		const unsubscribe = window.omp.events.onLogLines(batch => {
-			if (!acceptsActiveTabEvents()) return;
-			setLines(prev => {
-				const appended = batch.map(text => ({ seq: nextSeq++, text, level: detectLevel(text) }));
-				const next = [...prev, ...appended];
-				return next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next;
+		let active = true;
+		const receive = (batch: LogBatch) => {
+			if (!active) return;
+			setLines(previous => {
+				const all = new Map(previous.map(line => [line.seq, line]));
+				batch.lines.forEach((text, index) => {
+					const seq = batch.nextSequence - batch.lines.length + index;
+					all.set(seq, { seq, text, level: detectLevel(text) });
+				});
+				return [...all.values()].sort((a, b) => a.seq - b.seq).slice(-MAX_LINES);
 			});
-		});
-		return unsubscribe;
+		};
+		const unsubscribe = window.omp.events.onLogBatch(receive);
+		void window.omp.runtime
+			.logSnapshot()
+			.then(receive)
+			.catch(cause => {
+				if (active) setError(String(cause));
+			});
+		return () => {
+			active = false;
+			unsubscribe();
+		};
 	}, []);
 
 	const filtered = useMemo(() => {
@@ -79,6 +91,17 @@ export function LogPanel() {
 		if (el) el.scrollTop = filtered.length === 0 ? 0 : el.scrollHeight;
 	}, [pinned, filtered]);
 
+	const exportLogs = () => {
+		const url = URL.createObjectURL(
+			new Blob([filtered.map(line => line.text).join("\n")], { type: "text/plain;charset=utf-8" }),
+		);
+		const anchor = document.createElement("a");
+		anchor.href = url;
+		anchor.download = `omp-logs-${new Date().toISOString().replace(/[:.]/g, "-")}.log`;
+		anchor.click();
+		window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+	};
+
 	const onScroll = () => {
 		const el = scrollRef.current;
 		if (!el) return;
@@ -93,6 +116,11 @@ export function LogPanel() {
 
 	return (
 		<div className="flex h-full flex-col">
+			{error && (
+				<p role="alert" className="px-3 text-omp-sm text-(--omp-error)">
+					{error}
+				</p>
+			)}
 			<div className="flex items-center gap-1.5 px-3 pt-2.5 pb-1.5">
 				<span className="text-omp-xs font-medium tracking-widest text-(--omp-dim) uppercase">
 					{t("logPanel.title")}
@@ -106,6 +134,7 @@ export function LogPanel() {
 									? "bg-(--omp-selected-bg) text-(--omp-text)"
 									: "text-(--omp-dim) hover:text-(--omp-text)"
 							}`}
+							aria-pressed={levelFilter === level}
 							key={level}
 							onClick={() => setLevelFilter(level)}
 							type="button"
@@ -114,6 +143,23 @@ export function LogPanel() {
 						</button>
 					))}
 				</div>
+			</div>
+			<div className="flex flex-wrap gap-2 px-3 pb-2 text-omp-xs">
+				<button
+					type="button"
+					disabled={filtered.length === 0}
+					onClick={() =>
+						void copyText(filtered.map(line => line.text).join("\n")).then(ok => {
+							if (!ok) setError(t("copySelector.failed"));
+						})
+					}
+				>
+					{t("logPanel.copy")}
+				</button>
+				<button type="button" disabled={filtered.length === 0} onClick={exportLogs}>
+					{t("logPanel.export")}
+				</button>
+				<span className="text-(--omp-dim)">{t("logPanel.scope")}</span>
 			</div>
 			<div className="relative px-3 pb-1.5">
 				<Search

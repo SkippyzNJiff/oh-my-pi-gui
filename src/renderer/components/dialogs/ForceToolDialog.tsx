@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../lib/tab-rpc";
 /**
  * Force-tool dialog (TUI /force parity): pick an active tool the next turn is
  * forced onto, with an optional prompt that rides along (TUI's
@@ -15,6 +16,7 @@ import { useUiStore } from "../../stores/ui";
 import { Badge, Button, Input, Modal, Spinner } from "../common";
 
 export function ForceToolDialog() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const open = useUiStore(state => state.forceToolOpen);
 	const close = useUiStore(state => state.closeForceTool);
@@ -31,10 +33,7 @@ export function ForceToolDialog() {
 		setLoading(true);
 		setLoadError(null);
 		try {
-			const [forceResponse, toolsResponse] = await Promise.all([
-				window.omp.rpc.getForceTool(),
-				window.omp.rpc.getActiveTools(),
-			]);
+			const [forceResponse, toolsResponse] = await Promise.all([tabRpc.getForceTool(), tabRpc.getActiveTools()]);
 			if (!forceResponse.success) throw new Error(forceResponse.error);
 			if (!toolsResponse.success) throw new Error(toolsResponse.error);
 			setCurrent((forceResponse.data as RpcForceToolState | undefined)?.tool ?? null);
@@ -44,7 +43,7 @@ export function ForceToolDialog() {
 		} finally {
 			setLoading(false);
 		}
-	}, []);
+	}, [tabRpc.getForceTool, tabRpc.getActiveTools]);
 
 	useEffect(() => {
 		if (!open) return;
@@ -66,7 +65,7 @@ export function ForceToolDialog() {
 		if (!selected || busy) return;
 		setBusy(true);
 		try {
-			const response = await window.omp.rpc.setForceTool({ tool: selected });
+			const response = await tabRpc.setForceTool({ tool: selected });
 			if (!response.success) throw new Error(response.error);
 			const tool = (response.data as RpcForceToolState | undefined)?.tool ?? selected;
 			setCurrent(tool);
@@ -76,7 +75,7 @@ export function ForceToolDialog() {
 			// TUI `/force:<tool> <prompt>` parity: the optional prompt goes through
 			// as the next user turn with the forced tool armed.
 			if (message) {
-				const promptResponse = await window.omp.rpc.prompt(message);
+				const promptResponse = await tabRpc.prompt(message);
 				if (!promptResponse.success) {
 					toast({ variant: "error", title: t("cmd.force"), message: promptResponse.error });
 				}
@@ -96,7 +95,7 @@ export function ForceToolDialog() {
 		if (busy) return;
 		setBusy(true);
 		try {
-			const response = await window.omp.rpc.setForceTool({ clear: true });
+			const response = await tabRpc.setForceTool({ clear: true });
 			if (!response.success) throw new Error(response.error);
 			setCurrent(null);
 			toast({ variant: "success", message: t("forceTool.cleared") });

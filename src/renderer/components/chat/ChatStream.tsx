@@ -16,9 +16,10 @@ import {
 	Sparkles,
 	X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { RpcQueuedMessage } from "../../../shared/rpc-types";
-import { cx, formatShortClock } from "../../lib/format";
+import { useDisplayPreference } from "../../lib/display-preferences";
+import { cx, formatClock, formatShortClock } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { isRenderableMessageText } from "../../lib/messages";
 import { collapsibleReadTarget, groupReadRows, type ReadGroupEntry } from "../../lib/read-group";
@@ -27,7 +28,6 @@ import { useMessagesStore } from "../../stores/messages";
 import { type QueueLane, useQueuedMessages, useQueueStore } from "../../stores/queue";
 import { useSessionStore } from "../../stores/session";
 import { useRuntimeTabId } from "../../stores/session-runtime-context";
-import { useSettingsStore } from "../../stores/settings";
 import { useActiveTabKind } from "../../stores/tabs";
 import { toast } from "../../stores/toast";
 import { type TodoSnapshot, useTodoStore } from "../../stores/todo";
@@ -67,6 +67,12 @@ const LIVE_EDGE_THRESHOLD_PX = 1;
  * tool cards, streaming text) that unmount once message_end finalizes.
  */
 export function ChatStream() {
+	const tabId = useRuntimeTabId();
+	const sessionId = useSessionStore(s => s.sessionId);
+	return <SessionTranscript key={`${tabId ?? ""}:${sessionId}`} />;
+}
+
+function SessionTranscript() {
 	const t = useT();
 	const tabId = useRuntimeTabId();
 	const messages = useMessagesStore(s => s.messages);
@@ -96,28 +102,23 @@ export function ChatStream() {
 	const status = useSessionStore(s => s.status);
 	const sessionId = useSessionStore(s => s.sessionId);
 	// Shared agent compaction preference and GUI-local transcript detail.
-	const collapseCompacted = useSettingsStore(s => s.collapseCompacted);
+	const collapseCompacted = useDisplayPreference("collapseCompacted");
 	const transcriptDetail = useUiStore(s => s.transcriptDetail);
-	const switchPending = useUiStore(s => s.switchPending);
-	const [preCompactionOpen, setPreCompactionOpen] = useState(false);
-	const [expandedProcessKeys, setExpandedProcessKeys] = useState<Set<string>>(() => new Set());
-	const [pinned, setPinned] = useState(true);
+	const switchPending = useSessionStore(s => s.switchPending);
+	const savedView = useSessionStore(s => s.transcriptView);
+	const saveView = useSessionStore(s => s.saveTranscriptView);
+	const [restoreView] = useState(() => (savedView?.sessionId === sessionId ? savedView : null));
+	const [preCompactionOpen, setPreCompactionOpen] = useState(restoreView?.preCompactionOpen ?? false);
+	const [expandedProcessKeys, setExpandedProcessKeys] = useState<Set<string>>(
+		() => restoreView?.expandedProcessKeys ?? new Set(),
+	);
+	const [pinned, setPinned] = useState(restoreView?.pinned ?? true);
 	const [visibleRowIndex, setVisibleRowIndex] = useState(Number.MAX_SAFE_INTEGER);
 	// Virtualizer measurements and programmatic scrollToIndex both emit scroll
 	// events. Only an actual wheel/touch/scrollbar/keyboard gesture may unpin the
 	// transcript; otherwise a session hydrate can mistake its own layout shift
 	// for user intent and strand the view in arbitrary history.
-	const userScrollIntentRef = useRef(false);
-	useEffect(() => {
-		void sessionId;
-		// Scroll intent belongs to one transcript. Carrying an unpinned offset
-		// into another session made the virtualizer land in arbitrary history.
-		setPreCompactionOpen(false);
-		setExpandedProcessKeys(new Set());
-		userScrollIntentRef.current = false;
-		setPinned(true);
-		setVisibleRowIndex(Number.MAX_SAFE_INTEGER);
-	}, [sessionId]);
+	const userScrollIntentRef = useRef(!pinned);
 
 	const lastCompactionIndex = displayMessages.findLastIndex(message => message.role === "compactionSummary");
 	const hiddenCount = collapseCompacted && !preCompactionOpen && lastCompactionIndex > 0 ? lastCompactionIndex : 0;
@@ -126,6 +127,7 @@ export function ChatStream() {
 		const built = buildHistoryRows(
 			hiddenCount > 0 ? displayMessages.slice(hiddenCount) : displayMessages,
 			transcriptDetail,
+			expandedProcessKeys,
 		);
 		// Read-tool grouping (TUI parity) folds consecutive collapsible reads into
 		// one card — only in full mode; compact mode's ProcessGroup already folds
@@ -133,7 +135,7 @@ export function ChatStream() {
 		const grouped = transcriptDetail === "compact" ? built : (groupReadRows(built) as HistoryRow[]);
 		// Archived todo changes interleave by timestamp (transcript archive rows).
 		return mergeTodoSnapshots(grouped, todoHistory);
-	}, [displayMessages, hiddenCount, transcriptDetail, todoHistory]);
+	}, [displayMessages, hiddenCount, transcriptDetail, todoHistory, expandedProcessKeys]);
 
 	// The assistant message exists as an empty shell from message_start until
 	// the first delta — only real content swaps the status row for the
@@ -209,11 +211,6 @@ export function ChatStream() {
 	]);
 
 	const parentRef = useRef<HTMLDivElement>(null);
-	const sizeCacheRef = useRef(new Map<string | number, number>());
-	useEffect(() => {
-		void sessionId;
-		sizeCacheRef.current.clear();
-	}, [sessionId]);
 	const conversationAnchors = useMemo(() => buildConversationAnchors(rows, rowKeys), [rows, rowKeys]);
 	const tailRowKey = rowKeys.at(-1);
 	const activeConversationIndex = useMemo(
@@ -244,6 +241,8 @@ export function ChatStream() {
 
 	const virtualizer = useVirtualizer({
 		count: rows.length,
+		initialOffset: restoreView?.scrollOffset ?? 0,
+		initialMeasurementsCache: restoreView?.measurements,
 		getItemKey: index => rowKeys[index] ?? index,
 		// Chat is an end-anchored feed. Keep the live edge stable while measured
 		// row heights replace estimates, and follow newly appended rows only while
@@ -260,9 +259,6 @@ export function ChatStream() {
 		useFlushSync: false,
 		getScrollElement: () => parentRef.current,
 		estimateSize: i => {
-			const key = rowKeys[i] ?? i;
-			const cached = sizeCacheRef.current.get(key);
-			if (cached != null) return cached;
 			const kind = rows[i]?.kind;
 			if (kind === "streaming") return 80;
 			if (kind === "pending" || kind === "queued") return 56;
@@ -271,26 +267,50 @@ export function ChatStream() {
 			return 160;
 		},
 		overscan: 8,
-		measureElement: el => {
-			const height = el.getBoundingClientRect().height;
-			const index = Number((el as HTMLElement).dataset.index);
-			const key = Number.isFinite(index) ? (rowKeys[index] ?? index) : undefined;
-			if (key != null) sizeCacheRef.current.set(key, height);
-			return height;
-		},
 		onChange: handleVirtualizerChange,
 	});
+	const totalSize = virtualizer.getTotalSize();
+	const viewRef = useRef({ pinned, preCompactionOpen, expandedProcessKeys });
+	viewRef.current = { pinned, preCompactionOpen, expandedProcessKeys };
+	useLayoutEffect(
+		() => () => {
+			const scrollOffset = virtualizer.scrollOffset ?? 0;
+			const anchor = virtualizer.getVirtualItemForOffset(scrollOffset);
+			saveView({
+				sessionId,
+				...viewRef.current,
+				scrollOffset,
+				anchorKey: typeof anchor?.key === "string" ? anchor.key : undefined,
+				anchorOffset: anchor ? scrollOffset - anchor.start : 0,
+				measurements: virtualizer.takeSnapshot(),
+			});
+		},
+		[sessionId, saveView, virtualizer],
+	);
+	const restoredAnchor = useRef(false);
+	useLayoutEffect(() => {
+		if (restoredAnchor.current || !restoreView || restoreView.pinned) return;
+		const index = rowKeys.indexOf(restoreView.anchorKey ?? "");
+		if (index < 0) return;
+		const offset = virtualizer.getOffsetForIndex(index, "start")?.[0];
+		if (offset === undefined) return;
+		virtualizer.scrollToOffset(offset + restoreView.anchorOffset);
+		restoredAnchor.current = true;
+	}, [restoreView, rowKeys, virtualizer]);
 
 	// Follow appended rows and same-count tail replacements (notably the
-	// pending -> streaming transition) while pinned. In-row token growth is
-	// handled by the virtualizer's measured-row observer.
+	// pending -> streaming transition) while pinned. Measurements and font
+	// loading can move the live edge after the initial scroll has settled.
 	useEffect(() => {
-		if (!pinned || rows.length === 0) return;
+		if (!pinned || rows.length === 0 || totalSize === 0) return;
 		void sessionId;
 		void tailRowKey;
-		const frame = requestAnimationFrame(() => virtualizer.scrollToEnd());
+		const frame = requestAnimationFrame(() => {
+			// A wheel gesture can arrive before React cleans up this queued frame.
+			if (!userScrollIntentRef.current) virtualizer.scrollToEnd();
+		});
 		return () => cancelAnimationFrame(frame);
-	}, [virtualizer, rows.length, tailRowKey, pinned, sessionId]);
+	}, [virtualizer, rows.length, tailRowKey, pinned, sessionId, totalSize]);
 
 	useEffect(() => {
 		if (!pinned) return;
@@ -430,7 +450,7 @@ export function ChatStream() {
 					)}
 					<div
 						className="omp-transcript-canvas"
-						style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}
+						style={{ height: totalSize, position: "relative", width: "100%" }}
 					>
 						{virtualizer.getVirtualItems().map(item => {
 							const row = rows[item.index];
@@ -803,13 +823,19 @@ export function TurnStatusRow() {
 		const remainingSeconds = Math.max(0, Math.ceil((retryInfo.startedAt + retryInfo.delayMs - now) / 1000));
 		iconClass = "text-[var(--omp-warning)]";
 		text =
-			remainingSeconds > 0
-				? t("chat.retry.pending", {
+			remainingSeconds >= 60
+				? t("chat.retry.scheduled", {
 						attempt: retryInfo.attempt,
 						maxAttempts: retryInfo.maxAttempts,
-						seconds: remainingSeconds,
+						time: formatClock(retryInfo.startedAt + retryInfo.delayMs),
 					})
-				: t("chat.retry.inflight", { attempt: retryInfo.attempt, maxAttempts: retryInfo.maxAttempts });
+				: remainingSeconds > 0
+					? t("chat.retry.pending", {
+							attempt: retryInfo.attempt,
+							maxAttempts: retryInfo.maxAttempts,
+							seconds: remainingSeconds,
+						})
+					: t("chat.retry.inflight", { attempt: retryInfo.attempt, maxAttempts: retryInfo.maxAttempts });
 		detail = retryInfo.errorMessage || null;
 		announcement = t("chat.retry.inflight", { attempt: retryInfo.attempt, maxAttempts: retryInfo.maxAttempts });
 	} else if (compactionInfo) {

@@ -2,6 +2,7 @@ import { CheckCircle2, FileKey2, FolderOpen, Plus, RefreshCw, Server, Trash2, XC
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RpcSshHostInfo, RpcSshHostInput, RpcSshHostsResult, RpcSshTestResult } from "../../../shared/rpc-types";
 import { useT } from "../../lib/i18n";
+import { useTabRpc } from "../../lib/tab-rpc";
 import { Button, Input, Spinner, TextArea } from "../common";
 
 interface HostDraft extends RpcSshHostInput {
@@ -38,6 +39,7 @@ function errorMessage(error: unknown): string {
 }
 
 export function SshSettingsPage() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const [data, setData] = useState<RpcSshHostsResult>();
 	const [selected, setSelected] = useState<RpcSshHostInfo>();
@@ -51,31 +53,34 @@ export function SshSettingsPage() {
 	const [error, setError] = useState<string>();
 	const [tests, setTests] = useState<Record<string, RpcSshTestResult>>({});
 
-	const load = useCallback(async (preferred?: { name: string; scope: RpcSshHostInfo["scope"] }) => {
-		setLoading(true);
-		try {
-			const response = await window.omp.rpc.getSshHosts();
-			if (!response.success) {
-				setError(response.error);
-				return;
+	const load = useCallback(
+		async (preferred?: { name: string; scope: RpcSshHostInfo["scope"] }) => {
+			setLoading(true);
+			try {
+				const response = await tabRpc.getSshHosts();
+				if (!response.success) {
+					setError(response.error);
+					return;
+				}
+				const next = response.data as RpcSshHostsResult;
+				setData(next);
+				const wanted = preferred ?? selectionRef.current;
+				const match = wanted
+					? next.hosts.find(host => host.name === wanted.name && host.scope === wanted.scope)
+					: undefined;
+				const fallback = match ?? next.hosts[0];
+				selectionRef.current = fallback ? { name: fallback.name, scope: fallback.scope } : undefined;
+				setSelected(fallback);
+				if (fallback) setDraft(toDraft(fallback));
+				setError(undefined);
+			} catch (cause) {
+				setError(errorMessage(cause));
+			} finally {
+				setLoading(false);
 			}
-			const next = response.data as RpcSshHostsResult;
-			setData(next);
-			const wanted = preferred ?? selectionRef.current;
-			const match = wanted
-				? next.hosts.find(host => host.name === wanted.name && host.scope === wanted.scope)
-				: undefined;
-			const fallback = match ?? next.hosts[0];
-			selectionRef.current = fallback ? { name: fallback.name, scope: fallback.scope } : undefined;
-			setSelected(fallback);
-			if (fallback) setDraft(toDraft(fallback));
-			setError(undefined);
-		} catch (cause) {
-			setError(errorMessage(cause));
-		} finally {
-			setLoading(false);
-		}
-	}, []);
+		},
+		[tabRpc.getSshHosts],
+	);
 
 	useEffect(() => {
 		void load();
@@ -125,7 +130,7 @@ export function SshSettingsPage() {
 			...(draft.compat ? { compat: true } : {}),
 		};
 		try {
-			const response = await window.omp.rpc.sshManage({
+			const response = await tabRpc.sshManage({
 				action: creating ? "create" : "update",
 				scope: draft.scope,
 				name: draft.name.trim(),
@@ -153,7 +158,7 @@ export function SshSettingsPage() {
 		setTesting(true);
 		setError(undefined);
 		try {
-			const response = await window.omp.rpc.sshTest({
+			const response = await tabRpc.sshTest({
 				name: draft.name.trim(),
 				host: draft.host.trim(),
 				...(draft.username?.trim() ? { username: draft.username.trim() } : {}),
@@ -178,7 +183,7 @@ export function SshSettingsPage() {
 		if (!selected?.editable) return;
 		setDeleting(true);
 		try {
-			const response = await window.omp.rpc.sshManage({
+			const response = await tabRpc.sshManage({
 				action: "delete",
 				scope: selected.scope === "user" ? "user" : "project",
 				name: selected.name,

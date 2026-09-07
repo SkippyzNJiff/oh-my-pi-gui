@@ -1,3 +1,12 @@
+import { createTabRpc } from "../lib/tab-rpc";
+import type { SessionStore } from "../stores/session";
+import {
+	focusedSessionRuntime,
+	sessionRuntime,
+	sessionRuntimeStore,
+	withSessionRuntime,
+} from "../stores/session-runtime-context";
+import { useSubagentGraphStore } from "../stores/subagent-graph";
 /**
  * Shared session-switch entry. One window owns one sidecar, and the server
  * aborts the in-flight turn on `switch_session` (TUI parity) — so while the
@@ -27,21 +36,24 @@ import { toast } from "../stores/toast";
 import { useTodoStore } from "../stores/todo";
 import { useToolsStore } from "../stores/tools";
 import { useUiStore } from "../stores/ui";
-import { hydrateSession } from "./use-rpc-events";
+import { hydrateSession, hydrateTabSession } from "./use-rpc-events";
 
 /** Clear every renderer slice owned by one session before a replacement hydrates. */
-export function resetSessionSurface(): void {
+export function resetSessionSurface(closeOverlays = true): void {
 	useMessagesStore.getState().reset();
 	useComposerStore.getState().reset();
 	useToolsStore.getState().reset();
+	useSubagentGraphStore.getState().reset();
 	useSubagentsStore.getState().reset();
 	useTodoStore.getState().reset();
 	useModelStore.getState().reset();
 	useQueueStore.getState().setFromFrame({ steering: [], followUp: [] });
 	useExtensionUiStore.getState().clearAll();
 	usePlanApprovalStore.getState().clearProposal();
-	useForkHandoffStore.getState().closeHandoffDialog();
-	useUiStore.getState().closeSessionOverlays();
+	if (closeOverlays) {
+		useForkHandoffStore.getState().closeHandoffDialog();
+		useUiStore.getState().closeSessionOverlays();
+	}
 	useSessionStore.setState({
 		sessionId: "",
 		sessionName: null,
@@ -67,21 +79,39 @@ export function resetSessionSurface(): void {
 
 /** Start a new in-place session and remove the previous surface at the commit boundary. */
 export async function newSessionNow(): Promise<RpcResponse> {
-	const response = await window.omp.rpc.newSession();
+	const runtime = focusedSessionRuntime();
+	const response = await (runtime ? createTabRpc(runtime.command) : window.omp.rpc).newSession();
 	if (!response.success) throw new Error(response.error);
 	if ((response.data as { cancelled?: boolean } | undefined)?.cancelled) return response;
-	resetSessionSurface();
-	await hydrateSession();
+	if (runtime) {
+		if (sessionRuntime(runtime.tabId) !== runtime) return response;
+		withSessionRuntime(runtime.tabId, () =>
+			resetSessionSurface(useTabsStore.getState().activeTabId === runtime.tabId),
+		);
+		await hydrateTabSession(runtime.tabId);
+	} else {
+		resetSessionSurface();
+		await hydrateSession();
+	}
 	return response;
 }
 
 /** Delete the attached idle session, then project its fresh replacement. */
 export async function dropSessionNow(): Promise<RpcResponse> {
-	const response = await window.omp.rpc.dropSession();
+	const runtime = focusedSessionRuntime();
+	const response = await (runtime ? createTabRpc(runtime.command) : window.omp.rpc).dropSession();
 	if (!response.success) throw new Error(response.error);
 	if ((response.data as { cancelled?: boolean } | undefined)?.cancelled) return response;
-	resetSessionSurface();
-	await hydrateSession();
+	if (runtime) {
+		if (sessionRuntime(runtime.tabId) !== runtime) return response;
+		withSessionRuntime(runtime.tabId, () =>
+			resetSessionSurface(useTabsStore.getState().activeTabId === runtime.tabId),
+		);
+		await hydrateTabSession(runtime.tabId);
+	} else {
+		resetSessionSurface();
+		await hydrateSession();
+	}
 	return response;
 }
 
@@ -113,19 +143,26 @@ export async function routeToSessionOwner(owner: IpcSessionOwner, sessionPath: s
  * pre-check is safe to ignore.
  */
 export async function switchSessionNow(session: SessionInfo): Promise<boolean> {
+	const runtime = focusedSessionRuntime();
+	const originStore = runtime ? sessionRuntimeStore<SessionStore>(runtime.tabId, "session")! : useSessionStore;
+	const originSessionId = originStore.getState().sessionId;
+	const originTabId = runtime?.tabId ?? useTabsStore.getState().activeTabId;
+	const stillCurrent = () =>
+		!runtime || (sessionRuntime(runtime.tabId) === runtime && originStore.getState().sessionId === originSessionId);
 	try {
 		const owner = await window.omp.tabs.getSessionOwner(session.path);
 		if (owner) return await routeToSessionOwner(owner, session.path);
 	} catch {
 		// Pre-check best-effort — the main-process refusal is the backstop.
 	}
+	if (!stillCurrent()) return false;
 	// Cross-kind pre-check: agent and chat sessions never convert (I2). A
 	// mismatch opens the file in a NEW tab of its own kind instead of
 	// switching the current tab onto it — more intuitive than an error, and
 	// main's spawn-tab guard is the backstop.
 	const fileKind = session.kind === "chat" ? "chat" : "agent";
 	const tabsState = useTabsStore.getState();
-	const activeTab = tabsState.tabs.find(tab => tab.id === tabsState.activeTabId);
+	const activeTab = tabsState.tabs.find(tab => tab.id === originTabId);
 	if (activeTab && activeTab.kind !== fileKind) {
 		const tabId = await tabsState.openTab({ sessionPath: session.path, kind: fileKind });
 		if (tabId !== null) {
@@ -135,12 +172,16 @@ export async function switchSessionNow(session: SessionInfo): Promise<boolean> {
 		}
 		return tabId !== null;
 	}
-	const fromId = useSessionStore.getState().sessionId;
-	useUiStore.getState().setSwitchPending({ fromId, toId: session.id });
+	const fromId = originSessionId;
+	const pending = { fromId, toId: session.id };
+	originStore.getState().setSwitchPending(pending);
+	const clearPending = () => {
+		if (originStore.getState().switchPending === pending) originStore.getState().setSwitchPending(null);
+	};
 	try {
-		const response = await window.omp.rpc.switchSession(session.path);
+		const response = await (runtime ? createTabRpc(runtime.command) : window.omp.rpc).switchSession(session.path);
 		if (!response.success) {
-			useUiStore.getState().setSwitchPending(null);
+			clearPending();
 			// Cross-kind switch guard: refuse agent ↔ chat switches.
 			if (response.code === "session_kind_mismatch") {
 				toast({
@@ -163,17 +204,24 @@ export async function switchSessionNow(session: SessionInfo): Promise<boolean> {
 		// Hook veto: success:true with cancelled:true — stay on the current session.
 		const data = response.data as { cancelled?: boolean } | undefined;
 		if (data?.cancelled) {
-			useUiStore.getState().setSwitchPending(null);
+			clearPending();
 			toast({ variant: "info", message: translate("sidebar.openCancelled") });
 			return false;
 		}
+		// Main may already have committed and hydrated the replacement runtime.
+		// A later switch also owns its own pending marker and fallback title.
+		if (runtime && (sessionRuntime(runtime.tabId) !== runtime || originStore.getState().switchPending !== pending)) {
+			clearPending();
+			return true;
+		}
 		// Keep the outgoing transcript painted until hydrate commits the next
 		// session. Events for the target sidecar are dropped while pending.
-		await hydrateSession(session.title || session.firstMessage);
-		useUiStore.getState().setSwitchPending(null);
+		if (runtime) await hydrateTabSession(runtime.tabId, session.title || session.firstMessage);
+		else await hydrateSession(session.title || session.firstMessage);
+		clearPending();
 		return true;
 	} catch (error) {
-		useUiStore.getState().setSwitchPending(null);
+		clearPending();
 		toast({ variant: "error", title: translate("sidebar.openFailed"), message: String(error) });
 		return false;
 	}

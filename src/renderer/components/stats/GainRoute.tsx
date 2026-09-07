@@ -44,13 +44,13 @@ export function GainRoute({ range, refreshKey }: { range: StatsRange; refreshKey
 		if (project) next.project = project;
 		return next;
 	}, [range, project]);
-	const { data, isLoading, error, refetch } = useStats("/api/stats/gain", params);
+	const { data, isLoading, error, refetch } = useStats<GainData>("/api/stats/gain", params);
 
 	useEffect(() => {
 		if (refreshKey > 0) refetch();
 	}, [refreshKey, refetch]);
 
-	const stats = (data ?? null) as GainData | null;
+	const stats = data;
 	const overall = stats?.overall;
 	const theme = chartTheme();
 
@@ -86,7 +86,13 @@ export function GainRoute({ range, refreshKey }: { range: StatsRange; refreshKey
 	}, []);
 
 	return (
-		<RouteFrame empty={!overall || overall.savedTokens === 0} error={error} loading={isLoading} onRetry={refetch}>
+		<RouteFrame
+			hasData={data !== null}
+			empty={!overall || overall.savedTokens === 0}
+			error={error}
+			loading={isLoading}
+			onRetry={refetch}
+		>
 			{overall && (
 				<>
 					<div className="mb-3 flex items-center gap-2">

@@ -11,7 +11,20 @@ export type PanelTab = "diff" | "files" | "logs";
 export type DockCardId = "todo" | "plan" | "agents";
 export type TranscriptDetail = "compact" | "full";
 
+export interface GuiDisplayPreferences {
+	hideThinkingBlock?: boolean | null;
+	proseOnlyThinking?: boolean | null;
+	showTokenUsage?: boolean | null;
+	collapseCompacted?: boolean | null;
+	titleState?: boolean | null;
+	goalStatusInFooter?: boolean | null;
+	showProgress?: boolean | null;
+	emojiAutocomplete?: boolean | null;
+	pasteMenuThreshold?: number | null;
+}
+
 interface UiStore {
+	displayPreferences: GuiDisplayPreferences;
 	sidebarVisible: boolean;
 	panelVisible: boolean;
 	panelTab: PanelTab;
@@ -75,6 +88,10 @@ interface UiStore {
 	sidecarError: string | null;
 	theme: ThemeMode;
 	fontSize: number;
+	/** Application-wide display preferences, independent of a task's terminal configuration. */
+	compactDensity: boolean;
+	colorBlindMode: boolean;
+	followAgentTheme: boolean;
 	/** Master switch for desktop notifications (Settings → GUI, default on). */
 	notifications: boolean;
 	/** Expand reasoning (thinking) blocks by default (Settings → GUI, default off). */
@@ -176,8 +193,6 @@ interface UiStore {
 	/** Close UI whose data or actions belong to the outgoing tab. */
 	closeSessionOverlays: () => void;
 	/** In-flight sidebar/picker session switch: keep the outgoing transcript painted. */
-	switchPending: { fromId: string; toId: string } | null;
-	setSwitchPending: (pending: { fromId: string; toId: string } | null) => void;
 	setSidecarError: (error: string | null) => void;
 	clearSidecarError: () => void;
 	setTheme: (theme: ThemeMode) => void;
@@ -200,6 +215,7 @@ interface UiStore {
 }
 
 export const useUiStore = create<UiStore>()((set, get) => ({
+	displayPreferences: {},
 	sidebarVisible: true,
 	panelVisible: false,
 	panelTab: "diff",
@@ -210,11 +226,12 @@ export const useUiStore = create<UiStore>()((set, get) => ({
 	settingsTab: "capabilities",
 	theme: readPrepaintThemeMode(),
 	fontSize: 15,
+	compactDensity: false,
+	colorBlindMode: false,
+	followAgentTheme: false,
 	notifications: true,
 	thinkingExpanded: false,
 	transcriptDetail: "compact",
-	switchPending: null,
-	setSwitchPending: pending => set({ switchPending: pending }),
 	toggleSidebar: () => set({ sidebarVisible: !get().sidebarVisible }),
 	togglePanel: () => set({ panelVisible: !get().panelVisible }),
 	toolsExpandAll: { expanded: false, seq: 0 },

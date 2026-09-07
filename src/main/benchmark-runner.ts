@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { z } from "zod";
 import type { IpcBenchmarkRunOptions, IpcBenchmarkRunResult, IpcBenchmarkSummary } from "../shared/ipc-types";
 
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -42,12 +43,41 @@ export function benchmarkArgs(options: IpcBenchmarkRunOptions): string[] {
 	return args;
 }
 
+const metric = z.object({
+	mean: z.number().finite(),
+	min: z.number().finite(),
+	p50: z.number().finite(),
+	p95: z.number().finite(),
+	max: z.number().finite(),
+});
+const stats = z.object({
+	ttftMs: metric,
+	durationMs: metric,
+	tokensPerSecond: metric,
+	generationTps: metric,
+	prefillTps: metric,
+	inputTokens: z.number().finite(),
+	outputTokens: z.number().finite(),
+	cost: z.number().finite(),
+});
+const summary = z.object({
+	runs: z.number().int().positive(),
+	failures: z.number().int().nonnegative(),
+	profile: z.enum(["mix", "chat", "prefill", "generation"]).optional(),
+	models: z.array(
+		z.object({
+			selector: z.string(),
+			model: z.string(),
+			stats: stats.nullable(),
+			byChallenge: z.record(stats).default({}),
+			results: z.array(z.object({ ok: z.boolean(), error: z.string().optional() })),
+		}),
+	),
+});
 export function parseBenchmarkSummary(stdout: string): IpcBenchmarkSummary {
-	const value = JSON.parse(stdout) as Partial<IpcBenchmarkSummary>;
-	if (!Number.isSafeInteger(value.runs) || !Array.isArray(value.models) || typeof value.failures !== "number") {
-		throw new Error("Benchmark returned malformed JSON");
-	}
-	return value as IpcBenchmarkSummary;
+	const parsed = summary.safeParse(JSON.parse(stdout));
+	if (!parsed.success) throw new Error("Benchmark returned malformed JSON");
+	return parsed.data;
 }
 
 export class BenchmarkRunner {
@@ -94,7 +124,7 @@ export class BenchmarkRunner {
 		let stderr = "";
 		let outputBytes = 0;
 		let settled = false;
-		let timeout: ReturnType<typeof setTimeout> | undefined;
+		let timeout: NodeJS.Timeout | undefined;
 		const { promise, resolve } = Promise.withResolvers<IpcBenchmarkRunResult>();
 		const finish = (result: IpcBenchmarkRunResult) => {
 			if (settled) return;

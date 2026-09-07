@@ -39,8 +39,10 @@ import type {
 	IpcSidecarRestartPayload,
 	IpcSpawnTabPayload,
 	IpcStatsFetchPayload,
+	IpcUpdateLaunchProfilePayload,
 } from "../shared/ipc-types";
 import { IPC_COMMANDS, IPC_EVENTS, type RunProgressState, type TrayState } from "../shared/ipc-types";
+import { parseLaunchProfile } from "../shared/launch-profile";
 import type { RpcCommand, RpcSessionState } from "../shared/rpc-types";
 import { BenchmarkRunner } from "./benchmark-runner";
 import { ensureDefaultWorkspace } from "./default-workspace";
@@ -377,7 +379,7 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 
 	// Log lines (batched by LogWatcher)
 	logWatcher.onLines = lines => {
-		broadcast(windowManager, IPC_EVENTS.LOG_LINE, lines);
+		broadcast(windowManager, IPC_EVENTS.LOG_LINE, { lines, nextSequence: logWatcher.getSnapshot().nextSequence });
 	};
 
 	// ========================================================================
@@ -392,6 +394,7 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 	});
 
 	ipcMain.handle(IPC_COMMANDS.RUNTIME_LOG_PATH, () => runtimeLogPath());
+	ipcMain.handle(IPC_COMMANDS.LOG_SNAPSHOT, () => logWatcher.getSnapshot());
 
 	// RPC command passthrough — always returns a response, never throws.
 	// Throwing here causes "Error occurred in handler" console spam AND
@@ -481,7 +484,13 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 			}
 			return response;
 		} catch (err) {
-			return { id: _id, type: "response", success: false, error: err instanceof Error ? err.message : String(err) };
+			return {
+				id: _id,
+				type: "response",
+				success: false,
+				code: "rpc_delivery_unknown",
+				error: err instanceof Error ? err.message : String(err),
+			};
 		}
 	};
 
@@ -818,6 +827,26 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 		if (payload.key === "language" && (payload.value === "en" || payload.value === "zh")) {
 			createMenu(windowManager, deps.spawnWindow);
 		}
+	});
+
+	ipcMain.handle(IPC_COMMANDS.PREFS_UPDATE_LAUNCH_PROFILE, (_event, payload: IpcUpdateLaunchProfilePayload) => {
+		if (
+			typeof payload?.cwd !== "string" ||
+			!path.isAbsolute(payload.cwd) ||
+			!payload.patch ||
+			typeof payload.patch !== "object" ||
+			Array.isArray(payload.patch)
+		)
+			throw new Error("Invalid launch profile update");
+		// The entire read/merge/write stays synchronous in Main: concurrent windows
+		// can change different fields or workspaces without replacing each other.
+		const raw = prefsStore.get("launchProfiles");
+		const profiles: Record<string, unknown> = raw && typeof raw === "object" && !Array.isArray(raw) ? { ...raw } : {};
+		const profile = parseLaunchProfile({ ...parseLaunchProfile(profiles[payload.cwd]), ...payload.patch });
+		if (Object.keys(profile).length) profiles[payload.cwd] = profile;
+		else delete profiles[payload.cwd];
+		prefsStore.set("launchProfiles", profiles);
+		return profile;
 	});
 
 	// Sidecar control

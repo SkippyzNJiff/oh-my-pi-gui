@@ -1,3 +1,4 @@
+import { type TabRpc, useTabRpc } from "../../lib/tab-rpc";
 /**
  * Session tree: visual branch graph of the session. Consumes the
  * `get_session_tree` RPC when the sidecar provides it (nodes with parent
@@ -23,13 +24,14 @@
 import { GitBranch, Maximize, RotateCcw, Tag, ZoomIn, ZoomOut } from "lucide-react";
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { RpcResponse, RpcSwitchLeafResult } from "../../../shared/rpc-types";
-import { hydrateSession } from "../../hooks/use-rpc-events";
+import type { RpcSwitchLeafResult } from "../../../shared/rpc-types";
+import { hydrateSession, hydrateTabSession } from "../../hooks/use-rpc-events";
 import { routeToSessionOwner } from "../../hooks/use-session-switch";
 import { cx, formatClock } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { branchSessionFromEntry } from "../../lib/messages";
 import { useSessionStore } from "../../stores/session";
+import { useRuntimeTabId } from "../../stores/session-runtime-context";
 import { useTabsStore } from "../../stores/tabs";
 import { toast } from "../../stores/toast";
 import { useUiStore } from "../../stores/ui";
@@ -85,8 +87,7 @@ const CULL_MARGIN = 160;
 const clampZoom = (k: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, k));
 
 /** Load the richest tree model available: get_session_tree if the sidecar has it, else the flat lineage. */
-async function loadSessionTreeModel(): Promise<SessionTreeModel> {
-	const rpc = window.omp.rpc as typeof window.omp.rpc & { getSessionTree?: () => Promise<RpcResponse> };
+async function loadSessionTreeModel(rpc: TabRpc): Promise<SessionTreeModel> {
 	if (typeof rpc.getSessionTree === "function") {
 		try {
 			const response = await rpc.getSessionTree();
@@ -151,6 +152,8 @@ function filterTreeEntries(entries: SessionTreeEntry[], mode: TreeFilterMode): S
 }
 
 export function SessionTreeDialog() {
+	const tabRpc = useTabRpc();
+	const tabId = useRuntimeTabId();
 	const t = useT();
 	const open = useUiStore(state => state.sessionTreeOpen);
 	const close = useUiStore(state => state.closeSessionTree);
@@ -198,7 +201,7 @@ export function SessionTreeDialog() {
 		setOffsets(dragOffsetsBySession.get(sessionKey) ?? {});
 		needsInitialViewRef.current = true;
 		let cancelled = false;
-		loadSessionTreeModel()
+		loadSessionTreeModel(tabRpc)
 			.then(result => {
 				if (!cancelled) setModel(result);
 			})
@@ -214,7 +217,7 @@ export function SessionTreeDialog() {
 		return () => {
 			cancelled = true;
 		};
-	}, [open, sessionKey]);
+	}, [open, sessionKey, tabRpc]);
 
 	const filteredEntries = useMemo(
 		() => (model ? filterTreeEntries(model.entries, filterMode) : []),
@@ -463,7 +466,7 @@ export function SessionTreeDialog() {
 		}
 		setBranching(entryId);
 		try {
-			const response = await window.omp.rpc.switchLeaf(entryId, summarize ? { summarize: true } : undefined);
+			const response = await tabRpc.switchLeaf(entryId, summarize ? { summarize: true } : undefined);
 			if (!response.success) {
 				toast({ variant: "error", title: t("sessionTree.switchFailed"), message: response.error });
 				return;
@@ -483,9 +486,10 @@ export function SessionTreeDialog() {
 					new CustomEvent("omp:fill-composer", { detail: { text: data.editorText, images: data.editorImages } }),
 				);
 			}
-			await hydrateSession();
+			if (tabId) await hydrateTabSession(tabId);
+			else await hydrateSession();
 			if (data.askReanswerCommitted) {
-				const resume = await window.omp.rpc.resumeAfterAskReanswer();
+				const resume = await tabRpc.resumeAfterAskReanswer();
 				if (!resume.success) {
 					toast({ variant: "error", title: t("sessionTree.reanswerResumeFailed"), message: resume.error });
 				}
@@ -505,7 +509,7 @@ export function SessionTreeDialog() {
 		if (branching !== null) return;
 		setBranching(entryId);
 		try {
-			const response = await window.omp.rpc.forkFrom(entryId);
+			const response = await tabRpc.forkFrom(entryId);
 			if (!response.success) {
 				toast({ variant: "error", title: t("sessionTree.forkFailed"), message: response.error });
 				return;
@@ -560,7 +564,7 @@ export function SessionTreeDialog() {
 		applyLabel(label);
 		setSavingLabel(true);
 		try {
-			const response = await window.omp.rpc.setEntryLabel(entryId, label);
+			const response = await tabRpc.setEntryLabel(entryId, label);
 			if (!response.success) throw new Error(response.error);
 		} catch (cause) {
 			applyLabel(previous);

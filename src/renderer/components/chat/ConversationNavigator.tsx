@@ -27,7 +27,7 @@ export function ConversationNavigator({ activeIndex, anchors, onNavigate }: Conv
 			<div className={cx("omp-conversation-nav-stack", density)}>
 				{anchors.map((anchor, index) => {
 					const preview = anchor.preview || t("chat.navigator.imagePrompt");
-					const clock = formatShortClock(anchor.timestamp);
+					const clock = previewIndex === index ? formatShortClock(anchor.timestamp) : "";
 					return (
 						<div key={anchor.key} className="omp-conversation-nav-slot">
 							<button

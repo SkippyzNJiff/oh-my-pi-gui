@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, type Mock, vi } from "vitest";
 import { usePluginActivationStore } from "../stores/plugin-activation";
 import { useSessionStore } from "../stores/session";
 import { useTabsStore } from "../stores/tabs";
-import { useUiStore } from "../stores/ui";
 import {
 	handlePluginActivation,
 	type PluginActivationOrigin,
@@ -35,7 +34,7 @@ afterEach(() => {
 		isStreaming: false,
 		isCompacting: false,
 	});
-	useUiStore.setState({ switchPending: null });
+	useSessionStore.setState({ switchPending: null });
 	resetTabRoute();
 	vi.restoreAllMocks();
 });

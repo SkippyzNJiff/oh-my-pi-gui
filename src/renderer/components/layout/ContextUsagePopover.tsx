@@ -162,6 +162,14 @@ export function ContextUsagePopover() {
 	}, [breakdown]);
 
 	if (!contextUsage) return null;
+	if (contextWindow <= 0) {
+		return (
+			<span className="flex items-center gap-1.5 px-1.5 text-(--omp-dim)" title={t("contextUsage.unavailable")}>
+				<CircleGauge aria-hidden="true" size={14} />
+				<span aria-label={t("contextUsage.unavailable")}>—</span>
+			</span>
+		);
+	}
 
 	const popoverStyle: CSSProperties | undefined = anchor
 		? { bottom: anchor.bottom, left: anchor.left, top: anchor.top, width: anchor.width }

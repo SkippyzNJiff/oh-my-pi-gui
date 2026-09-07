@@ -50,6 +50,7 @@ function failure(error: string): RpcResponse {
 }
 
 interface MockRpc {
+	fork: Mock<() => Promise<RpcResponse>>;
 	handoff: Mock<(customInstructions?: string) => Promise<RpcResponse>>;
 	getState: Mock<() => Promise<RpcResponse>>;
 	getTranscript: Mock<() => Promise<RpcResponse>>;
@@ -59,6 +60,7 @@ interface MockRpc {
 
 function installMockOmp(overrides: Partial<MockRpc> = {}): MockRpc {
 	const rpc: MockRpc = {
+		fork: vi.fn(async () => success({})),
 		handoff: vi.fn(async () => success({ savedPath: undefined })),
 		getState: vi.fn(async () => success({ sessionId: "s2", todoPhases: [], messageCount: 3, queuedMessageCount: 0 })),
 		getTranscript: vi.fn(async () => success({ messages: [] })),
@@ -205,5 +207,34 @@ describe("HandoffDialog", () => {
 		expect(useForkHandoffStore.getState().handoffDialogOpen).toBe(true);
 		expect(document.body.textContent).toContain("handoff exploded");
 		expect(useToastStore.getState().toasts.some(toastItem => toastItem.variant === "success")).toBe(false);
+	});
+	it("retries opening the continuation after a failed fork without generating another summary", async () => {
+		useSessionStore.setState({ sessionId: "s1", isStreaming: false, messageCount: 5 });
+		const rpc = installMockOmp({
+			fork: vi
+				.fn()
+				.mockResolvedValueOnce(failure("disk full"))
+				.mockResolvedValueOnce(success({ cancelled: false })),
+			getState: vi.fn(async () => success({ sessionId: "s1", todoPhases: [], messageCount: 5 })),
+		});
+		openHandoffDialog();
+		await mount(<HandoffDialog />);
+		await act(async () => {
+			click(buttonWithText("Start Handoff")!);
+		});
+		await flush();
+		expect(document.body.textContent).toContain("disk full");
+		expect(useForkHandoffStore.getState().handoffDialogOpen).toBe(true);
+		const retry = Array.from(document.querySelectorAll("button")).find(button =>
+			button.textContent?.includes("Continue from saved handoff"),
+		);
+		if (!retry) throw new Error("retry missing");
+		await act(async () => {
+			retry.dispatchEvent(new Event("click", { bubbles: true }));
+		});
+		await flush();
+		expect(rpc.handoff).toHaveBeenCalledTimes(1);
+		expect(rpc.fork).toHaveBeenCalledTimes(2);
+		expect(useForkHandoffStore.getState().handoffDialogOpen).toBe(false);
 	});
 });

@@ -20,6 +20,7 @@ import { CodeBlock as SharedCodeBlock } from "../components/chat/CodeBlock";
 import { MermaidBlock } from "../components/chat/MermaidBlock";
 import { useRuntimeTabId } from "../stores/session-runtime-context";
 import { useUiStore } from "../stores/ui";
+import { saveGuiPreference } from "./display-preferences";
 import { useT } from "./i18n";
 import { PREVIEW_SCROLL_CODE } from "./preview";
 
@@ -206,6 +207,7 @@ function StyledTable({ children, ...props }: ComponentPropsWithoutRef<"table">) 
 // `codeLineNumbers` prop (the server snapshot below is always off).
 let codeLineNumbersSnapshot = false;
 let codeLineNumbersHydrated = false;
+let codeLineNumbersVersion = 0;
 const codeLineNumbersListeners = new Set<() => void>();
 
 function setCodeLineNumbersSnapshot(next: boolean): void {
@@ -218,11 +220,12 @@ function subscribeCodeLineNumbers(listener: () => void): () => void {
 	codeLineNumbersListeners.add(listener);
 	if (!codeLineNumbersHydrated) {
 		codeLineNumbersHydrated = true;
+		const version = codeLineNumbersVersion;
 		try {
 			void window.omp.prefs
 				.get("codeLineNumbers")
 				.then(value => {
-					if (value === true) setCodeLineNumbersSnapshot(true);
+					if (version === codeLineNumbersVersion) setCodeLineNumbersSnapshot(value === true);
 				})
 				.catch(() => {});
 		} catch {
@@ -235,14 +238,12 @@ function subscribeCodeLineNumbers(listener: () => void): () => void {
 }
 
 /** Settings GUI-tab write path: flip every mounted code block live + persist. */
-export function setCodeLineNumbersPref(next: boolean): void {
-	codeLineNumbersHydrated = true;
-	setCodeLineNumbersSnapshot(next);
-	try {
-		void window.omp.prefs.set("codeLineNumbers", next);
-	} catch {
-		// prefs IPC unavailable (tests, storybook).
-	}
+export async function setCodeLineNumbersPref(next: boolean): Promise<boolean> {
+	return saveGuiPreference("codeLineNumbers", next, () => {
+		codeLineNumbersVersion++;
+		codeLineNumbersHydrated = true;
+		setCodeLineNumbersSnapshot(next);
+	});
 }
 
 /** MarkdownRenderer prop → Pre, threading around the static components map. */

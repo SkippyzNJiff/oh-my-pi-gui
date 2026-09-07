@@ -11,7 +11,7 @@ import {
 	parseLaunchProfile,
 	profileToFlags,
 	stripDenylistedFlags,
-} from "./launch-profile";
+} from "../../shared/launch-profile";
 
 describe("profileToFlags mapping", () => {
 	it("maps every field to its CLI flag in a fixed order", () => {

@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../../lib/tab-rpc";
 /**
  * Interactive Marketplaces tab body: add-marketplace form plus per-marketplace
  * cards with catalog refresh, inline-confirmed removal, and a lazy-expanded
@@ -33,6 +34,7 @@ import { listAvailablePlugins, mutationError } from "./rpc-result";
 // ============================================================================
 
 export function AddMarketplaceForm({ onAdded }: { onAdded: () => Promise<void> }) {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const [source, setSource] = useState("");
 	const [busy, setBusy] = useState(false);
@@ -49,7 +51,7 @@ export function AddMarketplaceForm({ onAdded }: { onAdded: () => Promise<void> }
 		setBusy(true);
 		setError(null);
 		try {
-			const res = await window.omp.rpc.marketplaceAction({ action: "add", source: trimmed });
+			const res = await tabRpc.marketplaceAction({ action: "add", source: trimmed });
 			const failure = mutationError(res, t("marketplace.unknownError"));
 			if (failure !== null) {
 				setError(failure);
@@ -233,6 +235,7 @@ export function MarketplaceCard({
 	/** Refetch get_marketplaces (card data: name, source, plugin count, cache note). */
 	reload: () => Promise<void>;
 }) {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const [expanded, setExpanded] = useState(false);
 	const [available, setAvailable] = useState<RpcMarketplacePluginInfo[] | null>(null);
@@ -250,7 +253,7 @@ export function MarketplaceCard({
 		setListLoading(true);
 		setListError(null);
 		try {
-			const res = await window.omp.rpc.marketplaceAction({
+			const res = await tabRpc.marketplaceAction({
 				action: "list_available",
 				marketplace: marketplace.name,
 			});
@@ -265,7 +268,7 @@ export function MarketplaceCard({
 		} finally {
 			setListLoading(false);
 		}
-	}, [marketplace.name, t]);
+	}, [marketplace.name, t, tabRpc.marketplaceAction]);
 
 	const toggleExpanded = (): void => {
 		const next = !expanded;
@@ -278,7 +281,7 @@ export function MarketplaceCard({
 		setBusyAction("update");
 		setCardError(null);
 		try {
-			const res = await window.omp.rpc.marketplaceAction({ action: "update", marketplace: marketplace.name });
+			const res = await tabRpc.marketplaceAction({ action: "update", marketplace: marketplace.name });
 			const failure = mutationError(res, t("marketplace.unknownError"));
 			if (failure !== null) {
 				setCardError(failure);
@@ -299,7 +302,7 @@ export function MarketplaceCard({
 		setBusyAction("remove");
 		setCardError(null);
 		try {
-			const res = await window.omp.rpc.marketplaceAction({ action: "remove", marketplace: marketplace.name });
+			const res = await tabRpc.marketplaceAction({ action: "remove", marketplace: marketplace.name });
 			const failure = mutationError(res, t("marketplace.unknownError"));
 			if (failure !== null) {
 				setCardError(failure);
@@ -341,7 +344,7 @@ export function MarketplaceCard({
 			return rest;
 		});
 		try {
-			const res = await window.omp.rpc.marketplaceAction({
+			const res = await tabRpc.marketplaceAction({
 				action,
 				marketplace: marketplace.name,
 				plugin: pluginName,

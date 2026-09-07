@@ -2,55 +2,66 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const POLL_INTERVAL_MS = 30_000;
 
-interface StatsResult {
-	data: unknown;
+interface StatsState<T> {
+	key: string;
+	data: T | null;
 	isLoading: boolean;
 	error: string | null;
-	refetch: () => void;
+	updatedAt: number | null;
 }
 
-/**
- * Polls the stats endpoint at 30s intervals for the given path.
- */
-export function useStats(path: string, params?: Record<string, string>): StatsResult {
-	const [data, setData] = useState<unknown>(null);
-	const [isLoading, setIsLoading] = useState(true);
-	const [error, setError] = useState<string | null>(null);
-	const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-	const fetchStats = useCallback(() => {
-		window.omp.stats
-			.fetch(path, params)
-			.then(result => {
-				// IPC handler returns { error, unavailable } when stats server is down
-				if (result && typeof result === "object" && "unavailable" in result) {
-					const r = result as { error?: string; unavailable: boolean };
-					setError(r.error ?? "Stats server not running. Run `omp stats` to start it.");
-					setIsLoading(false);
-					return;
-				}
-				setData(result);
-				setError(null);
-				setIsLoading(false);
-			})
-			.catch((err: unknown) => {
-				setError(err instanceof Error ? err.message : String(err));
-				setIsLoading(false);
-			});
-	}, [path, params]);
+/** One visible query at a time; stale responses never cross a path/range boundary. */
+export function useStats<T>(path: string, params?: Record<string, string>) {
+	const serializedParams = JSON.stringify(Object.entries(params ?? {}).sort(([a], [b]) => a.localeCompare(b)));
+	const key = `${path}:${serializedParams}`;
+	const [state, setState] = useState<StatsState<T>>({
+		key,
+		data: null,
+		isLoading: true,
+		error: null,
+		updatedAt: null,
+	});
+	const fetchRef = useRef<() => void>(() => {});
+	const refetch = useCallback(() => fetchRef.current(), []);
 
 	useEffect(() => {
-		setIsLoading(true);
-		fetchStats();
-
-		timerRef.current = setInterval(fetchStats, POLL_INTERVAL_MS);
-		return () => {
-			if (timerRef.current !== null) {
-				clearInterval(timerRef.current);
-				timerRef.current = null;
+		let active = true;
+		let inFlight = false;
+		const queryParams = Object.fromEntries(JSON.parse(serializedParams) as [string, string][]);
+		const load = async () => {
+			if (!active || inFlight) return;
+			inFlight = true;
+			setState(previous =>
+				previous.key === key
+					? { ...previous, isLoading: previous.data === null }
+					: { key, data: null, isLoading: true, error: null, updatedAt: null },
+			);
+			try {
+				const result = await window.omp.stats.fetch(path, queryParams);
+				if (result && typeof result === "object" && "error" in result && typeof result.error === "string")
+					throw new Error(result.error);
+				if (active) setState({ key, data: result as T, isLoading: false, error: null, updatedAt: Date.now() });
+			} catch (cause) {
+				if (active) setState(previous => ({ ...previous, isLoading: false, error: String(cause) }));
+			} finally {
+				inFlight = false;
 			}
 		};
-	}, [fetchStats]);
+		fetchRef.current = () => void load();
+		const refreshVisible = () => {
+			if (document.visibilityState !== "hidden") void load();
+		};
+		void load();
+		const timer = window.setInterval(refreshVisible, POLL_INTERVAL_MS);
+		document.addEventListener("visibilitychange", refreshVisible);
+		return () => {
+			active = false;
+			window.clearInterval(timer);
+			document.removeEventListener("visibilitychange", refreshVisible);
+		};
+	}, [key, path, serializedParams]);
 
-	return { data, isLoading, error, refetch: fetchStats };
+	return state.key === key
+		? { ...state, refetch }
+		: { key, data: null, isLoading: true, error: null, updatedAt: null, refetch };
 }

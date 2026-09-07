@@ -20,15 +20,9 @@ import {
 } from "../../lib/themes";
 import { toast } from "../../stores/toast";
 import { useUiStore } from "../../stores/ui";
-import { registerDialogLayer } from "../common/dialog-layer";
+import { Modal } from "../common";
 
-const SWATCH_KEYS = [
-	"--omp-bg-primary",
-	"--omp-bg-secondary",
-	"--omp-bg-tertiary",
-	"--omp-accent",
-	"--omp-text",
-] as const;
+const SWATCH_KEYS = ["--omp-accent", "--omp-syntax-string", "--omp-syntax-function", "--omp-syntax-number"] as const;
 
 interface ThemeEntry {
 	selection: ThemeSelection;
@@ -54,7 +48,6 @@ export function ThemePickerDialog() {
 	const [active, setActive] = useState(0);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const listRef = useRef<HTMLDivElement>(null);
-	const dialogRef = useRef<HTMLDivElement>(null);
 
 	const entries = useMemo<ThemeEntry[]>(
 		() => [
@@ -76,16 +69,19 @@ export function ThemePickerDialog() {
 
 	useEffect(() => {
 		if (!open) return;
-		const unregisterLayer = registerDialogLayer(dialogRef.current);
+		let cancelled = false;
 		setQuery("");
 		setActive(0);
 		void getPersistedThemeSelection().then(sel => {
+			if (cancelled) return;
 			setCurrent(sel);
 			const themeIndex = THEME_ENTRIES.findIndex(e => e.selection === sel);
 			setActive(sel === "system" ? 0 : Math.max(0, themeIndex + 1));
 		});
 		requestAnimationFrame(() => inputRef.current?.focus());
-		return unregisterLayer;
+		return () => {
+			cancelled = true;
+		};
 	}, [open]);
 
 	const select = (entry: ThemeEntry) => {
@@ -98,6 +94,7 @@ export function ThemePickerDialog() {
 	};
 
 	const onKey = (e: React.KeyboardEvent) => {
+		if (e.nativeEvent.isComposing || e.keyCode === 229) return;
 		if (e.key === "ArrowDown") {
 			e.preventDefault();
 			setActive(i => Math.min(filtered.length - 1, i + 1));
@@ -108,9 +105,6 @@ export function ThemePickerDialog() {
 			e.preventDefault();
 			const entry = filtered[active];
 			if (entry) select(entry);
-		} else if (e.key === "Escape") {
-			e.preventDefault();
-			close();
 		}
 	};
 
@@ -118,22 +112,17 @@ export function ThemePickerDialog() {
 		listRef.current?.querySelector(`[data-index="${active}"]`)?.scrollIntoView({ block: "nearest" });
 	}, [active]);
 
-	if (!open) return null;
-
 	return (
-		<div
-			ref={dialogRef}
-			aria-modal="true"
-			className="omp-dialog-overlay fixed inset-0 z-50 flex items-start justify-center bg-[var(--omp-overlay-bg)] p-4 pt-[12dvh] backdrop-blur-[2px]"
-			onClick={close}
-			onKeyDown={onKey}
-			role="dialog"
-			aria-label={t("themePicker.aria")}
+		<Modal
+			open={open}
+			onClose={close}
+			chromeless
+			ariaLabel={t("themePicker.aria")}
+			size="picker"
+			placement="top"
+			bodyClassName="p-0"
 		>
-			<div
-				className="omp-dialog-panel omp-dialog-size-picker overflow-hidden rounded-[14px] border border-[var(--omp-modal-border)] bg-[var(--omp-modal-bg)] shadow-[var(--omp-shadow-lg)]"
-				onClick={e => e.stopPropagation()}
-			>
+			<div onKeyDown={onKey}>
 				<div className="flex items-center gap-2 border-b border-[var(--omp-border-muted)] px-4 py-3">
 					<Search size={15} className="shrink-0 text-[var(--omp-dim)]" />
 					<input
@@ -162,6 +151,7 @@ export function ThemePickerDialog() {
 								key={entry.selection}
 								type="button"
 								data-index={i}
+								aria-pressed={isCurrent}
 								onClick={() => select(entry)}
 								onMouseEnter={() => setActive(i)}
 								className={cx(
@@ -169,19 +159,32 @@ export function ThemePickerDialog() {
 									i === active ? "bg-[var(--omp-selected-bg)]" : "hover:bg-[var(--omp-bg-tertiary)]",
 								)}
 							>
-								<span className="flex h-9 w-14 shrink-0 items-center overflow-hidden rounded-md border border-[var(--omp-border-muted)]">
+								<span
+									aria-hidden="true"
+									className="flex h-14 w-24 shrink-0 flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border"
+									style={{
+										background: theme ? resolveTokenColor(theme, "--omp-bg-primary") : "var(--omp-input-bg)",
+										borderColor: theme ? resolveTokenColor(theme, "--omp-border") : "var(--omp-border)",
+										color: theme ? resolveTokenColor(theme, "--omp-text") : "var(--omp-text)",
+									}}
+								>
 									{isSystem ? (
 										<span className="flex h-full w-full items-center justify-center text-[var(--omp-dim)]">
 											<Monitor size={15} />
 										</span>
 									) : (
-										SWATCH_KEYS.map(key => (
-											<span
-												key={key}
-												className="h-full flex-1"
-												style={{ background: resolveTokenColor(theme!, key) }}
-											/>
-										))
+										<>
+											<span className="font-display text-omp-xl font-medium">Aa</span>
+											<span className="flex gap-1">
+												{SWATCH_KEYS.map(key => (
+													<span
+														key={key}
+														className="h-1.5 w-3 rounded-full"
+														style={{ background: resolveTokenColor(theme!, key) }}
+													/>
+												))}
+											</span>
+										</>
 									)}
 								</span>
 								<span className="min-w-0 flex-1">
@@ -189,13 +192,15 @@ export function ThemePickerDialog() {
 										{entry.label}
 										{isCurrent && <Check size={14} className="text-[var(--omp-accent)]" />}
 									</span>
-									<span className="block truncate text-omp-md text-[var(--omp-dim)]">{entry.description}</span>
+									<span className="block text-omp-md leading-relaxed text-[var(--omp-muted)]">
+										{entry.description}
+									</span>
 								</span>
 							</button>
 						);
 					})}
 				</div>
 			</div>
-		</div>
+		</Modal>
 	);
 }

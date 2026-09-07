@@ -4,8 +4,10 @@ import type { SessionStats } from "../../../shared/rpc-types";
 import { useSessionList } from "../../hooks/use-session-list";
 import { basename, cx, formatCost, formatDuration, formatPercent, formatTokens } from "../../lib/format";
 import { useT } from "../../lib/i18n";
+import { useTabRpc } from "../../lib/tab-rpc";
 import { useMessagesStore } from "../../stores/messages";
-import { useSessionStore } from "../../stores/session";
+import { type SessionStore, useSessionStore } from "../../stores/session";
+import { sessionRuntimeStore, useRuntimeTabId } from "../../stores/session-runtime-context";
 import { useActiveTabKind } from "../../stores/tabs";
 import { toast } from "../../stores/toast";
 import { useToolsStore } from "../../stores/tools";
@@ -18,7 +20,9 @@ import { sessionCacheHitPercent, sessionExecutionDurationMs } from "./session-me
  * controls live beside the composer where they affect the next message.
  */
 export function TitleBar() {
+	const tabRpc = useTabRpc();
 	const t = useT();
+	const tabId = useRuntimeTabId();
 	const sessionId = useSessionStore(s => s.sessionId);
 	const sessionName = useSessionStore(s => s.sessionName);
 	const cwd = useSessionStore(s => s.cwd);
@@ -50,6 +54,7 @@ export function TitleBar() {
 		if (editingName) nameInputRef.current?.select();
 	}, [editingName]);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: settled transcript changes refresh local usage even when the session ID is stable.
 	useEffect(() => {
 		if (!sessionId || status !== "ready") {
 			setStats(null);
@@ -62,18 +67,14 @@ export function TitleBar() {
 		// message append; the message-count guard rejects mismatched responses.
 		if (prevSessionRef.current !== sessionId) setStats(null);
 		prevSessionRef.current = sessionId;
+		if (isCompacting || isStreaming) return;
 		let cancelled = false;
 		const requestedSessionId = sessionId;
-		const requestedMessageCount = statsMessageCount;
-		void window.omp.rpc
+		const originSession = sessionRuntimeStore<SessionStore>(tabId, "session") ?? useSessionStore;
+		void tabRpc
 			.getSessionStats()
 			.then(response => {
-				if (
-					!cancelled &&
-					response.success &&
-					useSessionStore.getState().sessionId === requestedSessionId &&
-					useMessagesStore.getState().messages.length === requestedMessageCount
-				) {
+				if (!cancelled && response.success && originSession.getState().sessionId === requestedSessionId) {
 					setStats(response.data as SessionStats);
 				}
 			})
@@ -81,7 +82,7 @@ export function TitleBar() {
 		return () => {
 			cancelled = true;
 		};
-	}, [sessionId, statsMessageCount, status]);
+	}, [sessionId, statsMessageCount, status, tabRpc.getSessionStats, tabId, isCompacting, isStreaming]);
 
 	const hasRunningTool = [...tools.values()].some(tool => tool.endTime === null);
 	useEffect(() => {
@@ -95,7 +96,8 @@ export function TitleBar() {
 	// `||` everywhere: empty-string titles (never-generated auto-title slot)
 	// fall through like null, ending at the "New Session" placeholder.
 	const displayName = sessionName || current?.title || t("sidebar.newSession");
-	const cacheHit = sessionCacheHitPercent(stats);
+	const visibleStats = stats?.sessionId === sessionId ? stats : null;
+	const cacheHit = sessionCacheHitPercent(visibleStats);
 	const executionDuration = sessionExecutionDurationMs({
 		messages,
 		streamingMessage,
@@ -109,11 +111,14 @@ export function TitleBar() {
 		const name = draft.trim();
 		setEditingName(false);
 		if (!name || name === displayName) return;
-		void window.omp.rpc
+		const originSession = sessionRuntimeStore<SessionStore>(tabId, "session") ?? useSessionStore;
+		const originId = originSession.getState().sessionId;
+		void tabRpc
 			.setSessionName(name)
 			.then(response => {
-				if (response.success) useSessionStore.setState({ sessionName: name });
-				else toast({ variant: "error", title: t("titlebar.renameFailed"), message: response.error });
+				if (response.success) {
+					if (originSession.getState().sessionId === originId) originSession.setState({ sessionName: name });
+				} else toast({ variant: "error", title: t("titlebar.renameFailed"), message: response.error });
 			})
 			.catch(error => {
 				toast({ variant: "error", title: t("titlebar.renameFailed"), message: String(error) });
@@ -209,13 +214,19 @@ export function TitleBar() {
 			<div className="flex-1" />
 
 			<div className="omp-session-metrics no-drag flex shrink-0 items-center gap-3 font-mono text-omp-sm tabular-nums text-[var(--omp-muted)]">
-				<span className="flex items-center gap-1" title={t("titlebar.metric.tokens")}>
+				<span
+					className="flex items-center gap-1"
+					title={t(visibleStats?.history ? "titlebar.metric.historyTokens" : "titlebar.metric.tokens")}
+				>
 					<Database aria-hidden="true" size={14} />
-					{stats ? formatTokens(stats.tokens.total) : "—"}
+					{visibleStats ? formatTokens(visibleStats.history?.totalTokens ?? visibleStats.tokens.total) : "—"}
 				</span>
-				<span className="flex items-center gap-1" title={t("titlebar.metric.cost")}>
+				<span
+					className="flex items-center gap-1"
+					title={t(visibleStats?.history ? "titlebar.metric.historyCost" : "titlebar.metric.cost")}
+				>
 					<Coins aria-hidden="true" size={14} />
-					{stats ? formatCost(stats.cost, 4) : "—"}
+					{visibleStats ? formatCost(visibleStats.history?.cost ?? visibleStats.cost, 4) : "—"}
 				</span>
 				<span className="flex items-center gap-1" title={t("titlebar.metric.cacheHit")}>
 					<Gauge aria-hidden="true" size={14} />

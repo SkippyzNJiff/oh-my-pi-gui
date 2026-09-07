@@ -1,3 +1,4 @@
+import { formatCost } from "./format";
 /**
  * chart.js registration + theme-aware defaults. Every stats route imports
  * this module for its side effects before rendering react-chartjs-2 charts.
@@ -159,8 +160,7 @@ export function compact(value: number): string {
 
 export function formatUsd(value: number): string {
 	if (value === 0) return "$0";
-	if (Math.abs(value) < 0.01) return `$${value.toFixed(4)}`;
-	return `$${value.toFixed(2)}`;
+	return formatCost(value, Math.abs(value) < 0.01 ? 4 : 2);
 }
 
 export function formatMs(value: number | null): string {

@@ -68,13 +68,13 @@ type SignalKey = (typeof SIGNALS)[number]["key"];
 export function BehaviorRoute({ range, refreshKey }: { range: StatsRange; refreshKey: number }) {
 	const t = useT();
 	const params = useMemo(() => ({ range }), [range]);
-	const { data, isLoading, error, refetch } = useStats("/api/stats/behavior", params);
+	const { data, isLoading, error, refetch } = useStats<BehaviorData>("/api/stats/behavior", params);
 
 	useEffect(() => {
 		if (refreshKey > 0) refetch();
 	}, [refreshKey, refetch]);
 
-	const stats = (data ?? null) as BehaviorData | null;
+	const stats = data;
 	const overall = stats?.overall;
 
 	const columns: StatColumn<ModelRow>[] = useMemo(
@@ -133,7 +133,13 @@ export function BehaviorRoute({ range, refreshKey }: { range: StatsRange; refres
 	}, [stats, t]);
 
 	return (
-		<RouteFrame empty={!overall || overall.totalMessages === 0} error={error} loading={isLoading} onRetry={refetch}>
+		<RouteFrame
+			hasData={data !== null}
+			empty={!overall || overall.totalMessages === 0}
+			error={error}
+			loading={isLoading}
+			onRetry={refetch}
+		>
 			{overall && (
 				<>
 					<div className="grid grid-cols-2 gap-2.5 md:grid-cols-4 xl:grid-cols-7">

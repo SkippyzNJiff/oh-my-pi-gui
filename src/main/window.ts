@@ -130,6 +130,9 @@ export class WindowManager {
 			if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
 			return { action: "deny" };
 		});
+		// Keep the privileged preload attached only to the desktop shell. Links
+		// and dropped documents must not replace it with arbitrary page content.
+		win.webContents.on("will-navigate", event => event.preventDefault());
 
 		// Persist state on close
 		win.on("close", () => {

@@ -1,8 +1,9 @@
 import { Mic, MicOff, PhoneOff } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { RpcLiveState } from "../../../shared/rpc-types";
 import { useT } from "../../lib/i18n";
 import { acceptsActiveTabEvents } from "../../lib/tab-routing";
+import { useTabCommand } from "../../stores/session-runtime-context";
 import { toast } from "../../stores/toast";
 import { useUiStore } from "../../stores/ui";
 import { Button, Modal, Spinner } from "../common";
@@ -17,6 +18,8 @@ const INITIAL_STATE: RpcLiveState = {
 
 export function LiveVoiceDialog() {
 	const t = useT();
+	const command = useTabCommand();
+	const generation = useRef(0);
 	const open = useUiStore(state => state.liveOpen);
 	const closeStore = useUiStore(state => state.closeLive);
 	const [state, setState] = useState<RpcLiveState>(INITIAL_STATE);
@@ -25,22 +28,18 @@ export function LiveVoiceDialog() {
 	useEffect(() => {
 		if (!open) return;
 		let cancelled = false;
+		generation.current++;
 		setState(INITIAL_STATE);
 		const unsubscribe = window.omp.events.onLiveUpdate(frame => {
 			if (!cancelled && acceptsActiveTabEvents()) setState(frame.state);
 		});
 		setStarting(true);
-		void window.omp.rpc
-			.getLiveState()
-			.then(async response => {
+		void command({ type: "get_live_state" })
+			.then(response => {
 				if (cancelled) return;
 				if (!response.success) throw new Error(response.error);
 				const current = response.data as RpcLiveState;
 				setState(current);
-				if (current.active) return;
-				const started = await window.omp.rpc.liveStart();
-				if (!started.success) throw new Error(started.error);
-				if (!cancelled) setState(started.data as RpcLiveState);
 			})
 			.catch(cause => {
 				if (!cancelled) setState(current => ({ ...current, active: false, phase: "error", error: String(cause) }));
@@ -50,26 +49,38 @@ export function LiveVoiceDialog() {
 			});
 		return () => {
 			cancelled = true;
+			generation.current++;
 			unsubscribe();
 		};
-	}, [open]);
+	}, [open, command]);
+
+	const act = useCallback(
+		async (type: "live_start" | "live_stop" | "live_toggle_mute") => {
+			const version = generation.current;
+			setStarting(true);
+			try {
+				const response = await command({ type }, type === "live_start" ? 60_000 : 15_000);
+				if (!response.success) throw new Error(response.error);
+				if (version === generation.current) setState(response.data as RpcLiveState);
+				return true;
+			} catch (cause) {
+				if (version === generation.current) setState(current => ({ ...current, error: String(cause) }));
+				toast({ variant: "error", message: String(cause) });
+				return false;
+			} finally {
+				if (version === generation.current) setStarting(false);
+			}
+		},
+		[command],
+	);
 
 	const close = useCallback(async () => {
+		if (starting) return;
+		if (state.active && !(await act("live_stop"))) return;
 		closeStore();
-		const response = await window.omp.rpc.liveStop();
-		if (!response.success) toast({ variant: "error", message: response.error });
-	}, [closeStore]);
+	}, [act, closeStore, state.active, starting]);
 
-	const toggleMute = async () => {
-		const response = await window.omp.rpc.liveToggleMute();
-		if (!response.success) {
-			toast({ variant: "error", message: response.error });
-			return;
-		}
-		setState(response.data as RpcLiveState);
-	};
-
-	const phaseLabel = t(`live.phase.${state.phase}`);
+	const phaseLabel = !state.active && !starting && !state.error ? t("live.ready") : t(`live.phase.${state.phase}`);
 	return (
 		<Modal onClose={() => void close()} open={open} size="md" title={t("live.title")}>
 			<div className="space-y-4">
@@ -95,12 +106,21 @@ export function LiveVoiceDialog() {
 				</div>
 				{state.error ? <div className="text-sm text-(--omp-error)">{state.error}</div> : null}
 				<div className="flex justify-end gap-2">
-					<Button disabled={!state.active} onClick={() => void toggleMute()} variant="secondary">
+					{!state.active && (
+						<Button disabled={starting} loading={starting} onClick={() => void act("live_start")}>
+							{t("live.start")}
+						</Button>
+					)}
+					<Button
+						disabled={!state.active || starting}
+						onClick={() => void act("live_toggle_mute")}
+						variant="secondary"
+					>
 						{state.muted ? <Mic size={14} /> : <MicOff size={14} />}
 						{state.muted ? t("live.unmute") : t("live.mute")}
 					</Button>
-					<Button onClick={() => void close()} variant="danger">
-						<PhoneOff size={14} /> {t("live.end")}
+					<Button disabled={starting} onClick={() => void close()} variant="danger">
+						<PhoneOff size={14} /> {state.active ? t("live.end") : t("common.close")}
 					</Button>
 				</div>
 			</div>

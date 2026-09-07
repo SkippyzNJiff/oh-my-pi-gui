@@ -2,6 +2,7 @@ import { Brain, ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ThinkingLevel } from "../../../shared/rpc-types";
 import { STREAM_FORMAT_FLUSH_MS, useThrottledText } from "../../hooks/use-throttled-text";
+import { useDisplayPreference } from "../../lib/display-preferences";
 import { cx, durationBetween, formatTokens } from "../../lib/format";
 import { useT } from "../../lib/i18n";
 import { MarkdownRenderer } from "../../lib/markdown";
@@ -15,7 +16,6 @@ import {
 } from "../../lib/thinking";
 import { useMessagesStore } from "../../stores/messages";
 import { useModelStore } from "../../stores/model";
-import { useSettingsStore } from "../../stores/settings";
 import { useUiStore } from "../../stores/ui";
 
 export interface ThinkingBlockProps {
@@ -31,6 +31,7 @@ export interface ThinkingBlockProps {
 }
 
 const LEVEL_LABEL: Record<ThinkingLevel, string> = {
+	inherit: "inherit",
 	off: "off",
 	minimal: "minimal",
 	low: "low",
@@ -66,8 +67,8 @@ export function ThinkingBlock({ text, live = false, startTime, endTime, level }:
 	const streamingTextStarted = useMessagesStore(s => s.streamingText.length > 0);
 	const storeLevel = useModelStore(s => s.thinkingLevel);
 	const tokensPerSecond = useModelStore(s => s.tokensPerSecond);
-	const hideThinkingBlock = useSettingsStore(s => s.hideThinkingBlock);
-	const proseOnly = useSettingsStore(s => s.proseOnlyThinking);
+	const hideThinkingBlock = useDisplayPreference("hideThinkingBlock");
+	const proseOnly = useDisplayPreference("proseOnlyThinking");
 	const thinkingExpanded = useUiStore(s => s.thinkingExpanded);
 	const [open, setOpen] = useState(thinkingExpanded);
 	// The Settings → GUI toggle applies to already-mounted blocks too; a manual

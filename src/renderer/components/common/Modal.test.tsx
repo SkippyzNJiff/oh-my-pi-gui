@@ -3,6 +3,7 @@ import { act, type ReactElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../lib/i18n";
+import { ApprovalDialog } from "../dialogs/ApprovalDialog";
 import { Modal } from "./Modal";
 
 const { document, window, Event, HTMLElement, Node } = parseHTML("<html><body></body></html>");
@@ -72,6 +73,49 @@ afterEach(async () => {
 });
 
 describe("Modal", () => {
+	it("registers focus and Escape when an initially closed dialog opens", async () => {
+		const close = vi.fn();
+		vi.spyOn(HTMLElement.prototype, "focus").mockImplementation(function (this: HTMLElement) {
+			activeElement = this;
+		});
+		await mount(
+			<Modal open={false} onClose={close} title="Later">
+				<input />
+			</Modal>,
+		);
+		await render(
+			<Modal open onClose={close} title="Later">
+				<input />
+			</Modal>,
+		);
+		expect(document.querySelector("[role='dialog']")?.contains(activeElement)).toBe(true);
+		await pressEscape();
+		expect(close).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps the full approval operation visible without focusing Approve", async () => {
+		vi.spyOn(HTMLElement.prototype, "focus").mockImplementation(function (this: HTMLElement) {
+			activeElement = this;
+		});
+		const operation = `${"x".repeat(2200)}\ncritical final argument`;
+		const respond = vi.fn();
+		await mount(
+			<ApprovalDialog
+				request={{
+					type: "extension_ui_request",
+					id: "approval",
+					method: "select",
+					title: `Allow tool: bash\n${operation}`,
+					options: ["Approve", "Deny"],
+				}}
+				onRespond={respond}
+			/>,
+		);
+		expect(document.querySelector("pre")?.textContent).toBe(operation);
+		expect(activeElement?.textContent).not.toContain("Approve");
+		await pressEscape();
+		expect(respond).toHaveBeenCalledWith({ value: "Deny" });
+	});
 	it("focuses the dialog on open and restores the trigger on close", async () => {
 		const trigger = document.createElement("button");
 		document.body.appendChild(trigger);

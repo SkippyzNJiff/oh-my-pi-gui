@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Store from "electron-store";
-import { parseLaunchProfile, profileToFlags, stripDenylistedFlags } from "../renderer/lib/launch-profile";
+import { parseLaunchProfile, profileToFlags, stripDenylistedFlags } from "../shared/launch-profile";
 import type {
 	AgentSessionEvent,
 	CommandOutputFrame,
@@ -64,6 +64,7 @@ const AGENT_EVENT_TYPES: Record<string, true> = {
 	loop_mode_update: true,
 	plan_proposal: true,
 	queue_update: true,
+	collab_state: true,
 };
 
 export interface SidecarOptions {

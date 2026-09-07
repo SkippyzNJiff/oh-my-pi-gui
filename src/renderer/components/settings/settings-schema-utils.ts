@@ -1,3 +1,4 @@
+import { GUI_DISPLAY_LEGACY_PATHS } from "../../lib/display-preferences";
 /**
  * Settings schema helpers: condition-gated visibility and tab/group
  * bucketing, mirroring the TUI's settings-defs.ts. Extracted verbatim from
@@ -5,6 +6,7 @@
  */
 
 import type { SettingEntry } from "../../../shared/rpc-types";
+import { ZH_SETTINGS } from "./schema-zh";
 
 /**
  * Client-evaluable visibility gates, mirroring the TUI's CONDITIONS table
@@ -35,9 +37,27 @@ export function isSettingVisible(entry: SettingEntry, values: Record<string, unk
 	return evaluate === undefined ? true : evaluate(values);
 }
 
-/** Settings the GUI can both display and apply honestly. */
+/** Terminal display settings and equivalents owned by GUI preferences. */
+const TERMINAL_DISPLAY_SETTINGS = new Set([
+	...GUI_DISPLAY_LEGACY_PATHS,
+	"tui.resizeScrollback",
+	"statusLine.preset",
+	"display.showTurnTime",
+	"theme.dark",
+	"theme.light",
+	"tui.tight",
+	"colorBlindMode",
+	"spelling.typoDetection",
+	"spelling.autocomplete",
+	"spelling.autocorrect",
+]);
+
+export function isSettingSupportedInGui(entry: { path?: string; tuiOnly?: boolean }): boolean {
+	return entry.tuiOnly !== true && !TERMINAL_DISPLAY_SETTINGS.has(entry.path ?? "");
+}
+
 export function isSettingVisibleInGui(entry: SettingEntry, values: Record<string, unknown>): boolean {
-	return entry.tuiOnly !== true && isSettingVisible(entry, values);
+	return isSettingSupportedInGui(entry) && isSettingVisible(entry, values);
 }
 
 /**
@@ -90,4 +110,19 @@ export function resolveSettingsTarget(target: string | null | undefined): {
 	const resourceTab: "plugins" | "marketplaces" | "templates" | "memory" =
 		resource === "marketplaces" || resource === "templates" || resource === "memory" ? resource : "plugins";
 	return { tab: RESOURCES_TAB_ID, resourceTab };
+}
+
+/** Search the displayed Chinese labels as well as wire paths and English metadata. */
+export function matchesSettingSearch(entry: SettingEntry, query: string): boolean {
+	const zh = ZH_SETTINGS[entry.path];
+	const haystack = [entry.path, entry.label, entry.description, zh?.label, zh?.description]
+		.join(" ")
+		.normalize("NFKC")
+		.toLowerCase();
+	return query
+		.normalize("NFKC")
+		.toLowerCase()
+		.trim()
+		.split(/\s+/)
+		.every(word => haystack.includes(word));
 }

@@ -3,7 +3,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 
 /** Main-process packages bundled into out/main/index.js so packaged apps need no node_modules. */
-const MAIN_BUNDLED_DEPS = ["chokidar", "electron-store", "electron-updater"];
+const MAIN_BUNDLED_DEPS = ["chokidar", "electron-store", "electron-updater", "zod"];
 
 /**
  * Heavy renderer vendor libs split out of the eager main chunk. Patterns match

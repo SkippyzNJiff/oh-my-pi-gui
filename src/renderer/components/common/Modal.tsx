@@ -151,7 +151,9 @@ export function Modal({
 		};
 	}, [open]);
 
-	if (!mounted) return null;
+	// Render on the opening commit so the focus/layer effect sees a real panel.
+	// `mounted` only extends the closing phase for the exit animation.
+	if (!open && !mounted) return null;
 
 	return createPortal(
 		<div
@@ -164,7 +166,7 @@ export function Modal({
 		>
 			<div
 				aria-label={ariaLabel ?? (typeof title === "string" ? title : undefined)}
-				aria-labelledby={titleId}
+				aria-labelledby={!chromeless && title ? titleId : undefined}
 				aria-modal={!closing}
 				className={`omp-dialog-panel flex flex-col overflow-hidden rounded-2xl border border-(--omp-modal-border) bg-(--omp-modal-bg) shadow-(--omp-shadow-lg) ${SIZE_CLASSES[size]} ${panelClassName ?? ""} ${closing ? "omp-dialog-panel--exit" : "omp-scale-in"}`.trim()}
 				onKeyDown={event => {

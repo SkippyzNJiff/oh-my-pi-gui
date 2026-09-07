@@ -8,7 +8,7 @@ import type { SettingEntry } from "../../../../shared/rpc-types";
 import { useT } from "../../../lib/i18n";
 import { Input } from "../../common";
 import { SchemaSettingRow } from "../SchemaSettingRow";
-import { isSettingVisibleInGui } from "../settings-schema-utils";
+import { isSettingVisibleInGui, matchesSettingSearch } from "../settings-schema-utils";
 
 function AdvancedTab({
 	entries,
@@ -31,9 +31,7 @@ function AdvancedTab({
 	const filtered = useMemo(() => {
 		const q = query.trim().toLowerCase();
 		if (q.length === 0) return advanced;
-		return advanced.filter(
-			entry => entry.path.toLowerCase().includes(q) || (entry.label ?? "").toLowerCase().includes(q),
-		);
+		return advanced.filter(entry => matchesSettingSearch(entry, q));
 	}, [advanced, query]);
 
 	return (
@@ -51,7 +49,9 @@ function AdvancedTab({
 				<div className="py-10 text-center text-xs text-(--omp-dim)">{t("settings.advancedEmpty")}</div>
 			) : (
 				filtered.map(entry => (
-					<SchemaSettingRow entry={entry} key={entry.path} onCommitted={onCommitted} value={values[entry.path]} />
+					<div id={`setting-${entry.path}`} key={entry.path} className="scroll-mt-4">
+						<SchemaSettingRow entry={entry} onCommitted={onCommitted} value={values[entry.path]} />
+					</div>
 				))
 			)}
 		</>

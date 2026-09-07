@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../lib/tab-rpc";
 /**
  * Debugger console: structured front-end over the agent `debug` RPC tool.
  * Three zones — sessions strip (auto-refreshed on open and after every
@@ -502,6 +503,7 @@ function ResultBody({ result, t }: { result: DebugResultData; t: TranslateFn }) 
 }
 
 export function DebugConsoleDialog() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const open = useUiStore(state => state.debugOpen);
 	const close = useUiStore(state => state.closeDebug);
@@ -515,16 +517,19 @@ export function DebugConsoleDialog() {
 	const [request, setRequest] = useState('{\n  "action": "sessions"\n}');
 	const [advancedOpen, setAdvancedOpen] = useState(false);
 
-	const execDebug = useCallback(async (params: RpcDebugParams): Promise<unknown> => {
-		setPending(value => value + 1);
-		try {
-			const response = await window.omp.rpc.debug(params);
-			if (!response.success) throw new Error(response.error);
-			return response.data;
-		} finally {
-			setPending(value => Math.max(0, value - 1));
-		}
-	}, []);
+	const execDebug = useCallback(
+		async (params: RpcDebugParams): Promise<unknown> => {
+			setPending(value => value + 1);
+			try {
+				const response = await tabRpc.debug(params);
+				if (!response.success) throw new Error(response.error);
+				return response.data;
+			} finally {
+				setPending(value => Math.max(0, value - 1));
+			}
+		},
+		[tabRpc.debug],
+	);
 
 	const refreshSessions = useCallback(async () => {
 		setSessionsError(null);

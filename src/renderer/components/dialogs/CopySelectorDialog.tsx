@@ -4,11 +4,13 @@ import type { CopyTarget } from "../../../shared/rpc-types";
 import { flattenCopyTargets } from "../../lib/copy-targets";
 import { copyText } from "../../lib/format";
 import { useT } from "../../lib/i18n";
+import { useTabRpc } from "../../lib/tab-rpc";
 import { toast } from "../../stores/toast";
 import { useUiStore } from "../../stores/ui";
 import { Button, Modal, Spinner } from "../common";
 
 export function CopySelectorDialog() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const open = useUiStore(state => state.copySelectorOpen);
 	const close = useUiStore(state => state.closeCopySelector);
@@ -27,7 +29,7 @@ export function CopySelectorDialog() {
 		setCopied(false);
 		setError(null);
 		setLoading(true);
-		void window.omp.rpc
+		void tabRpc
 			.getCopyTargets()
 			.then(response => {
 				if (cancelled) return;
@@ -49,7 +51,7 @@ export function CopySelectorDialog() {
 		return () => {
 			cancelled = true;
 		};
-	}, [open]);
+	}, [open, tabRpc.getCopyTargets]);
 
 	const flat = useMemo(() => flattenCopyTargets(targets), [targets]);
 	const selectedIndex = Math.max(

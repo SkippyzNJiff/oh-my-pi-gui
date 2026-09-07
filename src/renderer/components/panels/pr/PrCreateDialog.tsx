@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../../lib/tab-rpc";
 /**
  * PR create dialog (plan/21): title/body form with an [AI 起草] button that
  * fills both fields from the head branch's commits + diffstat (pr_draft,
@@ -16,6 +17,7 @@ import { toast } from "../../../stores/toast";
 import { Button, Input, Modal, TextArea } from "../../common";
 
 export function PrCreateDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const repo = usePrCenterStore(state => state.repo);
 	const { status: git } = useGitStatus();
@@ -41,7 +43,7 @@ export function PrCreateDialog({ open, onClose }: { open: boolean; onClose: () =
 		if (drafting) return;
 		setDrafting(true);
 		try {
-			const response = await window.omp.rpc.prDraft({ base, head });
+			const response = await tabRpc.prDraft({ base, head });
 			if (!response.success) {
 				toast({ variant: "error", title: t("prCenter.draftFailed"), message: response.error });
 				return;
@@ -63,7 +65,7 @@ export function PrCreateDialog({ open, onClose }: { open: boolean; onClose: () =
 		if (!title.trim() || creating) return;
 		setCreating(true);
 		try {
-			const response = await window.omp.rpc.prCreate({ title: title.trim(), body, base, head, draft });
+			const response = await tabRpc.prCreate({ title: title.trim(), body, base, head, draft });
 			if (!response.success) {
 				toast({ variant: "error", title: t("prCenter.createFailed"), message: response.error });
 				return;

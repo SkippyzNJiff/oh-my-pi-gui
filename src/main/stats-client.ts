@@ -1,9 +1,9 @@
 /**
- * HTTP client for the omp stats dashboard API (localhost:3847).
+ * HTTP client for the private, bundled omp stats dashboard API.
  * Polls GET endpoints; discovers availability via x-omp-stats-dashboard header.
  */
 
-const DEFAULT_PORT = 3847;
+const DEFAULT_PORT = 0;
 const REQUEST_TIMEOUT_MS = 5000;
 
 const VALID_PATHS: Record<string, true> = {
@@ -14,6 +14,7 @@ const VALID_PATHS: Record<string, true> = {
 	"/api/stats/tools": true,
 	"/api/stats/providers": true,
 	"/api/stats/recent": true,
+	"/api/stats/requests": true,
 	"/api/stats/errors": true,
 	"/api/stats/models": true,
 	"/api/stats/folders": true,
@@ -37,6 +38,7 @@ export class StatsClient {
 
 	set port(value: number) {
 		this.#port = value;
+		this.#available = false;
 	}
 
 	get available(): boolean {
@@ -48,18 +50,20 @@ export class StatsClient {
 	 * and checking for the x-omp-stats-dashboard header.
 	 */
 	async probe(): Promise<boolean> {
+		if (this.#port === 0) return false;
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 		try {
-			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 			const resp = await fetch(`http://127.0.0.1:${this.#port}/api/stats/models`, {
 				signal: controller.signal,
 			});
-			clearTimeout(timer);
 			this.#available = resp.headers.has("x-omp-stats-dashboard");
 			return this.#available;
 		} catch {
 			this.#available = false;
 			return false;
+		} finally {
+			clearTimeout(timer);
 		}
 	}
 
@@ -68,8 +72,9 @@ export class StatsClient {
 	 * /api/request/:id is also allowed (dynamic path prefix).
 	 */
 	async fetch(path: string, params?: Record<string, string>): Promise<unknown> {
+		if (this.#port === 0) throw new Error("The bundled stats server is not ready. Please retry shortly.");
 		// Validate path: allow known paths or /api/request/:id pattern
-		const isRequestPath = path.startsWith("/api/request/");
+		const isRequestPath = /^\/api\/request\/\d+$/.test(path);
 		if (!isRequestPath && !VALID_PATHS[path]) {
 			throw new Error(`Invalid stats path: ${path}`);
 		}

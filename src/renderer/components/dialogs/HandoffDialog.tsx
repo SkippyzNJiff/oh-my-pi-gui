@@ -1,3 +1,5 @@
+import { useTabRpc } from "../../lib/tab-rpc";
+import { useRuntimeTabId } from "../../stores/session-runtime-context";
 /**
  * Handoff dialog: explains the handoff flow, collects optional custom
  * instructions, and calls rpc.handoff(instructions?) — the agent summarizes
@@ -8,7 +10,7 @@
 
 import { Handshake } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { hydrateSession } from "../../hooks/use-rpc-events";
+import { hydrateSession, hydrateTabSession } from "../../hooks/use-rpc-events";
 import { useT } from "../../lib/i18n";
 import { useForkHandoffStore } from "../../stores/fork-handoff";
 import { useSessionStore } from "../../stores/session";
@@ -20,12 +22,19 @@ interface HandoffResult {
 }
 
 export function HandoffDialog() {
+	const tabRpc = useTabRpc();
+	const originTabId = useRuntimeTabId();
+	const sessionId = useSessionStore(state => state.sessionId);
 	const t = useT();
 	const open = useForkHandoffStore(state => state.handoffDialogOpen);
 	const close = useForkHandoffStore(state => state.closeHandoffDialog);
 	const isStreaming = useSessionStore(state => state.isStreaming);
 	const messageCount = useSessionStore(state => state.messageCount);
 
+	const [prepared, setPrepared] = useState<{ sessionId: string; savedPath?: string; forkAttempted?: boolean } | null>(
+		null,
+	);
+	const [stage, setStage] = useState<"summary" | "fork">("summary");
 	const [instructions, setInstructions] = useState("");
 	const [running, setRunning] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -57,19 +66,44 @@ export function HandoffDialog() {
 		setError(null);
 		try {
 			const trimmed = instructions.trim();
-			const response = await window.omp.rpc.handoff(trimmed.length > 0 ? trimmed : undefined);
-			if (!response.success) {
-				setError(response.error);
-				return;
+			let result = prepared?.sessionId === sessionId ? prepared : null;
+			if (!result) {
+				setStage("summary");
+				const response = await tabRpc.handoff(trimmed.length > 0 ? trimmed : undefined);
+				if (!response.success) {
+					setError(response.error);
+					return;
+				}
+				const handoffResult = response.data as HandoffResult | null | undefined;
+				if (handoffResult == null) {
+					// null data = the agent-side handoff was cancelled.
+					close();
+					toast({ variant: "info", message: t("handoff.cancelled") });
+					return;
+				}
+				result = { ...handoffResult, sessionId };
+				setPrepared(result);
 			}
-			const result = response.data as HandoffResult | null | undefined;
-			if (result == null) {
-				// null data = the agent-side handoff was cancelled.
-				close();
-				toast({ variant: "info", message: t("handoff.cancelled") });
-				return;
+			if (result.forkAttempted) {
+				const current = await tabRpc.getState();
+				if (!current.success) throw new Error(current.error);
+				if ((current.data as { sessionId?: string }).sessionId !== result.sessionId) {
+					if (originTabId) await hydrateTabSession(originTabId);
+					else await hydrateSession();
+					setPrepared(null);
+					close();
+					toast({ variant: "info", message: t("handoff.sessionChanged") });
+					return;
+				}
 			}
-			await hydrateSession();
+			setPrepared({ ...result, forkAttempted: true });
+			setStage("fork");
+			const fork = await tabRpc.fork();
+			if (!fork.success) throw new Error(fork.error);
+			if ((fork.data as { cancelled?: boolean } | undefined)?.cancelled) throw new Error(t("handoff.cancelled"));
+			if (originTabId) await hydrateTabSession(originTabId);
+			else await hydrateSession();
+			setPrepared(null);
 			close();
 			toast({
 				variant: "success",
@@ -92,7 +126,7 @@ export function HandoffDialog() {
 				</div>
 				<TextArea
 					autoGrow
-					disabled={running}
+					disabled={running || prepared?.sessionId === sessionId}
 					hint={t("handoff.instructionsHint")}
 					label={t("handoff.instructionsLabel")}
 					maxLength={2000}
@@ -115,7 +149,7 @@ export function HandoffDialog() {
 				{running && (
 					<div className="flex items-center gap-2 text-omp-sm text-(--omp-dim)">
 						<Spinner size="sm" />
-						{t("handoff.generating")}
+						{t(stage === "summary" ? "handoff.generating" : "handoff.creating")}
 					</div>
 				)}
 				<div className="flex justify-end gap-2">
@@ -130,7 +164,7 @@ export function HandoffDialog() {
 						type="button"
 						variant="primary"
 					>
-						{t("handoff.start")}
+						{t(prepared?.sessionId === sessionId ? "handoff.retryFork" : "handoff.start")}
 					</Button>
 				</div>
 			</div>

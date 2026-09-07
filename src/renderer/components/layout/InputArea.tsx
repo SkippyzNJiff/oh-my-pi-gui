@@ -3,6 +3,7 @@ import type { ClipboardEvent, KeyboardEvent } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { AvailableCommand, ImageContent } from "../../../shared/rpc-types";
+import { useDisplayPreference } from "../../lib/display-preferences";
 import { tryEmojiInlineReplace } from "../../lib/emoji";
 import { cx } from "../../lib/format";
 import { useT } from "../../lib/i18n";
@@ -54,6 +55,7 @@ const MENTION_FS_DEBOUNCE_MS = 150;
  * and an abort button while the agent streams.
  */
 export function InputArea() {
+	const collabReadOnly = useSessionStore(state => state.collab?.readOnly === true);
 	const isStreaming = useSessionStore(s => s.isStreaming);
 	const t = useT();
 	const rpc = useTabRpc();
@@ -74,9 +76,9 @@ export function InputArea() {
 	/** Agent `stt.enabled` setting: microphone dictation button in the composer. */
 	const sttEnabled = useSettingsStore(s => s.sttEnabled);
 	/** Agent `paste.largeMenuThreshold` setting: line count that triggers the paste menu. */
-	const pasteMenuThreshold = useSettingsStore(s => s.pasteMenuThreshold);
+	const pasteMenuThreshold = useDisplayPreference("pasteMenuThreshold");
 	/** Agent `emojiAutocomplete` setting: emoji popup/inline/submit expansion. */
-	const emojiAutocomplete = useSettingsStore(s => s.emojiAutocomplete);
+	const emojiAutocomplete = useDisplayPreference("emojiAutocomplete");
 
 	// Draft lives in the composer store (not local state) so session-tab
 	// switches snapshot/restore it per tab. Value + updater-form setter are
@@ -88,7 +90,10 @@ export function InputArea() {
 	const [mode, setMode] = useState<SendMode>("prompt");
 	const [menu, setMenu] = useState<CompletionMenu | null>(null);
 	const [commands, setCommands] = useState<AvailableCommand[]>([]);
-	const [sending, setSending] = useState(false);
+	const sending = useComposerStore(state => state.sending);
+	const setSending = useComposerStore(state => state.setSending);
+	const submissionUncertain = useComposerStore(state => state.submissionUncertain);
+	const setSubmissionUncertain = useComposerStore(state => state.setSubmissionUncertain);
 	const [filePaths, setFilePaths] = useState<string[]>([]);
 	const [historySearchOpen, setHistorySearchOpen] = useState(false);
 	const [recording, setRecording] = useState(false);
@@ -784,6 +789,21 @@ export function InputArea() {
 						style={modeColor ? { borderColor: modeColor } : undefined}
 					>
 						<div className="px-3.5 pb-1.5 pt-2.5">
+							{submissionUncertain && (
+								<div
+									role="alert"
+									className="mb-2 flex flex-wrap items-center gap-2 rounded border border-(--omp-warning) p-2 text-omp-sm text-(--omp-warning)"
+								>
+									<p className="min-w-0 flex-1">{t("input.deliveryUnknown")}</p>
+									<button
+										type="button"
+										className="rounded border border-(--omp-border-muted) px-2 py-1"
+										onClick={() => setSubmissionUncertain(false)}
+									>
+										{t("input.allowResend")}
+									</button>
+								</div>
+							)}
 							{images.length > 0 && (
 								<div className="mb-3 flex flex-wrap gap-2">
 									{images.map((image, index) => (
@@ -808,6 +828,7 @@ export function InputArea() {
 								</div>
 							)}
 							<textarea
+								readOnly={collabReadOnly}
 								ref={textareaRef}
 								autoCapitalize="sentences"
 								autoCorrect="on"
@@ -878,6 +899,7 @@ export function InputArea() {
 						>
 							<button
 								type="button"
+								disabled={collabReadOnly}
 								onClick={() => fileInputRef.current?.click()}
 								title={t("input.attach")}
 								className="omp-pressable flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--omp-muted)] hover:bg-[var(--omp-selected-bg)] hover:text-[var(--omp-text)]"
@@ -905,6 +927,7 @@ export function InputArea() {
 								<button
 									type="button"
 									onClick={handleMicClick}
+									disabled={collabReadOnly && !recording}
 									title={recording ? t("voice.mic.stop") : t("voice.mic.start")}
 									className={cx(
 										"omp-pressable flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
@@ -924,6 +947,7 @@ export function InputArea() {
 							<button
 								type="button"
 								onClick={openModelPicker}
+								disabled={collabReadOnly}
 								title={t("input.model")}
 								className="omp-pressable flex h-8 min-w-0 max-w-52 items-center gap-2 rounded-lg px-2.5 text-omp-md font-medium text-[var(--omp-muted)] hover:bg-[var(--omp-selected-bg)] hover:text-[var(--omp-text)]"
 							>
@@ -940,6 +964,7 @@ export function InputArea() {
 										aria-expanded={runSettingsOpen}
 										aria-haspopup="menu"
 										data-run-settings-overflow-trigger
+										disabled={collabReadOnly}
 										title={t("input.moreModes")}
 										aria-label={t("input.moreModes")}
 										onClick={() => setRunSettingsOpen(open => !open)}
@@ -957,6 +982,7 @@ export function InputArea() {
 												ref={runSettingsMenuRef}
 												role="menu"
 												data-run-settings-menu
+												inert={collabReadOnly}
 												style={{ left: runSettingsPos.left, bottom: runSettingsPos.bottom }}
 												className="fixed z-[100] flex min-w-56 flex-col gap-1 rounded-xl border border-[var(--omp-border)] bg-[var(--omp-bg-elevated)] p-1.5 shadow-[var(--omp-shadow-md)]"
 											>
@@ -969,7 +995,11 @@ export function InputArea() {
 										)}
 								</div>
 							) : (
-								<div data-run-settings-inline className="flex shrink-0 items-center gap-0.5">
+								<div
+									data-run-settings-inline
+									inert={collabReadOnly}
+									className="flex shrink-0 items-center gap-0.5"
+								>
 									<ThinkingControl />
 									<FastModeControl />
 									{!isChat && <ApprovalControl />}
@@ -985,6 +1015,11 @@ export function InputArea() {
 								</span>
 							)}
 
+							{collabReadOnly && (
+								<span role="status" className="text-omp-sm text-(--omp-warning)">
+									{t("collab.readOnlyInput")}
+								</span>
+							)}
 							<div className="omp-composer-send-cluster ml-1 flex shrink-0 items-center gap-2.5">
 								<ContextUsagePopover />
 
@@ -992,7 +1027,7 @@ export function InputArea() {
 									<div className="flex shrink-0 items-center gap-1.5">
 										<button
 											type="button"
-											disabled={!routeReady}
+											disabled={!routeReady || collabReadOnly}
 											onClick={() => setMode(current => (current === "followUp" ? "steer" : "followUp"))}
 											title={modeTitle}
 											className="omp-pressable h-7 rounded-md border border-[var(--omp-border)] px-2.5 text-omp-sm font-medium text-[var(--omp-muted)] hover:border-[var(--omp-border-strong)] hover:text-[var(--omp-text)]"
@@ -1001,8 +1036,26 @@ export function InputArea() {
 										</button>
 										<button
 											type="button"
-											disabled={!routeReady}
+											onClick={() => send()}
+											disabled={
+												!routeReady ||
+												collabReadOnly ||
+												status !== "ready" ||
+												sending ||
+												submissionUncertain ||
+												(!text.trim() && images.length === 0)
+											}
+											aria-label={t("input.send")}
+											title={t("input.send")}
+											className="omp-pressable flex h-7 w-7 items-center justify-center rounded-md bg-[var(--omp-btn-primary-bg)] text-[var(--omp-btn-primary-text)] disabled:opacity-40"
+										>
+											<ArrowUp size={14} />
+										</button>
+										<button
+											type="button"
+											disabled={!routeReady || collabReadOnly}
 											onClick={() => void abortActiveTurn(rpc, runtimeTabId)}
+											aria-label={t("input.abort")}
 											title={t("input.abort")}
 											className="omp-pressable flex h-7 w-7 items-center justify-center rounded-md bg-[var(--omp-error-dim)] text-[var(--omp-error)] hover:bg-[var(--omp-error)] hover:text-[var(--omp-btn-danger-text)]"
 										>
@@ -1014,8 +1067,14 @@ export function InputArea() {
 										type="button"
 										onClick={() => send()}
 										disabled={
-											!routeReady || status !== "ready" || sending || (!text.trim() && images.length === 0)
+											!routeReady ||
+											collabReadOnly ||
+											status !== "ready" ||
+											sending ||
+											submissionUncertain ||
+											(!text.trim() && images.length === 0)
 										}
+										aria-label={t("input.send")}
 										title={t("input.send")}
 										className="omp-pressable flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--omp-btn-primary-bg)] text-[var(--omp-btn-primary-text)] shadow-[var(--omp-shadow-sm)] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none disabled:hover:brightness-100"
 									>

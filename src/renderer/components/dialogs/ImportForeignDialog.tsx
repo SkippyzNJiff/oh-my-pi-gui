@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../lib/tab-rpc";
 /**
  * Foreign-session import wizard (Claude/Codex → OMP copy): list sessions from
  * a source, multi-select, import each as a fresh OMP session (the source data
@@ -7,11 +8,11 @@
  */
 
 import { Download, Loader2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { RpcForeignSessionInfo } from "../../../shared/rpc-types";
-import { requestSessionSwitch } from "../../hooks/use-session-switch";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { RpcForeignSessionInfo, RpcResponse } from "../../../shared/rpc-types";
 import { cx, formatTimeAgo } from "../../lib/format";
 import { useT } from "../../lib/i18n";
+import { useTabsStore } from "../../stores/tabs";
 import { toast } from "../../stores/toast";
 import { useUiStore } from "../../stores/ui";
 import { Button, Input, Modal, Spinner } from "../common";
@@ -27,6 +28,7 @@ interface SourceState {
 }
 
 export function ImportForeignDialog() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const close = useUiStore(s => s.closeImportDialog);
 	const [source, setSource] = useState<Source>("claude");
@@ -34,6 +36,16 @@ export function ImportForeignDialog() {
 	const [query, setQuery] = useState("");
 	const [selected, setSelected] = useState<Set<string>>(new Set());
 	const [importing, setImporting] = useState(false);
+	const [importError, setImportError] = useState<string | null>(null);
+	const [completed, setCompleted] = useState<Set<string>>(new Set());
+	const generation = useRef(0);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: a different session client invalidates pending imports.
+	useEffect(() => {
+		generation.current++;
+		return () => {
+			generation.current++;
+		};
+	}, [tabRpc]);
 
 	const load = useCallback(
 		async (target: Source, force = false) => {
@@ -42,28 +54,35 @@ export function ImportForeignDialog() {
 				return;
 			}
 			setStates(current => ({ ...current, [target]: { loading: true, error: null, sessions: [] } }));
-			const response = await window.omp.rpc.listForeignSessions(target);
-			if (!response.success) {
+			const version = generation.current;
+			try {
+				const response = await tabRpc.listForeignSessions(target);
+				if (version !== generation.current) return;
+				if (!response.success) {
+					setStates(current => ({
+						...current,
+						[target]: { loading: false, error: response.error, sessions: [] },
+					}));
+					return;
+				}
+				const data = response.data as { sessions?: RpcForeignSessionInfo[] } | undefined;
 				setStates(current => ({
 					...current,
-					[target]: { loading: false, error: response.error, sessions: [] },
+					[target]: { loading: false, error: null, sessions: data?.sessions ?? [] },
 				}));
-				return;
+			} catch (cause) {
+				if (generation.current === version)
+					setStates(current => ({ ...current, [target]: { loading: false, error: String(cause), sessions: [] } }));
 			}
-			const data = response.data as { sessions?: RpcForeignSessionInfo[] } | undefined;
-			setStates(current => ({
-				...current,
-				[target]: { loading: false, error: null, sessions: data?.sessions ?? [] },
-			}));
 		},
-		[states],
+		[states, tabRpc.listForeignSessions],
 	);
 
 	// Reload only when the source tab changes (load() closes over cached states).
 	// biome-ignore lint/correctness/useExhaustiveDependencies: keyed reload by design
 	useEffect(() => {
-		void load(source);
-	}, [source]);
+		void load(source, true);
+	}, [source, tabRpc]);
 
 	const state = states[source];
 	const filtered = useMemo(() => {
@@ -79,6 +98,7 @@ export function ImportForeignDialog() {
 	}, [state, query]);
 
 	const toggle = (id: string) => {
+		id = `${source}:${id}`;
 		setSelected(current => {
 			const next = new Set(current);
 			if (next.has(id)) next.delete(id);
@@ -88,57 +108,78 @@ export function ImportForeignDialog() {
 	};
 
 	const doImport = async () => {
-		const sessions = (state?.sessions ?? []).filter(session => selected.has(session.id));
+		const sessions = (state?.sessions ?? []).filter(session => selected.has(`${source}:${session.id}`));
 		if (sessions.length === 0 || importing) return;
 		setImporting(true);
+		setImportError(null);
+		const failed = new Set<string>();
+		const version = generation.current;
 		try {
 			let firstImported: { sessionPath: string; sessionId: string; cwd: string } | null = null;
 			let importedCount = 0;
 			for (const session of sessions) {
-				const response = await window.omp.rpc.importForeignSession(source, session.id);
-				if (!response.success) {
-					toast({ variant: "error", title: t("import.failed"), message: response.error });
+				let response: RpcResponse;
+				try {
+					response = await tabRpc.importForeignSession(source, session.id);
+				} catch (cause) {
+					failed.add(`${source}:${session.id}`);
+					setImportError(String(cause));
 					continue;
 				}
-				const data = response.data as { sessionPath?: string; sessionId?: string } | undefined;
+				if (generation.current !== version) return;
+				if (!response.success) {
+					failed.add(`${source}:${session.id}`);
+					setImportError(response.error);
+					continue;
+				}
+				const data = response.data as { sessionPath?: string; sessionId?: string; cwd?: string } | undefined;
 				if (data?.sessionPath && data.sessionId) {
 					importedCount += 1;
-					firstImported ??= { sessionPath: data.sessionPath, sessionId: data.sessionId, cwd: session.cwd };
+					setCompleted(current => new Set([...current, `${source}:${session.id}`]));
+					firstImported ??= {
+						sessionPath: data.sessionPath,
+						sessionId: data.sessionId,
+						cwd: data.cwd ?? session.cwd,
+					};
 				}
 			}
 			if (importedCount === 0) return;
 			if (sessions.length === 1 && firstImported) {
-				close();
-				requestSessionSwitch({
-					path: firstImported.sessionPath,
-					id: firstImported.sessionId,
-					title: null,
-					cwd: firstImported.cwd,
-					created: "",
-					modified: "",
-					messageCount: 0,
-					size: 0,
-					status: "unknown",
-					firstMessage: "",
-				});
+				const tabId = await useTabsStore.getState().openTab({ sessionPath: firstImported.sessionPath });
+				if (tabId) close();
+				else setImportError(t("import.openFailed", { path: firstImported.sessionPath }));
 				return;
 			}
 			toast({ variant: "success", message: t("import.imported", { count: importedCount }) });
-			setSelected(new Set());
+			setSelected(failed);
 			// Refresh the list: imported sessions were copies, the sources are unchanged.
+		} catch (cause) {
+			setImportError(String(cause));
 		} finally {
-			setImporting(false);
+			if (generation.current === version) setImporting(false);
 		}
 	};
 
 	return (
-		<Modal open onClose={close} title={t("import.title")} size="lg">
+		<Modal
+			open
+			onClose={() => {
+				if (!importing) close();
+			}}
+			title={t("import.title")}
+			size="lg"
+		>
 			<div className="mb-3 flex items-center gap-2">
 				{SOURCES.map(candidate => (
 					<button
 						key={candidate}
 						type="button"
-						onClick={() => setSource(candidate)}
+						disabled={importing}
+						aria-pressed={source === candidate}
+						onClick={() => {
+							setSource(candidate);
+							setSelected(new Set());
+						}}
 						className={cx(
 							"rounded-lg px-3 py-1.5 text-omp-md font-medium capitalize",
 							source === candidate
@@ -150,10 +191,23 @@ export function ImportForeignDialog() {
 					</button>
 				))}
 				<span className="ml-auto">
-					<Input value={query} onChange={event => setQuery(event.target.value)} placeholder={t("import.search")} />
+					<Input
+						aria-label={t("import.search")}
+						value={query}
+						onChange={event => setQuery(event.target.value)}
+						placeholder={t("import.search")}
+					/>
 				</span>
 			</div>
 
+			{importError && (
+				<p role="alert" className="mb-2 text-omp-sm text-(--omp-error)">
+					{importError}
+				</p>
+			)}
+			<Button size="sm" disabled={importing || state?.loading} onClick={() => void load(source, true)}>
+				{t("common.refresh")}
+			</Button>
 			<div className="max-h-[46vh] min-h-[200px] overflow-y-auto rounded-lg border border-(--omp-border-muted)">
 				{state?.loading && (
 					<div className="flex h-32 items-center justify-center text-(--omp-dim)">
@@ -178,13 +232,20 @@ export function ImportForeignDialog() {
 						>
 							<input
 								type="checkbox"
-								checked={selected.has(session.id)}
+								disabled={importing || completed.has(`${source}:${session.id}`)}
+								checked={selected.has(`${source}:${session.id}`)}
 								onChange={() => toggle(session.id)}
 								className="mt-1"
 							/>
 							<span className="min-w-0 flex-1">
 								<span className="block truncate text-omp-md font-medium text-(--omp-text)">
 									{session.title ?? session.firstMessage ?? t("import.untitled")}
+									{completed.has(`${source}:${session.id}`) && (
+										<span className="ml-2 text-(--omp-success)">{t("import.done")}</span>
+									)}
+								</span>
+								<span className="mt-0.5 block whitespace-pre-wrap text-omp-sm text-(--omp-muted)">
+									{session.firstMessage}
 								</span>
 								<span className="mt-0.5 block truncate font-mono text-omp-xs text-(--omp-dim)">
 									{session.cwd}

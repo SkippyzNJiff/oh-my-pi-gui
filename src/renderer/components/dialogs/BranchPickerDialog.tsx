@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../lib/tab-rpc";
 /**
  * Branch picker: lists the current session's user messages (via
  * rpc.getBranchMessages) and branches the session from the chosen entry via
@@ -18,6 +19,7 @@ interface BranchEntry {
 }
 
 export function BranchPickerDialog() {
+	const tabRpc = useTabRpc();
 	const t = useT();
 	const open = useUiStore(state => state.branchPickerOpen);
 	const close = useUiStore(state => state.closeBranchPicker);
@@ -41,7 +43,7 @@ export function BranchPickerDialog() {
 		setActiveIndex(0);
 		requestAnimationFrame(() => inputRef.current?.focus());
 		let cancelled = false;
-		void window.omp.rpc
+		void tabRpc
 			.getBranchMessages()
 			.then(response => {
 				if (cancelled) return;
@@ -61,7 +63,7 @@ export function BranchPickerDialog() {
 		return () => {
 			cancelled = true;
 		};
-	}, [open]);
+	}, [open, tabRpc.getBranchMessages]);
 
 	// Newest first — the RPC returns entries in session order.
 	const filtered = useMemo(() => {

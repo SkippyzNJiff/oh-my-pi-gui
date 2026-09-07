@@ -100,7 +100,7 @@ export async function handlePluginActivation(
 		!isPluginActivationOriginActive(origin) ||
 		isStreaming ||
 		isCompacting ||
-		useUiStore.getState().switchPending !== null
+		useSessionStore.getState().switchPending !== null
 	) {
 		usePluginActivationStore.getState().requestActivation(target, origin.tabId, origin.sessionId);
 		toast({ variant: "info", message: translate("pluginActivation.waiting", { name: target.pluginId }) });
@@ -116,7 +116,7 @@ export function watchPluginActivation(): () => void {
 		for (const tabId of Object.keys(usePluginActivationStore.getState().pendingByTab)) {
 			if (!tabs.tabs.some(tab => tab.id === tabId)) usePluginActivationStore.getState().clearActivation(tabId);
 		}
-		if (activating || !acceptsActiveTabEvents() || useUiStore.getState().switchPending !== null) return;
+		if (activating || !acceptsActiveTabEvents() || useSessionStore.getState().switchPending !== null) return;
 		const session = useSessionStore.getState();
 		if (session.isStreaming || session.isCompacting) return;
 		const tabId = tabs.activeTabId;

@@ -30,6 +30,7 @@ export const ZH_GROUP_TITLES: Record<string, string> = {
 	"Magic Keywords": "魔法关键词",
 	"Startup & Updates": "启动与更新",
 	"Power (macOS)": "电源（macOS）",
+	Power: "电源",
 	Agent: "Agent",
 	Git: "Git",
 	General: "常规",
@@ -69,6 +70,30 @@ export const ZH_GROUP_TITLES: Record<string, string> = {
 
 /** Per-setting row text, keyed by schema setting path. */
 export const ZH_SETTINGS: Record<string, { label: string; description?: string }> = {
+	"providers.openai-codex.codeMode": {
+		label: "Codex 代码模式",
+		description: "通过 eval 使用代码模式模型；其他会话工具由 eval 调用。自动模式跟随模型目录的能力标记。",
+	},
+	"providers.openai-codex.codeModeDirectTools": {
+		label: "代码模式额外直接工具",
+		description: "除 eval、ask、todo、yield、think、checkpoint 和 rewind 外，允许直接调用的工具。",
+	},
+	"update.channel": {
+		label: "Core 更新通道",
+		description: "omp update 与 Core 启动更新检查使用的通道。桌面应用更新在“更新”页面管理。",
+	},
+	"edit.autoRepair.enabled": {
+		label: "自动修复解析错误",
+		description: "编辑导致文件无法解析时，请小模型修复出错区域，并重新解析验证；修复失败时显示警告。",
+	},
+	"providers.cacheRetention": {
+		label: "提示词缓存保留时间",
+		description: "向支持的提供商发送缓存保留策略；自动模式使用提供商默认值，关闭会同时停用缓存亲和路由。",
+	},
+	"commit.mapReduceThreshold": { label: "分批生成提交信息的阈值" },
+	"commit.mapBatchTokenBudget": { label: "提交分析每批 Token 预算" },
+	"commit.cacheEnabled": { label: "缓存提交分析结果" },
+	"commit.cacheTtlDays": { label: "提交分析缓存天数" },
 	"extensionHandlers.toolCallTimeoutMs": {
 		label: "扩展工具调用超时（毫秒）",
 		description: "扩展 tool_call 处理器的有效工作超时；等待 OMP 对话框期间不计时，无效值回退为 30000 毫秒。",
@@ -279,6 +304,11 @@ export const ZH_SETTINGS: Record<string, { label: string; description?: string }
 			"重试之间的最长等待时间（毫秒）。当提供商要求等待超过此值、且没有凭据或模型回退成功时，请求会快速失败而不是睡眠等待（例如 Anthropic 长达 3 小时的限流窗口）。",
 	},
 	"retry.modelFallback": { label: "重试模型回退", description: "允许重试恢复时切换到配置的回退模型" },
+	"retry.waitForUsageReset": {
+		label: "等待额度重置",
+		description:
+			"提供商返回明确的额度重置时间时，等待到重置后再重试，即使超过最大重试延迟。可随时中止等待；子任务也会一同等待。",
+	},
 	"retry.usageAwareFallback": {
 		label: "用量感知回退",
 		description:
@@ -419,7 +449,7 @@ export const ZH_SETTINGS: Record<string, { label: string; description?: string }
 	},
 	extendedContext: {
 		label: "扩展上下文",
-		description: "对超过标准计费阈值会加价的模型启用扩展上下文；关闭后会在标准计费窗口前触发压缩。",
+		description: "在支持的模型上启用更大的上下文窗口，可能增加费用；关闭后使用默认或标准计费窗口。",
 	},
 	"compaction.enabled": { label: "自动压缩", description: "上下文过大时自动压缩" },
 	"compaction.midTurnEnabled": {
@@ -656,6 +686,10 @@ export const ZH_SETTINGS: Record<string, { label: string; description?: string }
 
 	// ── shell ───────────────────────────────────────────────────────────────
 	"bash.enabled": { label: "Bash", description: "启用 bash 工具以执行 shell 命令" },
+	"bash.allowCompoundCommands": {
+		label: "逐条审批复合命令",
+		description: "对使用 && 连接的简单命令逐条匹配审批规则；未匹配的命令仍遵循常规 Bash 审批策略。",
+	},
 	"bash.autoBackground.enabled": {
 		label: "Bash 自动后台",
 		description: "自动将长时间运行的 bash 命令转入后台，稍后交付结果",

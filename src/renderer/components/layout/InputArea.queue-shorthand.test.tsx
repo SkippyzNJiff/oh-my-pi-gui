@@ -14,7 +14,14 @@ import { useMessagesStore } from "../../stores/messages";
 import { useModelStore } from "../../stores/model";
 import { useQueueStore } from "../../stores/queue";
 import { useSessionStore } from "../../stores/session";
+import {
+	SessionRuntimeProvider,
+	sessionRuntime,
+	setFocusedSessionRuntime,
+	withSessionRuntime,
+} from "../../stores/session-runtime-context";
 import { useSettingsStore } from "../../stores/settings";
+import { createTabRuntime, replaceTabRuntime } from "../../stores/tab-runtime";
 import { useTabsStore } from "../../stores/tabs";
 import { useUiStore } from "../../stores/ui";
 import { InputArea } from "./InputArea";
@@ -134,12 +141,12 @@ function findTextarea(): TestElement {
 	return textarea;
 }
 
-async function mount(): Promise<void> {
+async function mount(withRuntime = false): Promise<void> {
 	followUp = vi.fn(async () => ok());
 	steer = vi.fn(async () => ok());
 	prompt = vi.fn(async () => ok());
 	setThinkingLevel = vi.fn(async (level: string) => ok({ thinkingLevel: level, thinkingConfigured: level }));
-	setSetting = vi.fn(async () => ok());
+	setSetting = vi.fn(async (_path: string, value: unknown) => ok({ value, provenance: { layers: ["global"] } }));
 	setPlanMode = vi.fn(async (enabled: boolean) => ok({ enabled }));
 	(window as unknown as Record<string, unknown>).omp = {
 		fs: { list: vi.fn(async () => ({ entries: [] })) },
@@ -178,13 +185,45 @@ async function mount(): Promise<void> {
 		activeTabId: "t0",
 		bundles: new Map(),
 	});
+	const runtime = withRuntime ? createTabRuntime("t0") : null;
+	if (runtime) {
+		setFocusedSessionRuntime("t0");
+		withSessionRuntime("t0", () =>
+			useSessionStore.setState({ status: "ready", sessionId: "before-restart", cwd: "/tmp" }),
+		);
+		window.omp.rpc.commandForTab = vi.fn(async (_tabId, command) => {
+			if (command.type === "prompt") return prompt(command.message, command.images);
+			if (command.type === "get_queue") return ok({ steering: [], followUp: [] });
+			if (command.type === "get_state")
+				return ok({
+					sessionId: useSessionStore.getState().sessionId,
+					sessionName: null,
+					sessionFile: null,
+					cwd: "/tmp",
+					isStreaming: false,
+					isCompacting: false,
+					contextUsage: null,
+					messageCount: 0,
+					queuedMessageCount: 0,
+					planModeEnabled: false,
+					todoPhases: [],
+				});
+			return ok({});
+		});
+	}
 	container = document.createElement("div") as unknown as TestElement;
 	document.body.appendChild(container as never);
 	root = createRoot(container as unknown as Element);
 	await act(async () => {
 		root.render(
 			<I18nProvider>
-				<InputArea />
+				{runtime ? (
+					<SessionRuntimeProvider runtime={runtime}>
+						<InputArea />
+					</SessionRuntimeProvider>
+				) : (
+					<InputArea />
+				)}
 			</I18nProvider>,
 		);
 	});
@@ -207,6 +246,49 @@ afterEach(async () => {
 });
 
 describe("InputArea queue shorthand submit", () => {
+	it("restores an unacknowledged send after process recovery and blocks duplicate submission", async () => {
+		await mount(true);
+		const pending = Promise.withResolvers<RpcResponse>();
+		prompt.mockReturnValueOnce(pending.promise);
+		await typeInto(findTextarea(), "preserve in-flight input");
+		await pressEnter(findTextarea());
+		await flush();
+		expect(prompt).toHaveBeenCalledTimes(1);
+		await typeInto(findTextarea(), "next draft");
+		const recovering = withSessionRuntime("t0", () => useComposerStore.getState());
+		expect(recovering.sending).toBe(true);
+		// The restart retains the task while the unsaved Core session receives a new id.
+		await act(async () => {
+			sessionRuntime("t0")!.recovering = true;
+			useSessionStore.getState().reset();
+			const replacement = replaceTabRuntime("t0");
+			setFocusedSessionRuntime("t0");
+			useSessionStore.setState({ status: "ready", sessionId: "recovered-session", cwd: "/tmp" });
+			replacement.recovering = false;
+			root.render(
+				<I18nProvider>
+					<SessionRuntimeProvider runtime={replacement}>
+						<InputArea />
+					</SessionRuntimeProvider>
+				</I18nProvider>,
+			);
+		});
+		pending.resolve({
+			type: "response",
+			command: "prompt",
+			success: false,
+			code: "rpc_delivery_unknown",
+			error: "Process restarted before acknowledgement",
+		});
+		await flush();
+		expect(useComposerStore.getState().draft).toBe("preserve in-flight input\nnext draft");
+		expect(useComposerStore.getState().submissionUncertain).toBe(true);
+		expect(useComposerStore.getState().sending).toBe(false);
+		await pressEnter(findTextarea());
+		await flush();
+		expect(prompt).toHaveBeenCalledTimes(1);
+	});
+
 	it("enables the platform spellcheck and autocorrect pipeline", async () => {
 		await mount();
 		const textarea = findTextarea();
@@ -241,6 +323,21 @@ describe("InputArea queue shorthand submit", () => {
 
 		expect(followUp).toHaveBeenCalledWith("ship it", []);
 		expect(steer).not.toHaveBeenCalled();
+	});
+
+	it("preserves only the unacknowledged queue remainder and prevents retry after transport loss", async () => {
+		await mount();
+		followUp.mockResolvedValueOnce(ok()).mockRejectedValueOnce(new Error("transport disconnected"));
+		await typeInto(findTextarea(), "=>\n1. accepted\n2. uncertain\n3. unsent");
+		await pressEnter(findTextarea());
+		await flush();
+		await flush();
+		expect(followUp).toHaveBeenCalledTimes(2);
+		expect(useComposerStore.getState().draft).toBe("=>\n1. uncertain\n2. unsent");
+		expect(useComposerStore.getState().submissionUncertain).toBe(true);
+		await pressEnter(findTextarea());
+		await flush();
+		expect(followUp).toHaveBeenCalledTimes(2);
 	});
 
 	it("splits an enumerated list into one followUp per item while streaming", async () => {
@@ -312,7 +409,7 @@ describe("InputArea queue shorthand submit", () => {
 		);
 		expect(useMessagesStore.getState().messages).toEqual([]);
 		expect(useMessagesStore.getState().liveMessages).toEqual([
-			{ ...delivered, optimistic: true, optimisticAfterEntryId: null },
+			{ ...delivered, optimistic: true, optimisticDelivered: true, optimisticAfterEntryId: null },
 		]);
 		expect(useMessagesStore.getState().streamingMessage).toBeNull();
 		await act(async () => useMessagesStore.getState().applyEvents([{ type: "agent_end", messages: [delivered] }]));

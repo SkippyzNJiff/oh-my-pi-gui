@@ -1,3 +1,4 @@
+import { useTabRpc } from "../../lib/tab-rpc";
 /**
  * Usage window: provider quota reports (limit bars with reset countdowns)
  * plus local session token/cost tallies. Fed by rpc.getUsage().
@@ -101,6 +102,7 @@ function ProviderReportCard({
 }
 
 export function UsageWindow() {
+	const tabRpc = useTabRpc();
 	const open = useUiStore(s => s.usageOpen);
 	const close = useUiStore(s => s.closeUsage);
 	const t = useT();
@@ -118,7 +120,7 @@ export function UsageWindow() {
 			return;
 		}
 		try {
-			const res = await window.omp.rpc.getUsage();
+			const res = await tabRpc.getUsage();
 			if (res.success) setResult(res.data as UsageResult);
 			else setError(res.error);
 		} catch (cause) {
@@ -126,7 +128,7 @@ export function UsageWindow() {
 		} finally {
 			setLoading(false);
 		}
-	}, [sidecarReady, t]);
+	}, [sidecarReady, t, tabRpc.getUsage]);
 
 	useEffect(() => {
 		if (open) void load();
