@@ -23,6 +23,7 @@ import { useUiStore } from "../stores/ui";
 import { saveGuiPreference } from "./display-preferences";
 import { useT } from "./i18n";
 import { PREVIEW_SCROLL_CODE } from "./preview";
+import { remarkLatexMath } from "./remark-latex-math";
 
 interface MarkdownRendererProps {
 	content: string;
@@ -44,10 +45,11 @@ interface MarkdownRendererProps {
 // ReactMarkdown from treating the pipeline as changed on every render.
 // remark-math must precede rehype-katex: it parses $...$/$$...$$ into math
 // nodes that rehype-katex (rehype chain below) then renders.
-const REMARK_PLUGINS: Options["remarkPlugins"] = [remarkGfm, remarkMath];
+const REMARK_PLUGINS: Options["remarkPlugins"] = [remarkGfm, remarkMath, remarkLatexMath];
 const REMARK_PLUGINS_LITERAL_SINGLE_DOLLAR: Options["remarkPlugins"] = [
 	remarkGfm,
 	[remarkMath, { singleDollarTextMath: false }],
+	remarkLatexMath,
 ];
 
 type SanitizeSchema = NonNullable<Parameters<typeof rehypeSanitize>[0]>;

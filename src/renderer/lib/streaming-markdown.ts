@@ -64,7 +64,7 @@ export function segmentStreamingMarkdown(text: string): StreamingMarkdownSegment
 	let blockStart = 0;
 	let offset = 0;
 	let fence: FenceState | null = null;
-	let displayMath = false;
+	let displayMath: "$$" | "\\]" | null = null;
 	// Blank lines inside a list block are NOT stable boundaries: an indented
 	// continuation or a further item still belongs to the same <li>, so
 	// promotion defers until a line proves the list ended. Without this,
@@ -114,12 +114,23 @@ export function segmentStreamingMarkdown(text: string): StreamingMarkdownSegment
 			fence = openingFence(line);
 		}
 
-		if (!fence && !closedFence && trimmed === "$$") {
-			displayMath = !displayMath;
-			closedMath = !displayMath;
+		if (!fence && !closedFence) {
+			if (displayMath === "$$" && trimmed === "$$") {
+				displayMath = null;
+				closedMath = true;
+			} else if (!displayMath) {
+				if (trimmed === "$$") displayMath = "$$";
+				else if (trimmed.startsWith("\\[")) displayMath = "\\]";
+			}
+			// A bracket equation may start/end beside its body. A TeX row break
+			// (`\\`) before `]` is content, not a closing delimiter.
+			if (displayMath === "\\]" && /(?:^|[^\\])(?:\\\\)*\\\]$/.test(trimmed)) {
+				displayMath = null;
+				closedMath = true;
+			}
 		}
 
-		if (hasNewline && !fence && !displayMath && (closedFence || closedMath)) {
+		if (hasNewline && !fence && !displayMath && (closedFence || (closedMath && listColumn === null))) {
 			promote(end);
 		} else if (!fence && !displayMath && !closedFence && !closedMath) {
 			if (trimmed.length === 0) {

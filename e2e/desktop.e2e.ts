@@ -152,6 +152,56 @@ test("Escape cancels a settings edit without saving its abandoned value", async 
 	expect(response.data).toMatchObject({ values: { "compaction.reserveTokens": 8192 } });
 });
 
+test("math survives history reload and scrolls inside its column in both themes", async () => {
+	await command("fixture math");
+	const markdown = page.locator(".markdown-body").filter({ has: page.locator(".katex-display") });
+	await expect(markdown.locator(".katex-display")).toHaveCount(4);
+	await expect(markdown).toContainText("只有统计口径相同时");
+	await page.reload();
+	await expect(markdown.locator(".katex-display")).toHaveCount(4);
+	await expect(markdown.locator(".katex-html").filter({ hasText: "显存有效带宽" })).toHaveCount(1);
+	await expect(markdown.locator("h1, h2, .katex-error")).toHaveCount(0);
+	const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+	for (const theme of ["Graphite", "Porcelain"]) {
+		await command("/theme");
+		const picker = page.getByRole("dialog");
+		await picker.getByPlaceholder("Search themes…").fill(theme);
+		await picker.locator("button[aria-pressed]").filter({ hasText: theme }).click();
+		await expect(picker).toHaveCount(0);
+		await page.setViewportSize({ width: 900, height: 1050 });
+		await markdown.scrollIntoViewIfNeeded();
+		await page.evaluate(() => document.fonts.ready);
+		expect(await page.evaluate(() => document.fonts.check("16px KaTeX_Main"))).toBe(true);
+		const layout = await markdown.evaluate(element => {
+			const displays = Array.from(element.querySelectorAll<HTMLElement>(".katex-display"));
+			return {
+				columnFits: element.scrollWidth <= element.clientWidth + 1,
+				formulasFit: displays.every(node => node.getBoundingClientRect().width <= element.clientWidth + 1),
+				canScroll: displays.some(node => node.scrollWidth > node.clientWidth),
+				startsVisible: displays.every(node => {
+					const formula = node.querySelector(".katex-html");
+					return formula && formula.getBoundingClientRect().left >= node.getBoundingClientRect().left - 1;
+				}),
+			};
+		});
+		expect(layout).toEqual({ columnFits: true, formulasFit: true, canScroll: true, startsVisible: true });
+		expect(
+			await markdown
+				.locator(".katex-display")
+				.last()
+				.evaluate(node => {
+					node.scrollLeft = node.scrollWidth;
+					const moved = node.scrollLeft > 0;
+					node.scrollLeft = 0;
+					return moved;
+				}),
+		).toBe(true);
+		await page.screenshot({ path: `test-results/math-${theme}.png`, scale: "css", animations: "disabled" });
+	}
+	await page.setViewportSize(viewport);
+	expect(errors).toEqual([]);
+});
+
 test("all named themes apply with readable primary text and no stale scheme tokens", async () => {
 	test.setTimeout(90_000);
 	const labels = [

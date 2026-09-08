@@ -121,4 +121,27 @@ describe("StreamingText presentation", () => {
 		expect(container.querySelector("code.language-typescript")?.textContent).toContain("const answer = 42;");
 		expect(container.querySelector(".omp-streaming-tail")?.textContent).toBe("");
 	});
+
+	it("keeps an unfinished bracket equation together and typesets it when it closes", async () => {
+		const unfinished = String.raw`\[
+TPS_{\text{decode}}
+
+=
+\frac{500-1}{12-2}
+=
+49.9
+`;
+		await mount(unfinished);
+		expect(container.querySelector(".omp-streaming-block")).toBeNull();
+		expect(container.querySelector(".omp-streaming-tail")?.textContent).toBe(unfinished);
+
+		await act(async () => {
+			useMessagesStore.setState({ streamingText: `${unfinished}\\]\nExplanation` });
+		});
+		await flushFrame();
+
+		expect(container.querySelectorAll(".katex-display")).toHaveLength(1);
+		expect(container.querySelector("h1, h2, .katex-error")).toBeNull();
+		expect(container.querySelector(".omp-streaming-tail")?.textContent).toBe("Explanation");
+	});
 });

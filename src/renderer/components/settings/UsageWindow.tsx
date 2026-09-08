@@ -23,8 +23,15 @@ function resetCountdown(
 	return t("usage.resetsIn", { time: formatDuration(ms) });
 }
 
-function limitValueText(limit: UsageLimit, t: (k: string, p?: Record<string, string | number>) => string): string {
-	const unit = limit.unit === "percent" ? "%" : ` ${limit.unit ?? ""}`;
+export function limitValueText(
+	limit: UsageLimit,
+	t: (k: string, p?: Record<string, string | number>) => string,
+): string {
+	const hasUnit = Boolean(limit.unit && limit.unit !== "unknown");
+	if (!hasUnit && limit.usedFraction !== undefined) {
+		return t("usage.valueUsed", { value: `${Number((limit.usedFraction * 100).toFixed(1))}%` });
+	}
+	const unit = limit.unit === "percent" ? "%" : hasUnit ? ` ${limit.unit}` : "";
 	if (limit.used !== undefined && limit.limit !== undefined) {
 		return `${limit.used.toFixed(limit.unit === "percent" ? 1 : 0)}${unit} / ${limit.limit.toFixed(0)}${unit}`;
 	}

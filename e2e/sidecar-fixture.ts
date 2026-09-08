@@ -540,7 +540,41 @@ if (process.argv.includes("stats")) {
 				} else if (command.message !== "fixture running") {
 					const answer: AgentMessage = {
 						role: "assistant",
-						content: [{ type: "text", text: "Local fixture reply" }],
+						content: [
+							{
+								type: "text",
+								text:
+									command.message === "fixture math"
+										? `只有统计口径相同时，才有：
+
+\\[\\boxed{TPM = TPS \\times 60}\\]
+
+- \\(P\\)：参数数量，例如 \\(8\\times10^9\\)。
+
+那么，纯权重带宽模型下：
+
+\\[
+\\boxed{TPS_{\\text{decode}}\\approx \\frac{\\text{显存有效带宽，byte/s}}{\\text{每步读取的权重，byte}}}
+\\]
+
+纯生成阶段 TPS：
+
+\\[
+TPS_{\\text{decode}}
+=
+\\frac{500-1}{12-2}
+=
+49.9
+\\]
+
+减 1 是因为，第一个 token 已经在第 2 秒收到。
+
+\\[
+T_{\\text{请求}} = T_{\\text{排队等待}} + T_{\\text{网络传输}} + T_{\\text{输入预处理}} + T_{\\text{输入分词}} + T_{\\text{首令牌等待}} + \\frac{N_{\\text{输出令牌总数}}-1}{TPS_{\\text{decode}}} + T_{\\text{结果后处理}}
+\\]`
+										: "Local fixture reply",
+							},
+						],
 						timestamp: Date.now(),
 						entryId: crypto.randomUUID(),
 						stopReason: "stop",
