@@ -25,6 +25,8 @@ const RPC_COMMAND_TIMEOUTS: Record<string, number> = {
 	bash: 660_000,
 	eval: 660_000,
 	compact: 660_000,
+	set_model: 30_000,
+	cycle_model: 30_000,
 	export_html: 120_000,
 	handoff: 660_000,
 	reload_plugins: 120_000,

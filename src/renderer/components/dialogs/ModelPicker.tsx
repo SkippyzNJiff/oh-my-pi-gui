@@ -164,6 +164,8 @@ export function ModelPicker() {
 			// context bar reflect the compacted session, not just the new model.
 			if (overContext) await hydrateSession();
 			close();
+		} catch (cause) {
+			toast({ variant: "error", title: t("modelPicker.failed"), message: String(cause) });
 		} finally {
 			setSwitching(null);
 		}

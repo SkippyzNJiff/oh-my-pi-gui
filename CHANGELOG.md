@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- **Model switching**: slow switches have more time to finish, and connection failures display an error.
 - **Quota display**: Kimi and other providers with unspecified quota units show the known usage percentage instead of an internal `unknown` label.
 - **Math rendering**: TeX formulas render correctly in replies and restored history, stay together while streaming, and scroll within narrow windows.
 
