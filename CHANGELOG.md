@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-09-14
+
+### Changed
+
+- **Bundled agent upgraded to omp 18.1.20** with the latest upstream provider, collaboration, speculative execution, and tool interaction updates.
+
 ### Fixed
 
 - **Model switching**: slow switches have more time to finish, and connection failures display an error.
