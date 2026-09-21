@@ -92,6 +92,9 @@ export class WindowManager {
 			minWidth: MIN_WIDTH,
 			minHeight: MIN_HEIGHT,
 			show: false,
+			// Windows paints File/Edit/View under the title bar. Keep the menu
+			// for accelerators; Alt (autoHideMenuBar) reveals it when needed.
+			autoHideMenuBar: process.platform === "win32",
 			webPreferences: {
 				contextIsolation: true,
 				nodeIntegration: false,

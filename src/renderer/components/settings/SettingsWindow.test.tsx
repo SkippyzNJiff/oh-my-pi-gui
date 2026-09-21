@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { SettingEntry } from "../../../shared/rpc-types";
 import { I18nProvider } from "../../lib/i18n";
 import { useUiStore } from "../../stores/ui";
+import { ThemePickerList } from "../dialogs/ThemePickerList";
 import { Toggle } from "./editors/Toggle";
 import { CapabilitiesHome } from "./pages/CapabilitiesHome";
 import {
@@ -330,5 +331,20 @@ describe("SettingsWindow", () => {
 				</I18nProvider>,
 			),
 		).toBe("");
+	});
+});
+
+describe("ThemePickerList", () => {
+	it("renders every named theme plus system as always-visible options", () => {
+		const html = renderToStaticMarkup(
+			<I18nProvider>
+				<ThemePickerList compact />
+			</I18nProvider>,
+		);
+		expect(html).toContain("System");
+		expect(html).toContain("Graphite");
+		expect(html).toContain("Porcelain");
+		expect(html).toContain('role="listbox"');
+		expect(html).not.toContain("Choose GUI theme");
 	});
 });

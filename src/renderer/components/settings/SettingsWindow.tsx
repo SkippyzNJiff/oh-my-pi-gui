@@ -54,6 +54,7 @@ import { useUiStore } from "../../stores/ui";
 import { CodeBlock } from "../chat/CodeBlock";
 import { Button, Input, Spinner, type TabItem, TextArea } from "../common";
 import { isTopmostDialog, registerDialogLayer } from "../common/dialog-layer";
+import { ThemePickerList } from "../dialogs/ThemePickerList";
 import { ExtensionSettingsPage } from "../panels/ExtensionsPanel";
 import { InventorySettingsPage, type TabId as InventoryTabId } from "../panels/InventoryPanel";
 import { ArrayChipEditor } from "./editors/ArrayChipEditor";
@@ -626,57 +627,47 @@ export function SettingsWindow() {
 					<div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
 						{navGroups.map((group, groupIndex) => (
 							<section className={groupIndex === 0 ? "" : "settings-nav-group mt-4"} key={group.id}>
-								<button
-									type="button"
-									aria-expanded={group.items.some(item => item.id === tab)}
-									className="settings-nav-group-label mb-1 w-full rounded-lg px-3 py-2 text-left text-omp-md font-medium text-(--omp-text) hover:bg-(--omp-selected-bg)"
-									onClick={() => {
-										setTab(group.items[0].id);
-										setQuery("");
-										setFocusedSetting(null);
-									}}
-								>
+								<p className="settings-nav-group-label mb-1 px-3 py-1.5 text-omp-xs font-semibold tracking-widest text-(--omp-dim) uppercase">
 									{t(`settings.nav.${group.id}`)}
-								</button>
-								{group.items.some(item => item.id === tab) &&
-									group.items.map(tb => {
-										const active = tb.id === tab;
-										return (
-											<button
-												className={`settings-nav-item flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-omp-md transition-colors ${
-													active
-														? "bg-(--omp-selected-bg) font-medium text-(--omp-text)"
-														: "text-(--omp-muted) hover:bg-(--omp-bg-tertiary) hover:text-(--omp-text)"
-												}`}
-												key={tb.id}
-												onClick={() => {
-													setTab(tb.id);
-													setQuery("");
-													setFocusedSetting(null);
-												}}
-												title={tabTitle(tb)}
-												type="button"
-											>
-												<span className="flex size-4 shrink-0 items-center justify-center text-(--omp-dim)">
-													{tb.id === CAPABILITIES_TAB_ID && <Sparkles aria-hidden="true" size={13} />}
-													{tb.id === SKILLS_TAB_ID && <BookOpen aria-hidden="true" size={13} />}
-													{tb.id === MCP_TAB_ID && <Network aria-hidden="true" size={13} />}
-													{tb.id === RESOURCES_TAB_ID && <Blocks aria-hidden="true" size={13} />}
-													{tb.id === HOOKS_TAB_ID && <Webhook aria-hidden="true" size={13} />}
-													{tb.id === COMMANDS_TAB_ID && <Braces aria-hidden="true" size={13} />}
-													{tb.id === SECURITY_TAB_ID && <ShieldCheck aria-hidden="true" size={13} />}
-													{tb.id === SSH_TAB_ID && <Server aria-hidden="true" size={13} />}
-													{tb.id === UPDATES_TAB_ID && <HardDriveDownload aria-hidden="true" size={13} />}
-													{!MANAGEMENT_TAB_IDS.has(tb.id) &&
-														tb.id !== CAPABILITIES_TAB_ID &&
-														tb.id !== UPDATES_TAB_ID && (
-															<SlidersHorizontal aria-hidden="true" size={13} />
-														)}
-												</span>
-												<span className="settings-nav-label min-w-0 truncate">{tabTitle(tb)}</span>
-											</button>
-										);
-									})}
+								</p>
+								{group.items.map(tb => {
+									const active = tb.id === tab;
+									return (
+										<button
+											className={`settings-nav-item flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-omp-md transition-colors ${
+												active
+												? "bg-(--omp-selected-bg) font-medium text-(--omp-text)"
+												: "text-(--omp-muted) hover:bg-(--omp-bg-tertiary) hover:text-(--omp-text)"
+											}`}
+											key={tb.id}
+											onClick={() => {
+												setTab(tb.id);
+												setQuery("");
+												setFocusedSetting(null);
+											}}
+											title={tabTitle(tb)}
+											type="button"
+										>
+											<span className="flex size-4 shrink-0 items-center justify-center text-(--omp-dim)">
+												{tb.id === CAPABILITIES_TAB_ID && <Sparkles aria-hidden="true" size={13} />}
+												{tb.id === SKILLS_TAB_ID && <BookOpen aria-hidden="true" size={13} />}
+												{tb.id === MCP_TAB_ID && <Network aria-hidden="true" size={13} />}
+												{tb.id === RESOURCES_TAB_ID && <Blocks aria-hidden="true" size={13} />}
+												{tb.id === HOOKS_TAB_ID && <Webhook aria-hidden="true" size={13} />}
+												{tb.id === COMMANDS_TAB_ID && <Braces aria-hidden="true" size={13} />}
+												{tb.id === SECURITY_TAB_ID && <ShieldCheck aria-hidden="true" size={13} />}
+												{tb.id === SSH_TAB_ID && <Server aria-hidden="true" size={13} />}
+												{tb.id === UPDATES_TAB_ID && <HardDriveDownload aria-hidden="true" size={13} />}
+												{!MANAGEMENT_TAB_IDS.has(tb.id) &&
+													tb.id !== CAPABILITIES_TAB_ID &&
+													tb.id !== UPDATES_TAB_ID && (
+														<SlidersHorizontal aria-hidden="true" size={13} />
+													)}
+											</span>
+											<span className="settings-nav-label min-w-0 truncate">{tabTitle(tb)}</span>
+										</button>
+									);
+								})}
 							</section>
 						))}
 					</div>
@@ -773,15 +764,9 @@ export function SettingsWindow() {
 								{tab === GUI_TAB_ID && (
 									<>
 										<Section id="setting-gui-theme" title={t("settings.gui.theme")}>
-											<Button
-												onClick={() => {
-													close();
-													useUiStore.getState().openThemePicker();
-												}}
-												variant="secondary"
-											>
-												{t("settings.gui.theme")}
-											</Button>
+											<div className="mb-3">
+												<ThemePickerList compact />
+											</div>
 											<Toggle
 												checked={followAgentTheme}
 												label={t("settings.gui.followAgentTheme")}

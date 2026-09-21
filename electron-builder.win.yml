@@ -37,6 +37,3 @@ publish:
   provider: github
   owner: nornzach
   repo: oh-my-pi-gui
-
-electronLanguages:
-  - en
