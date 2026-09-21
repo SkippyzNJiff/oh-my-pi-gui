@@ -241,6 +241,8 @@ export class SidecarManager extends EventEmitter {
 					PI_NOTIFICATIONS: "off",
 				},
 				cwd,
+				// don't flash a console window behind the GUI on windows
+				windowsHide: true,
 			});
 		} catch (err) {
 			// spawn() throws synchronously (EBADF/ENOENT) — surface it as a

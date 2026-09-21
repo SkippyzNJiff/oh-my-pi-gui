@@ -9,7 +9,7 @@ Run parallel agent sessions · inspect every tool call · manage models and usag
 <a href="https://github.com/nornzach/oh-my-pi-gui/releases"><img src="https://img.shields.io/github/v/release/nornzach/oh-my-pi-gui?style=flat&colorA=222222&colorB=3FB950" alt="Release"></a>
 <a href="https://github.com/nornzach/oh-my-pi-gui/releases"><img src="https://img.shields.io/github/downloads/nornzach/oh-my-pi-gui/total?style=flat&colorA=222222&colorB=58A6FF" alt="Downloads"></a>
 <a href="./LICENSE"><img src="https://img.shields.io/github/license/nornzach/oh-my-pi-gui?style=flat&colorA=222222&colorB=BE185D" alt="License"></a>
-<img src="https://img.shields.io/badge/platform-macOS-222222?style=flat" alt="Platform">
+<img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-222222?style=flat" alt="Platform">
 <img src="https://img.shields.io/badge/Electron-35-47848F?style=flat&logo=electron&logoColor=white" alt="Electron">
 <img src="https://img.shields.io/badge/React-19-61DAFB?style=flat&logo=react&logoColor=white" alt="React">
 
@@ -79,22 +79,31 @@ The omp TUI is powerful, but some things are easier with a visual interface. omp
 
 Current release: [**v0.9.6**](https://github.com/nornzach/oh-my-pi-gui/releases/tag/v0.9.6)
 
+**macOS**
 - **Apple Silicon (M1/M2/M3/M4):** `omp-0.9.6-arm64.dmg`
 - **Intel:** `omp-0.9.6.dmg`
 
-Open the `.dmg` and drag **omp** into **Applications**. The build is ad-hoc signed but not notarized, so on first launch macOS may block it: **right-click → Open** (or *System Settings → Privacy & Security → Open Anyway*).
+Open the `.dmg` and drag **omp** into **Applications**. Ad-hoc signed, not notarized — first launch may need **right-click → Open**.
+
+**Windows**
+- NSIS installer: `omp-0.9.6-setup.exe` (when published)
+- Portable: `omp-0.9.6-portable.exe`
+
+Run the installer or the portable exe. First run may trip SmartScreen if the build isn't signed — click More info → Run anyway.
 
 ### Quick Start
 
-1. **Install** — download the `.dmg`, drag **omp** to **Applications**, right-click → Open
-2. **Sign in** — add your provider via OAuth or API key (`⌘,` → Providers)
-3. **Start a session** — `⌘N` for a new session, type a prompt, hit Enter
-4. **Browse commands** — `⌘K` to open the command palette and explore every `/` command as a menu
-5. **Go parallel** — `⌥T` to spawn a new tab with its own session and optional git worktree
+1. **Install** — mac: drag the app to Applications. win: run the setup/portable exe
+2. **Sign in** — OAuth or API key (`⌘,` / `Ctrl+,` → Providers)
+3. **Start a session** — `⌘N` / `Ctrl+N`, type a prompt, Enter
+4. **Browse commands** — `⌘K` / `Ctrl+K`
+5. **Go parallel** — `⌥T` / `Alt+T` for a new tab
 
 ### Keyboard shortcuts
 
-`⌘K` command palette · `⌘P` session search · `⌘N` new session · `⌘,` settings · `⌘B`/`⌘J` toggle sidebars · `Esc` abort turn
+mac uses ⌘, windows/linux use Ctrl.
+
+`⌘/Ctrl+K` command palette · `⌘/Ctrl+P` session search · `⌘/Ctrl+N` new session · `⌘/Ctrl+,` settings · `⌘/Ctrl+B`/`⌘/Ctrl+J` sidebars · `Esc` abort turn
 
 ---
 
@@ -113,7 +122,7 @@ This repo ([`nornzach/oh-my-pi-gui`](https://github.com/nornzach/oh-my-pi-gui)) 
 
 #### Build from source
 
-**Prerequisites:** macOS (for the DMG targets), [Bun](https://bun.sh) ≥ 1.3.14, and both repos side by side:
+**Prerequisites:** [Bun](https://bun.sh) ≥ 1.3.14, and both repos side by side. DMG packaging needs macOS; Windows NSIS/portable packaging can run on Windows (or via electron-builder wine on CI):
 
 ```bash
 # 1. Monorepo — provides the agent + native addon that become the sidecar
@@ -134,6 +143,8 @@ bun run build:omp         # compile the agent sidecar → resources/omp  (arm64)
 bun run build:omp:x64     # …and the Intel sidecar → resources/omp.x64 (cross-build on Apple Silicon)
 bun run package:mac:arm64 # → dist/omp-<ver>-arm64.dmg (ships resources/omp)
 bun run package:mac:x64   # → dist/omp-<ver>.dmg       (ships resources/omp.x64)
+bun run build:omp:win     # → resources/omp.exe
+bun run package:win      # → dist/*.exe (nsis + portable)
 ```
 
 `build:omp` stages the matching `pi_natives` native addon automatically (downloading the published `@oh-my-pi/pi-natives-<platform>` package when missing, replacing stale-version addons), embeds it into the binary, and restores the natives tree afterwards — its errors name the missing piece and the fix. Every `package:*` script rebuilds the Electron app before packaging so a stale `out/` directory cannot produce an old GUI; run the matching `build:omp*` first whenever agent/sidecar source changed. `package:mac:arm64` / `package:mac:x64` exist because the two architectures use different electron-builder configs (`electron-builder.yml` vs `electron-builder.x64.yml`); packaging Intel with the default config ships the wrong-arch sidecar.
@@ -234,22 +245,31 @@ omp TUI 很强大,但有些事情用可视化界面更方便。omp GUI 不替代
 
 当前版本：[**v0.9.6**](https://github.com/nornzach/oh-my-pi-gui/releases/tag/v0.9.6)
 
+**macOS**
 - **Apple Silicon（M1/M2/M3/M4）：** `omp-0.9.6-arm64.dmg`
 - **Intel：** `omp-0.9.6.dmg`
 
-打开 `.dmg`,把 **omp** 拖进 **应用程序**。当前构建采用 ad-hoc 签名但未经 Apple 公证,首次打开 macOS 可能拦截:**右键 → 打开**(或 *系统设置 → 隐私与安全性 → 仍要打开*)。
+打开 `.dmg`,把 **omp** 拖进 **应用程序**。ad-hoc 签名、未公证,首次可能要 **右键 → 打开**。
+
+**Windows**
+- 安装包：`omp-0.9.6-setup.exe`（发布后）
+- 便携版：`omp-0.9.6-portable.exe`
+
+跑安装包或便携 exe。未签名时 SmartScreen 可能拦一下,点详细信息 → 仍要运行就行。
 
 ### 快速上手
 
-1. **安装** — 下载 `.dmg`,把 **omp** 拖到 **应用程序**,右键 → 打开
-2. **登录** — 通过 OAuth 或 API key 添加你的 provider（`⌘,` → Providers）
-3. **开始会话** — `⌘N` 新建会话,输入提示词,回车
-4. **浏览命令** — `⌘K` 打开命令面板,探索所有 `/` 命令
-5. **并行运行** — `⌥T` 新建标签页,拥有独立会话和可选 git worktree
+1. **安装** — mac 拖进应用程序；win 跑 setup/portable
+2. **登录** — OAuth 或 API key（`⌘,` / `Ctrl+,` → Providers）
+3. **开始会话** — `⌘N` / `Ctrl+N`
+4. **浏览命令** — `⌘K` / `Ctrl+K`
+5. **并行运行** — `⌥T` / `Alt+T`
 
 ### 快捷键
 
-`⌘K` 命令面板 · `⌘P` 会话搜索 · `⌘N` 新会话 · `⌘,` 设置 · `⌘B`/`⌘J` 切换侧栏 · `Esc` 中止回合
+mac 用 ⌘，windows/linux 用 Ctrl。
+
+`⌘/Ctrl+K` 命令面板 · `⌘/Ctrl+P` 会话搜索 · `⌘/Ctrl+N` 新会话 · `⌘/Ctrl+,` 设置 · `⌘/Ctrl+B`/`⌘/Ctrl+J` 侧栏 · `Esc` 中止回合
 
 ---
 
@@ -289,6 +309,8 @@ bun run build:omp         # 编译 agent sidecar → resources/omp（arm64）
 bun run build:omp:x64     # 再编译 Intel sidecar → resources/omp.x64（Apple Silicon 上交叉构建）
 bun run package:mac:arm64 # → dist/omp-<版本>-arm64.dmg（随包 resources/omp）
 bun run package:mac:x64   # → dist/omp-<版本>.dmg（随包 resources/omp.x64）
+bun run build:omp:win     # → resources/omp.exe
+bun run package:win      # → dist/*.exe（nsis + portable）
 ```
 
 `build:omp` 会自动准备匹配的 `pi_natives` 原生插件（缺失时从 npm 下载已发布的 `@oh-my-pi/pi-natives-<平台>` 包,版本不符时自动替换）,将其嵌入二进制,并在结束后还原 natives 目录——脚本报错会明确指出缺失的部分和修复方法。每个 `package:*` 脚本都会先重新构建 Electron 应用,避免残留的旧 `out/` 被再次封装；agent/sidecar 源码有改动时,仍需先运行匹配架构的 `build:omp*`。`package:mac:arm64` / `package:mac:x64` 之所以分开,是因为两种架构使用不同的 electron-builder 配置（`electron-builder.yml` 与 `electron-builder.x64.yml`）;用默认配置打 Intel 包会装入错误架构的 sidecar。
